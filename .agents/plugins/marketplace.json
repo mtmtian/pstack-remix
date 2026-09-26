@@ -1,0 +1,15 @@
+{
+  "name": "pstack-local",
+  "interface": {
+    "displayName": "pstack shared workflows"
+  },
+  "plugins": [
+    {
+      "name": "pstack-codex",
+      "source": {
+        "source": "local",
+        "path": "./"
+      }
+    }
+  ]
+}

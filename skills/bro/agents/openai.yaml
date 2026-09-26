@@ -1,0 +1,5 @@
+policy:
+  allow_implicit_invocation: false
+interface:
+  display_name: Bro
+  short_description: Restate the last message in plain human language, with no...

@@ -1,0 +1,5 @@
+policy:
+  allow_implicit_invocation: false
+interface:
+  display_name: Principle Separate Before Serializing Shared State
+  short_description: Apply when concurrent actors might write to the same file,...

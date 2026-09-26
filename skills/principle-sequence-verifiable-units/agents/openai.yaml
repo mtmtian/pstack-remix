@@ -1,0 +1,5 @@
+policy:
+  allow_implicit_invocation: false
+interface:
+  display_name: Principle Sequence Verifiable Units
+  short_description: Apply to multi-step work (sweeps, migrations, runs of...

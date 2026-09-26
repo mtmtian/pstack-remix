@@ -1,0 +1,5 @@
+policy:
+  allow_implicit_invocation: false
+interface:
+  display_name: Recall
+  short_description: Reconstruct your recent working context from your own chat...

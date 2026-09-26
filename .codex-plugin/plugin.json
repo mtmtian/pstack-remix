@@ -1,0 +1,18 @@
+{
+  "name": "pstack-codex",
+  "version": "0.15.5-shared.1+codex.20260925172055",
+  "description": "Shared pstack engineering workflows for Codex and Claude Code, with one configuration and native host adapters.",
+  "author": {
+    "name": "Lauren Tan; local Codex adaptation"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "pstack \u00b7 shared workflows",
+    "shortDescription": "Verified engineering workflows and goal-driven execution.",
+    "longDescription": "One shared set of 47 skills and 23 playbooks for Codex and Claude Code, with a common configuration and thin runtime adapters.",
+    "developerName": "Local adaptation of Lauren Tan / pstack",
+    "category": "Productivity",
+    "capabilities": [],
+    "defaultPrompt": "Use $pstack-codex:poteto-mode to complete my task with verifiable results."
+  }
+}

@@ -1,0 +1,83 @@
+# Run work while you sleep
+
+This is the payoff for everything before it. An agent you can trust to verify its own work is an agent you can leave alone with a hard task. What makes that safe isn't hope. It's a checkable finish condition, an isolated worktree, and a decision log you audit in the morning.
+
+![She waves goodnight from the door while robots keep the factory running, one updating a DECISION LOG wall board under a BUILD RUN ACTIVE sign.](./images/overnight.jpg)
+
+## The long-task contract
+
+A good handoff has the goal, the finish condition, the authorized local actions, and an escape hatch. It does not need to be long:
+
+```text
+$poteto-mode im going to bed. migrate every caller to the new parser in a fresh worktree off <base>.
+done means zero old callers, all parser fixtures pass, old api deleted.
+keep a decision log. don't ask me before committing.
+create a finite /goal for this task. if you're truly stuck, stop and write up why.
+```
+
+Walk through what each line buys you:
+
+- A finite `/goal` is an explicit native host objective with the lifecycle described by the selected runtime adapter. It preserves the finish condition and checkpoints while the goal is active. It does not grant new authority.
+- "done means..." turns the goal into checks every iteration can run.
+- "fresh worktree off `<base>`" keeps the run from colliding with anything else you have open.
+- "don't ask me before committing" authorizes local commits within the stated scope. It does not authorize pushes, PR creation, merges, deploys, messages, or other remote writes.
+- The [Autonomous run playbook](../../skills/poteto-mode/playbooks/autonomous-run.md) describes how to continue checking a finite task. It does not install a timer, wake a stopped process, or create background scheduling.
+- The escape hatch lets it stop at a genuine dead end and write up why, which beats eight hours of creative goal reinterpretation.
+
+Because you'll review this work after stepping away, `$poteto-mode` routes it through [`$figure-it-out`](../../skills/figure-it-out/SKILL.md), which designs the run's phases before any code and wires in the decision log.
+
+## What each goal checkpoint does
+
+```mermaid
+flowchart TD
+    A[Check the finish condition] --> B[Make the smallest justified change]
+    B --> C[Verify against the real artifact]
+    C --> D{Progress?}
+    D -->|Yes| E[Commit]
+    D -->|No| F[Discard]
+    E --> G[Log one decision row]
+    F --> G
+    G --> A
+```
+
+One change, one check, one log row, every checkpoint. Changes that did not help get discarded, not left to ride. A plateau means pivot, not stop, and the finish condition never quietly relaxes to declare victory.
+
+If the user asks for a recurring cadence, use an installed automation or scheduling capability and inspect its returned registration. A goal is not a timer. If no such capability is available, finish the immediate authorized run and report that recurrence is not armed.
+
+## The morning audit
+
+[`$show-me-your-work`](../../skills/show-me-your-work/SKILL.md) is what makes the run reviewable. Each row records the time, phase, decision, reason, an evidence pointer, and the result, in a TSV at `decisions.tsv` (or `.audit/<task-slug>.tsv` when several runs share a directory). It stays local by default. Commit it when the work is ambitious enough that a reviewer needs the trail to trust the result.
+
+When you're back, ask for the run in review form:
+
+```text
+$show-me-your-work catch me up on what you did last night
+```
+
+Before the skill hands back its summary, it spawns a reviewer on a different available model family (or explicitly labeled same-family independent review) to read the trail and the transcript, and the reply ends with an Attention section listing what deserves your scrutiny. Read that section first, then the log rows it points at. You're auditing decisions, not re-reading the whole night.
+
+## When the night holds a queue, not a task
+
+The contract above drives one task to one finish condition. Some nights hold more, a queue of independent changes or a whole program. Three playbooks scale the same trust up.
+
+[Autopilot-full](../../skills/poteto-mode/playbooks/autopilot-full.md) runs a queue of independent PRs through verification and, when the user has authorized the remote action, to merged. Each PR gets one owner agent that carries it from build through merge, and no owner merges on its own verdict. A swarm of fresh verifiers starts at the code-ready head and repeats on patch-changing pushes. The final patch needs a clean verdict, CI must pass on the merge-prep head, and the merge must stay within the user's explicitly authorized repository and PR scope. The verdict does not grant broader remote authority:
+
+```text
+$poteto-mode full autopilot on this queue. each item is independent. i want them merged by morning.
+```
+
+[Autopilot-stack](../../skills/poteto-mode/playbooks/autopilot-stack.md) runs the same owner loop but ships nothing. You wake up to one linear base-branch stack with a verifier's verdict on every link, and you review and land it yourself. Pick it over Autopilot-full when the changes are coupled, or when you want your own eyes on the work before anything merges:
+
+```text
+$poteto-mode autopilot these five changes but stack them, don't ship. i'll land the stack in the morning.
+```
+
+[Orchestrate](../../skills/poteto-mode/playbooks/orchestrate.md) is for a program that outlives any single agent: multi-day, many stacked PRs, fleets of subagents under one standing coordinator chat. The coordinator authors briefs, collects what its subagents finish, keeps the lowest unmerged PR green, and never writes code itself. It's deliberately heavy machinery. If one agent could finish the work in a session, the playbook itself routes you back to the overnight contract above:
+
+```text
+$poteto-mode orchestrate the store migration. own it until every package is converted and merged. i'll check in twice a day.
+```
+
+**Pitfall:** a duration is not a finish condition. "work on this for 4 hours" gives the agent nothing to check, and you may get four hours of motion instead of a result. Give `/goal` a predicate that can pass or fail. Use a scheduler separately when you need a cadence.
+
+Next: [Steer with principle names](./08-principles.md).

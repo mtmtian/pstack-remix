@@ -1,0 +1,22 @@
+{
+  "skills/poteto-mode/scripts/bootstrap.ts": "ccd2ed08fd9da9d0d942e5f2491cfc74bb92d8a08fa51755e0da1ac8de287361",
+  "skills/poteto-mode/scripts/bun.lock": "667d9cf7222e9aae3fa42a4be383e657784216e9df115da02227fbc5ac7bbe46",
+  "skills/poteto-mode/scripts/check-plan.mjs": "760e52705174d2c2687c4428c00aff78d4378e94fb9c69eb5bf9c2fc470cd3d8",
+  "skills/poteto-mode/scripts/orch/orch.test.ts": "0855e466e915537c10b356ad52b651d2519c5f942bf128e405c7102bdd382d20",
+  "skills/poteto-mode/scripts/orch/orch.ts": "217ad4e45018ce0f48d0f72922d748b7890eac2f9dcb90e258607b35bed3322f",
+  "skills/poteto-mode/scripts/orch/store.ts": "2a02403f0d4738a623c150be367d6c35f01423cc4e0afbe51cd6aaaf4ddff0ef",
+  "skills/poteto-mode/scripts/package.json": "d1f815091209d49763775cc188e8e06ff32d5fec648bffd2272bc25a165e87c3",
+  "skills/poteto-mode/scripts/watch-pr/cli.test.ts": "a35592b4c6da96caf8d47987e9cd503fab6c7774ab87d11a43f24b4b5df2a9d1",
+  "skills/poteto-mode/scripts/watch-pr/cli.ts": "89c08863089181a232be782c4b2ed90a1552f44aeecb0dcb7aac2c623620e680",
+  "skills/poteto-mode/scripts/watch-pr/fakes.test-helper.ts": "e53e31b7f03068063f53a99a3591b052aaed66e4e2b196b3a364980f60324ab1",
+  "skills/poteto-mode/scripts/watch-pr/github.test.ts": "0cbce011050522938523e36bb42a260e92b812dcd2076930fa681672ad316b24",
+  "skills/poteto-mode/scripts/watch-pr/github.ts": "d1bbbafbe8e2c703c84da2029de7f2c4011412512f8cf65a42100f46bcb92c8a",
+  "skills/poteto-mode/scripts/watch-pr/policy.test.ts": "a9fedb25feefd1f57ef6a662f80c99018690170a3a8070773a08eaf694d1d3d9",
+  "skills/poteto-mode/scripts/watch-pr/policy.ts": "68d240505852cf23c9b2dea463342e9e61243f486b3cc86c735d140f9ee7be49",
+  "skills/poteto-mode/scripts/watch-pr/render.ts": "2b709e86628d5b8fdb61f860e60ababc342b0626c67576305442cf548283a604",
+  "skills/poteto-mode/scripts/watch-pr/tsconfig.json": "1ecccc72320b086c63ce3f73c959896fd747363e63553b3b1136296ea4069e45",
+  "skills/poteto-mode/scripts/watch-pr/types.compile.ts": "621af4c9a664fbf699a9737efccdc248abb416df8819c9dc5f824beae2b9b1d6",
+  "skills/poteto-mode/scripts/watch-pr/types.ts": "64ba6221e3bfe61bbb292337d199cdec6309455477280efb060203dba34e0e91",
+  "skills/poteto-mode/scripts/watch-pr/watch-pr": "d955603be6cc0e8b8ffcec722f635192b2261410b1f2929abea94480e47eb5d4",
+  "skills/poteto-mode/scripts/worktree-audit.sh": "55f3e62e82d3965dc26a047c9599bc63bd20641efeb5cbd0e4a87cde41258906"
+}

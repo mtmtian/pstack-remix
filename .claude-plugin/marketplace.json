@@ -1,0 +1,13 @@
+{
+  "name": "pstack-local",
+  "owner": {
+    "name": "Local pstack adaptation"
+  },
+  "plugins": [
+    {
+      "name": "pstack",
+      "source": "./",
+      "description": "Shared pstack workflows for Claude Code and Codex"
+    }
+  ]
+}

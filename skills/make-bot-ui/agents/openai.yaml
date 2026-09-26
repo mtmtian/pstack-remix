@@ -1,0 +1,5 @@
+policy:
+  allow_implicit_invocation: false
+interface:
+  display_name: Make Bot UI
+  short_description: Build a reviewable Grok Bot UI request draft

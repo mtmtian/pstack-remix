@@ -1,0 +1,5 @@
+policy:
+  allow_implicit_invocation: false
+interface:
+  display_name: Principle Exhaust The Design Space
+  short_description: Apply when facing a novel UI interaction or architectural...

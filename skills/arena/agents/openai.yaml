@@ -1,0 +1,5 @@
+policy:
+  allow_implicit_invocation: false
+interface:
+  display_name: Arena
+  short_description: Spawn N parallel candidates at the same task, pick a base,...

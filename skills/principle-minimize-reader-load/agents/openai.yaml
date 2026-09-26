@@ -1,0 +1,5 @@
+policy:
+  allow_implicit_invocation: false
+interface:
+  display_name: Principle Minimize Reader Load
+  short_description: Apply when reviewing or shaping code that's hard to trace....

@@ -1,0 +1,5 @@
+policy:
+  allow_implicit_invocation: false
+interface:
+  display_name: Principle Attack The Premise
+  short_description: Apply when two or more fixes that share one premise have...

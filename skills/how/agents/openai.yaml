@@ -1,0 +1,5 @@
+policy:
+  allow_implicit_invocation: false
+interface:
+  display_name: How
+  short_description: Use for "how does X work", code walkthroughs before changing...

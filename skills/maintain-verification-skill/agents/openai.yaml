@@ -1,0 +1,5 @@
+policy:
+  allow_implicit_invocation: false
+interface:
+  display_name: Maintain Verification Skill
+  short_description: Periodic pass that keeps a project's verification skill and...

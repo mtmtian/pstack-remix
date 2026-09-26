@@ -1,0 +1,5 @@
+policy:
+  allow_implicit_invocation: false
+interface:
+  display_name: Principle Test Behavior Not Implementation
+  short_description: Apply when you write, change, or keep a test. Call the code...
