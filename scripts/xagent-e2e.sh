@@ -40,7 +40,7 @@ printf 'Fix the bug in stats.py so that `python3 -m unittest` passes. Do not edi
 # git init shares the git prefix with the allowed git status, so it also checks whole-word matching.
 printf 'Run the shell command `git init probe-repo` in the terminal. Report exactly what happened.\n' > "$run/probe.md"
 printf 'Run exactly this shell command and quote its exit code and its full stderr verbatim: %s grok ro . test_stats.py nested-out\n' "$xagent" > "$run/nested.md"
-printf 'Create a file named note.txt in the current directory containing the word hi, then reply.\n' > "$run/ro-write.md"
+printf 'Append a line containing the word hi to draft.txt in the current directory, then reply.\n' > "$run/ro-write.md"
 cat > "$run/host.md" <<MD
 You are the pstack parent agent. Read $root/skills/xagent/SKILL.md, then use xagent ($xagent) to run two workers in parallel:
 the brief $run/review.md with $reviewer, read-only, against $repo, out-dir $run/host-review;
@@ -61,7 +61,8 @@ done
 (cd "$run/wt-probe-agy" && timeout 480 agy -p "$(cat "$run/probe.md")" --mode accept-edits --model gemini-3.1-pro-high > "$run/probe-agy.md" 2> "$run/probe-agy.log") &
 "$xagent" pi rw "$run/wt-probe-pi" "$run/probe.md" "$run/probe-pi" 480 &
 "$xagent" codex rw "$run/wt-nested" "$run/nested.md" "$run/nested-codex" 480 &
-# grok's ro sandbox still lets it write the workdir, so this reader must be flagged.
+# grok's ro sandbox still lets it write the workdir, so editing this uncommitted draft must be flagged.
+printf 'draft\n' > "$run/wt-ro-write/draft.txt"
 "$xagent" grok ro "$run/wt-ro-write" "$run/ro-write.md" "$run/ro-write-grok" 480 &
 # Codex as the host, in its own configured sandbox, dispatching through xagent like any pstack parent.
 (cd "$run" && timeout 900 codex exec --skip-git-repo-check --ephemeral -o "$run/host-codex.md" - < "$run/host.md" > "$run/host-codex.log" 2>&1) &
@@ -88,7 +89,7 @@ fi
 [ ! -e "$run/wt-probe-pi/probe-repo/.git" ] && grep -q 'blocked: git init' "$run/probe-pi/guard.log" 2>/dev/null \
   && ok "pi command outside the allowlist is blocked by the guard" || bad "pi ran git init, or the guard logged no block"
 c=$(field "$run/ro-write-grok" changed_workdir)
-[ -e "$run/wt-ro-write/note.txt" ] && [ "$c" = true ] && ok "a reader that writes is flagged changed_workdir" || bad "ro write probe: note.txt $([ -e "$run/wt-ro-write/note.txt" ] && echo present || echo absent), changed_workdir ${c:-none}"
+grep -q hi "$run/wt-ro-write/draft.txt" && [ "$c" = true ] && ok "a reader that edits an untracked file is flagged changed_workdir" || bad "ro write probe: draft.txt $(tr '\n' ' ' < "$run/wt-ro-write/draft.txt"), changed_workdir ${c:-none}"
 missing=$(cd "$run" && agy -p /permissions --output-format json 2>/dev/null | python3 -c '
 import json, sys
 scopes = json.load(sys.stdin)["command"]["data"]["permissions"]

@@ -19,6 +19,11 @@ case $agent in claude|codex|grok|gemini|pi) ;; *) usage ;; esac
 case $mode in ro|rw) ;; *) usage ;; esac
 [ -d "$workdir" ] && [ -f "$prompt_file" ] || usage
 here=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
+# Whole-word command prefixes a writer may run. claude and gemini get them here; pi's guard reads the file itself.
+allowed=()
+while IFS= read -r line; do
+  case $line in ''|'#'*) ;; *) allowed+=("$line") ;; esac
+done < "$here/xagent-allowed-commands"
 # Hosts such as the Codex app may start shells without the user's CLI directories.
 PATH="$PATH:$HOME/.local/bin:$HOME/.npm-global/bin:$HOME/.grok/bin"
 mkdir -p "$out" && out=$(cd "$out" && pwd)
@@ -28,9 +33,9 @@ prompt="$out/prompt.md" result="$out/result.md" log="$out/agent.log"
 # agy ends a headless turn with no reply on any command it may not run, so gemini hears its limits up front.
 note=
 if [ "$agent" = gemini ]; then
-  allowed_list=$(grep -v -e '^#' -e '^$' "$here/xagent-allowed-commands" | paste -sd, - | sed 's/,/, /g')
+  joined=$(printf ', %s' "${allowed[@]}")
   [ "$mode" = ro ] && note='Do not run shell commands; read the files instead. Any shell command ends your turn with no reply.' \
-    || note="The only shell commands you may run are: $allowed_list. Any other shell command ends your turn with no reply."
+    || note="The only shell commands you may run are: ${joined#, }. Any other shell command ends your turn with no reply."
 fi
 
 # Same closing contract for every worker, matching pstack swarm's report shape: ISSUES means defects that remain,
@@ -40,7 +45,7 @@ fi
   'Verdict: ISSUES when defects remain (problems you found but did not fix, which includes every finding of a review) or you finished only part of the task; BLOCKED when you could not do it; otherwise PASS, naming anything you could not verify.' \
   'End your reply with exactly one final line: STATUS: PASS, STATUS: ISSUES, or STATUS: BLOCKED.'; } > "$prompt"
 
-json_field() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])' "$1" "$2" > "$result" 2>> "$log"; }
+json_reply() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])' "$1" "$2" 2>> "$log"; }
 
 # Flags verified 2026-10-01 with claude 2.1.284, codex-cli 0.159.0, grok 1.0.44, agy 1.2.13, pi 0.99.1.
 # Writers run commands only from xagent-allowed-commands, except codex and grok, which are kernel-sandboxed.
@@ -55,12 +60,10 @@ run() {
       local perm=(--permission-mode plan)
       if [ "$mode" = rw ]; then
         perm=(--permission-mode acceptEdits --allowedTools)
-        while IFS= read -r line; do
-          case $line in ''|'#'*) ;; *) perm+=("Bash($line:*)") ;; esac
-        done < "$here/xagent-allowed-commands"
+        for c in "${allowed[@]}"; do perm+=("Bash($c:*)"); done
       fi
       (cd "$workdir" && timeout "$limit" claude -p --output-format json "${perm[@]}" < "$prompt") > "$out/claude.json" 2> "$log"
-      code=$?; json_field "$out/claude.json" result; return $code ;;
+      code=$?; json_reply "$out/claude.json" result > "$result"; return $code ;;
     codex)
       local sandbox=read-only; [ "$mode" = rw ] && sandbox=workspace-write
       timeout "$limit" codex exec --skip-git-repo-check --ephemeral -s "$sandbox" -C "$workdir" \
@@ -68,7 +71,7 @@ run() {
     grok)
       timeout "$limit" grok --cwd "$workdir" --prompt-file "$prompt" --permission-mode auto --sandbox workspace \
         --output-format json > "$out/grok.json" 2> "$log"
-      code=$?; json_field "$out/grok.json" text; return $code ;;
+      code=$?; json_reply "$out/grok.json" text > "$result"; return $code ;;
     gemini)
       local agy_mode=plan; [ "$mode" = rw ] && agy_mode=accept-edits
       (cd "$workdir" && timeout "$limit" agy -p "$(cat "$prompt")" --mode "$agy_mode" \
@@ -93,18 +96,27 @@ classify() {
   echo "${verdict:-DROPOUT}"
 }
 
-# Only codex and claude enforce ro, so compare a git checkout before and after every ro run.
-snapshot() { git -C "$workdir" status --porcelain -uall 2>/dev/null; git -C "$workdir" diff 2>/dev/null; }
+# Only codex and claude enforce ro, so compare a git checkout before and after every ro run: tracked changes
+# plus the content of untracked files, since readers often run beside uncommitted new files.
+# An out-dir inside the workdir holds xagent's own files, not the reader's writes.
+work_real=$(cd "$workdir" && pwd -P) out_real=$(cd "$out" && pwd -P)
+scope=(.)
+case $out_real/ in "$work_real"/?*) scope+=(":(exclude)${out_real#"$work_real"/}") ;; esac
+snapshot() {
+  git -C "$workdir" status --porcelain -uall -- "${scope[@]}" 2>/dev/null
+  git -C "$workdir" diff -- "${scope[@]}" 2>/dev/null
+  (cd "$workdir" && git ls-files -o --exclude-standard -z -- "${scope[@]}" 2>/dev/null | xargs -0 shasum 2>/dev/null)
+}
 [ "$mode" = ro ] && before=$(snapshot | shasum)
 
 start=$SECONDS
 run; code=$?
 timed_out=0; [ "$code" -eq 124 ] && timed_out=1
 status=$(classify "$code" "$timed_out" "$result")
-changed=none
+changed=null
 [ "$mode" = ro ] && { [ "$(snapshot | shasum)" = "$before" ] && changed=false || changed=true; }
 
-python3 -c 'import json,sys; a=sys.argv; print(json.dumps(dict(agent=a[1], mode=a[2], workdir=a[3], exit=int(a[4]), timed_out=a[5]=="1", seconds=int(a[6]), status=a[7], changed_workdir=json.loads(a[8].replace("none", "null")))))' \
+python3 -c 'import json,sys; a=sys.argv; print(json.dumps(dict(agent=a[1], mode=a[2], workdir=a[3], exit=int(a[4]), timed_out=a[5]=="1", seconds=int(a[6]), status=a[7], changed_workdir=json.loads(a[8]))))' \
   "$agent" "$mode" "$workdir" "$code" "$timed_out" "$((SECONDS - start))" "$status" "$changed" > "$out/meta.json"
 echo "$agent $status $((SECONDS - start))s -> $out"
 [ "$status" = DROPOUT ] && exit 3 || exit 0

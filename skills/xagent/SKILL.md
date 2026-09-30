@@ -27,7 +27,7 @@ One CLI turns any local agent into a pstack worker, whichever agent is the host.
 
 claude needs `claude auth login` once. The agy allowlist mirrors `bin/xagent-allowed-commands`; `scripts/xagent-e2e.sh` fails on drift. agy ends a headless run with no reply when gemini tries any other command, so xagent tells gemini its limits in the brief; a gemini `DROPOUT` usually means it tried anyway.
 
-Only codex and claude enforce `ro`. grok's built-in read-only sandbox refuses to start while `/var/run/docker.sock` is a symlink, so its readers can still write the workdir. For every `ro` run in a git checkout, `meta.json` records `changed_workdir`; when it is `true`, treat the verdict with suspicion and restore the checkout.
+Only codex and claude enforce `ro`. grok's built-in read-only sandbox refuses to start while `/var/run/docker.sock` is a symlink, so its readers can still write the workdir. For every `ro` run in a git checkout, `meta.json` records `changed_workdir` (tracked changes and untracked file contents, ignoring an out-dir inside the workdir); when it is `true`, treat the verdict with suspicion and restore the checkout.
 
 ## Rules for the parent
 

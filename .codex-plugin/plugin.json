@@ -1,6 +1,6 @@
 {
   "name": "pstack-codex",
-  "version": "0.15.5-shared.3+codex.20261001033348",
+  "version": "0.15.5-shared.4+codex.20261001043431",
   "description": "Shared pstack engineering workflows for Codex and Claude Code, with one configuration and native host adapters.",
   "author": {
     "name": "Lauren Tan; local Codex adaptation"
