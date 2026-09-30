@@ -79,7 +79,7 @@ Use `pstack-codex@personal` instead for an existing personal-marketplace install
 
 ## Maintain and publish
 
-Edit this checkout, preserve the host adapters, and bump both plugin manifest versions together when publishing runtime or skill changes. Run `node --test scripts/config.test.mjs`, validate the manifests, and check any changed helper scripts before committing and pushing. When TypeScript helper sources change, install their pinned dependencies with `bun install --frozen-lockfile` in `skills/poteto-mode/scripts`, run `bun test orch watch-pr` and `bun run typecheck` there, then rebuild from the repository root with `python3 scripts/build-runtime.py`.
+Edit this checkout, preserve the host adapters, and bump both plugin manifest versions together when publishing runtime or skill changes. Run `node --test scripts/config.test.mjs scripts/xagent-pi-guard.test.mjs` and `scripts/xagent-classify.test.sh` (plus `scripts/xagent-e2e.sh` when `bin/xagent*` changes), validate the manifests, and check any changed helper scripts before committing and pushing. When TypeScript helper sources change, install their pinned dependencies with `bun install --frozen-lockfile` in `skills/poteto-mode/scripts`, run `bun test orch watch-pr` and `bun run typecheck` there, then rebuild from the repository root with `python3 scripts/build-runtime.py`.
 
 Run `node scripts/check-upstream.mjs` for a read-only upstream comparison. Review changes before applying them; it never overwrites adapters or model preferences. Retain the MIT license and update `UPSTREAM.json` when accepting a new upstream version.
 

@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+# xagent: run Claude, Codex, Grok, Gemini (Antigravity agy) or Pi headlessly behind one interface,
+# so any pstack host (Claude Code, Codex, ...) can dispatch swarm workers, arena runners and cross-judges.
+#
+# usage: xagent <claude|codex|grok|gemini|pi> <ro|rw> <workdir> <prompt-file> <out-dir> [timeout-sec]
+#   ro  read-only: review, investigate, judge
+#   rw  may edit files under <workdir>; give every writer its own worktree
+# writes: <out-dir>/prompt.md  <out-dir>/result.md  <out-dir>/agent.log  <out-dir>/meta.json
+# exit:   0 when status is PASS/ISSUES/BLOCKED, 3 on DROPOUT, 2 on usage error or nested dispatch
+set -uo pipefail
+
+usage() { sed -n '2,9p' "$0" >&2; exit 2; }
+# Workers never fan out again; every child agent runs with XAGENT_DEPTH=1.
+if [ "${XAGENT_DEPTH:-0}" -ge 1 ]; then echo "xagent: refusing nested dispatch from inside an xagent worker" >&2; exit 2; fi
+export XAGENT_DEPTH=1
+[ $# -ge 5 ] || usage
+agent=$1 mode=$2 workdir=$3 prompt_file=$4 out=$5 limit=${6:-900}
+case $agent in claude|codex|grok|gemini|pi) ;; *) usage ;; esac
+case $mode in ro|rw) ;; *) usage ;; esac
+[ -d "$workdir" ] && [ -f "$prompt_file" ] || usage
+here=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
+# Hosts such as the Codex app may start shells without the user's CLI directories.
+PATH="$PATH:$HOME/.local/bin:$HOME/.npm-global/bin:$HOME/.grok/bin"
+mkdir -p "$out" && out=$(cd "$out" && pwd)
+prompt="$out/prompt.md" result="$out/result.md" log="$out/agent.log"
+: > "$result"
+
+# agy ends a headless turn with no reply on any command it may not run, so gemini hears its limits up front.
+note=
+if [ "$agent" = gemini ]; then
+  allowed_list=$(grep -v -e '^#' -e '^$' "$here/xagent-allowed-commands" | paste -sd, - | sed 's/,/, /g')
+  [ "$mode" = ro ] && note='Do not run shell commands; read the files instead. Any shell command ends your turn with no reply.' \
+    || note="The only shell commands you may run are: $allowed_list. Any other shell command ends your turn with no reply."
+fi
+
+# Same closing contract for every worker, matching pstack swarm's report shape: ISSUES means defects that remain,
+# so a reviewer with findings reports ISSUES, and a fixer that could not run a check reports PASS and says so.
+{ cat "$prompt_file"; printf '%s\n' '' '' \
+  'You are a delegated worker: do the task yourself and do not delegate it to other agents.' ${note:+"$note"} \
+  'Verdict: ISSUES when defects remain (problems you found but did not fix, which includes every finding of a review) or you finished only part of the task; BLOCKED when you could not do it; otherwise PASS, naming anything you could not verify.' \
+  'End your reply with exactly one final line: STATUS: PASS, STATUS: ISSUES, or STATUS: BLOCKED.'; } > "$prompt"
+
+json_field() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])' "$1" "$2" > "$result" 2>> "$log"; }
+
+# Flags verified 2026-10-01 with claude 2.1.284, codex-cli 0.159.0, grok 1.0.44, agy 1.2.13, pi 0.99.1.
+# Writers run commands only from xagent-allowed-commands, except codex and grok, which are kernel-sandboxed.
+# grok needs --permission-mode auto: in plan or acceptEdits a denied tool call ends the headless turn silently.
+# Its read-only profile refuses to start while /var/run/docker.sock is a symlink, so ro also uses workspace
+# (writes confined to workdir and temp); changed_workdir in meta.json catches a reader that wrote anyway.
+# gemini reads its copy of the allowlist from agy settings.json; other commands end the run with no reply.
+run() {
+  local code
+  case $agent in
+    claude)
+      local perm=(--permission-mode plan)
+      if [ "$mode" = rw ]; then
+        perm=(--permission-mode acceptEdits --allowedTools)
+        while IFS= read -r line; do
+          case $line in ''|'#'*) ;; *) perm+=("Bash($line:*)") ;; esac
+        done < "$here/xagent-allowed-commands"
+      fi
+      (cd "$workdir" && timeout "$limit" claude -p --output-format json "${perm[@]}" < "$prompt") > "$out/claude.json" 2> "$log"
+      code=$?; json_field "$out/claude.json" result; return $code ;;
+    codex)
+      local sandbox=read-only; [ "$mode" = rw ] && sandbox=workspace-write
+      timeout "$limit" codex exec --skip-git-repo-check --ephemeral -s "$sandbox" -C "$workdir" \
+        -c 'shell_environment_policy.set.XAGENT_DEPTH="1"' -o "$result" - < "$prompt" > "$log" 2>&1 ;;
+    grok)
+      timeout "$limit" grok --cwd "$workdir" --prompt-file "$prompt" --permission-mode auto --sandbox workspace \
+        --output-format json > "$out/grok.json" 2> "$log"
+      code=$?; json_field "$out/grok.json" text; return $code ;;
+    gemini)
+      local agy_mode=plan; [ "$mode" = rw ] && agy_mode=accept-edits
+      (cd "$workdir" && timeout "$limit" agy -p "$(cat "$prompt")" --mode "$agy_mode" \
+        --model "${XAGENT_GEMINI_MODEL:-gemini-3.1-pro-high}") > "$result" 2> "$log" ;;
+    pi)
+      # pi has no permission system: rw adds bash and file writes behind xagent-pi-guard.ts.
+      local args=(-p --no-session --tools read,grep,find,ls)
+      [ "$mode" = rw ] && args=(-p --no-session --tools read,grep,find,ls,edit,write,bash -e "$here/xagent-pi-guard.ts")
+      (cd "$workdir" && XAGENT_ALLOWED_FILE="$here/xagent-allowed-commands" XAGENT_GUARD_LOG="$out/guard.log" \
+        timeout "$limit" pi "${args[@]}" -- "$(cat "$prompt")") > "$result" 2> "$log" ;;
+  esac
+}
+
+# Decide what the pstack parent may do with this run.
+# Args: exit code, 1 if the time limit hit (else 0), path to the final reply.
+# Echo exactly one of: PASS | ISSUES | BLOCKED | DROPOUT (parent reruns once, then records a gap).
+classify() {
+  local code=$1 timed_out=$2 file=$3 verdict
+  [ "$timed_out" = 0 ] && [ "$code" -eq 0 ] || { echo DROPOUT; return; }
+  # Only a line that is nothing but the verdict counts, so an echoed instruction mid-sentence never matches.
+  verdict=$(grep -E '^[[:space:]*`>_-]*STATUS: (PASS|ISSUES|BLOCKED)[[:space:]*`._]*$' "$file" | tail -n 1 | grep -Eo 'PASS|ISSUES|BLOCKED')
+  echo "${verdict:-DROPOUT}"
+}
+
+# Only codex and claude enforce ro, so compare a git checkout before and after every ro run.
+snapshot() { git -C "$workdir" status --porcelain -uall 2>/dev/null; git -C "$workdir" diff 2>/dev/null; }
+[ "$mode" = ro ] && before=$(snapshot | shasum)
+
+start=$SECONDS
+run; code=$?
+timed_out=0; [ "$code" -eq 124 ] && timed_out=1
+status=$(classify "$code" "$timed_out" "$result")
+changed=none
+[ "$mode" = ro ] && { [ "$(snapshot | shasum)" = "$before" ] && changed=false || changed=true; }
+
+python3 -c 'import json,sys; a=sys.argv; print(json.dumps(dict(agent=a[1], mode=a[2], workdir=a[3], exit=int(a[4]), timed_out=a[5]=="1", seconds=int(a[6]), status=a[7], changed_workdir=json.loads(a[8].replace("none", "null")))))' \
+  "$agent" "$mode" "$workdir" "$code" "$timed_out" "$((SECONDS - start))" "$status" "$changed" > "$out/meta.json"
+echo "$agent $status $((SECONDS - start))s -> $out"
+[ "$status" = DROPOUT ] && exit 3 || exit 0

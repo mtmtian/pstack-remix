@@ -1,0 +1,12 @@
+# Commands an xagent writer may run unprompted. claude (--allowedTools) and pi (xagent-pi-guard.ts) read this file.
+# Mirror each line as command(<line>) under permissions.allow in ~/.gemini/antigravity-cli/settings.json;
+# scripts/xagent-e2e.sh fails when the mirror drifts. Each line is a whole-word command prefix.
+pnpm test
+pnpm lint
+pnpm typecheck
+pnpm build
+npm test
+python3 -m unittest
+git status
+git diff
+git log
