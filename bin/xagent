@@ -211,9 +211,12 @@ def main():
         code, timed_out, cancelled = run_process(args, workdir, out, stdout_path, options.timeout, env)
         meta.update(exit=code, timed_out=timed_out, cancelled=cancelled)
         if json_field:
-            reply = json.loads(stdout_path.read_text())[json_field]
+            payload = json.loads(stdout_path.read_text())
+            if not isinstance(payload, dict):
+                raise ValueError("agent JSON response must be an object")
+            reply = payload.get(json_field)
             if not isinstance(reply, str):
-                raise ValueError("agent JSON reply must be a string")
+                raise ValueError("agent JSON reply field must be a string")
             (out / "result.md").write_text(reply)
         status = classify(code, timed_out, (out / "result.md").read_text())
         reason = "cancelled" if cancelled else "timeout" if timed_out else "process_failed" if code else "invalid_verdict" if status == "DROPOUT" else None

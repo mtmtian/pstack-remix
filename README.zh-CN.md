@@ -207,7 +207,7 @@ pstack 本身不安装定时器；长任务流程也不保证会话退出或主�
 
 `ro` 模式会比较 HEAD、index、文件内容和非忽略的未跟踪文件；只读快照是事后检测，pi 路径与命令检查用于减少误操作。它们都不能代替操作系统沙箱。派发会向所选厂商发送 brief 和代码，必须在相应的数据授权范围内使用。
 
-完整参数、权限差异、隔离规则和测试命令见 [xagent 技能](./skills/xagent/SKILL.md)。历史实测见 [2026-10-01 验收记录](./docs/verification/xagent-2026-10-01.md)；后续审查发现的待修问题见 [PR #1](https://github.com/mtmtian/pstack-remix/pull/1)。该轮完整双主控验收尚未通过，已有通过项不代表长期无人值守流程已验证。
+完整参数、权限差异、隔离规则和测试命令见 [xagent 技能](./skills/xagent/SKILL.md)。[第二轮验收记录](./docs/verification/xagent-2026-10-01-round2.md)记录了五项审查修复、五家执行器实测和 Claude/Codex 双主控流程通过的证据；变更见 [PR #1](https://github.com/mtmtian/pstack-remix/pull/1)。主会话退出或重启后的持久运行，以及长期无人值守编排仍未验收。
 
 ## 共享 Agent 提示词
 
@@ -280,6 +280,8 @@ node scripts/check-upstream.mjs
 node --test scripts/config.test.mjs scripts/xagent-pi-guard.test.mjs
 bash scripts/xagent-classify.test.sh
 python3 -B scripts/xagent.test.py
+python3 -B scripts/xagent-e2e-verify.test.py
+python3 -B scripts/e2e-process.test.py
 python3 -B scripts/pstack-host-e2e.test.py
 ```
 

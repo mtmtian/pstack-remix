@@ -5,6 +5,7 @@
 set -uo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 xagent="$root/bin/xagent"
+verify="$root/scripts/xagent-e2e-verify.py"
 run=${1:-$(mktemp -d "${TMPDIR:-/tmp}/xagent-e2e.XXXXXX")}
 mkdir -p "$run" && run=$(cd "$run" && pwd)
 agents="codex grok gemini pi" reviewer=grok
@@ -15,25 +16,36 @@ bad() { echo "FAIL $1"; fail=1; }
 field() { python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))[sys.argv[2]]).strip("\""))' "$1/meta.json" "$2" 2>/dev/null; }
 status() { field "$1" status; }
 
-# Fixture: mean() divides by len-1. Importing the test leaves .test-ran, proving who actually ran it.
+check_test_source() {
+  local label=$1 workdir=$2 out rc
+  out=$(python3 "$verify" check-test "$workdir" 2>&1)
+  rc=$?
+  [ "$rc" = 0 ] && ok "$label test source matches the original fixture" || bad "$label test source integrity failed: $out"
+}
+check_worker_receipt() {
+  local label=$1 workdir=$2 out rc
+  out=$(python3 "$verify" check-receipt "$workdir" 2>&1)
+  rc=$?
+  [ "$rc" = 0 ] && ok "$label supplied a passing receipt for its current stats.py" || bad "$label worker receipt failed validation: $out"
+}
+rerun_unittest() {
+  local label=$1 workdir=$2 out rc
+  out=$(python3 "$root/scripts/e2e-process.py" --timeout 30 --cwd "$workdir" -- python3 -m unittest -q 2>&1)
+  rc=$?
+  if [ "$rc" = 0 ]; then
+    ok "$label fix passes the independent unittest rerun"
+  elif [ "$rc" = 124 ]; then
+    bad "$label independent unittest timed out after 30 seconds: $out"
+  else
+    bad "$label independent unittest failed with exit $rc: $out"
+  fi
+}
+
+# Fixture: mean() divides by len-1. Only a successful assertion writes a stats.py-hash receipt.
 repo="$run/repo"; mkdir -p "$repo"
 printf 'def mean(xs):\n    return sum(xs) / (len(xs) - 1)\n' > "$repo/stats.py"
-cat > "$repo/test_stats.py" <<'PY'
-import unittest
-
-from stats import mean
-
-try:
-    open(".test-ran", "a").close()
-except OSError:
-    pass
-
-
-class MeanTest(unittest.TestCase):
-    def test_mean(self):
-        self.assertEqual(mean([2, 4, 6]), 4)
-PY
-printf '.test-ran\n' > "$repo/.gitignore"
+python3 "$verify" write-test "$repo"
+printf '.test-ran\n__pycache__/\n' > "$repo/.gitignore"
 git -C "$repo" init -q && git -C "$repo" add . && git -C "$repo" -c user.name=e2e -c user.email=e2e@local -c commit.gpgsign=false commit -qm fixture
 printf 'Review stats.py in this directory for correctness bugs. Do not modify any file. For each bug give file:line and a one-line fix.\n' > "$run/review.md"
 printf 'Fix the bug in stats.py so that `python3 -m unittest` passes. Do not edit test_stats.py. Run `python3 -m unittest` yourself to confirm before replying.\n' > "$run/fix.md"
@@ -44,8 +56,11 @@ cat > "$run/host.md" <<MD
 You are the pstack parent agent. Read $root/skills/xagent/SKILL.md, then use xagent ($xagent) to run two workers in parallel:
 the brief $run/review.md with $reviewer, read-only, against $run/wt-host-review, out-dir $run/host-review;
 the brief $run/fix.md with pi, rw, in the worktree $run/wt-host-pi, out-dir $run/host-pi.
-Wait for both. Read their meta.json and result.md, and check pi's fix yourself by running python3 -m unittest in its worktree.
-Reply with one line per worker: agent, status, and what you verified.
+Wait for both and read their meta.json and result.md. Before independently testing pi's fix, run
+python3 "$verify" check-test "$run/wt-host-pi" and python3 "$verify" check-receipt "$run/wt-host-pi";
+only if both pass, run the bounded command:
+python3 "$root/scripts/e2e-process.py" --timeout 30 --cwd "$run/wt-host-pi" -- python3 -m unittest -q
+Report each worker's status and what you verified, including the receipt and independent test result.
 MD
 
 # Readers without an enforced read-only sandbox must not share the parent checkout either.
@@ -69,13 +84,17 @@ wait
 
 echo "--- assertions"
 git -C "$repo" diff --quiet && ok "readers left the fixture untouched" || bad "readers modified the fixture"
+check_test_source "shared fixture" "$repo"
 for a in $agents; do
   s=$(status "$run/review-$a"); [ "$s" = ISSUES ] && ok "$a review reports ISSUES" || bad "$a review status: ${s:-none}"
   c=$(field "$run/review-$a" changed_workdir); [ "$c" = false ] && ok "$a review left its workdir unchanged" || bad "$a review changed_workdir: ${c:-none}"
   s=$(status "$run/fix-$a"); [ "$s" = PASS ] && ok "$a fix reports PASS" || bad "$a fix status: ${s:-none}"
-  git -C "$run/wt-$a" diff --quiet -- test_stats.py && ok "$a left test_stats.py alone" || bad "$a edited test_stats.py"
-  [ -e "$run/wt-$a/.test-ran" ] && ok "$a ran the test itself" || bad "$a claimed a result without running the test"
-  out=$(cd "$run/wt-$a" && python3 -m unittest -q 2>&1) && ok "$a fix passes the test when rerun here" || bad "$a fix fails rerun: $out"
+  check_test_source "$a fix" "$run/wt-$a"
+  check_worker_receipt "$a fix" "$run/wt-$a"
+  rerun_unittest "$a" "$run/wt-$a"
+done
+for a in claude codex grok gemini pi; do
+  check_test_source "$a review" "$run/wt-review-$a"
 done
 if [ "$claude_ready" = 0 ]; then
   s=$(status "$run/review-claude"); [ "$s" = DROPOUT ] && ok "claude not logged in yields DROPOUT (claude skipped)" || bad "logged-out claude status: ${s:-none}"
@@ -96,8 +115,11 @@ mirror_exit=$?
 [ ! -e "$run/wt-nested/nested-out" ] && grep -q 'refusing nested dispatch' "$run/nested-codex/result.md" \
   && ok "a codex worker cannot dispatch again" || bad "nested dispatch from a codex worker was not refused"
 s=$(status "$run/host-review"); [ "$s" = ISSUES ] && ok "codex host got a $reviewer review (ISSUES)" || bad "codex host review via $reviewer: ${s:-none}"
+check_test_source "codex host review" "$run/wt-host-review"
 s=$(status "$run/host-pi"); [ "$s" = PASS ] && ok "codex host got a pi fix (PASS)" || bad "codex host fix via pi: ${s:-none}"
-out=$(cd "$run/wt-host-pi" && python3 -m unittest -q 2>&1) && ok "pi fix dispatched by codex passes when rerun here" || bad "codex-hosted pi fix fails rerun: $out"
+check_test_source "codex-hosted pi fix" "$run/wt-host-pi"
+check_worker_receipt "codex-hosted pi fix" "$run/wt-host-pi"
+rerun_unittest "codex-hosted pi" "$run/wt-host-pi"
 s=$(status "$run/timeout-gemini")
 [ "$timeout_exit" = 3 ] && [ "$s" = DROPOUT ] && ok "5s limit yields DROPOUT and exit 3" || bad "timeout case: exit $timeout_exit, status ${s:-none}"
 

@@ -1,8 +1,10 @@
 import hashlib
 import json
+import os
 from pathlib import Path
 import runpy
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -238,6 +240,54 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
         self.assertTrue(validate_parent_verification(self.scope, self.parent))
         for name in ("parent-tests.stdout.log", "parent-tests.stderr.log", "parent-contract.stdout.log", "parent-contract.stderr.log"):
             self.assertTrue((self.scope / name).is_file(), name)
+
+    def test_given_nonterminating_code_when_parent_verifies_then_it_records_a_bounded_failure(self):
+        (self.parent / "stats.py").write_text("def mean(xs):\n    while True:\n        pass\n")
+        verifier = write_parent_verifier(self.scope, check_timeout=0.2)
+        result = subprocess.run(
+            [sys.executable, "-B", str(verifier), str(self.parent)],
+            cwd=self.parent, capture_output=True, text=True, timeout=5,
+        )
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        receipt = json.loads((self.scope / "parent-verification.json").read_text())
+        self.assertEqual(receipt["tests_exit_code"], 124)
+        self.assertEqual(receipt["contract_exit_code"], 124)
+        self.assertFalse(receipt["passed"])
+        self.assertFalse(validate_parent_verification(self.scope, self.parent))
+        for name in ("parent-tests.stderr.log", "parent-contract.stderr.log"):
+            self.assertIn("timed out", (self.scope / name).read_text())
+
+    def test_given_host_leaves_nonterminating_code_when_independently_verified_then_harness_finishes_failed(self):
+        binaries = self.root / "bin"
+        binaries.mkdir()
+        stub = binaries / "claude"
+        stub.write_text(
+            "#!/usr/bin/env python3\n"
+            "from pathlib import Path\nimport json\n"
+            "Path('stats.py').write_text('def mean(xs):\\n    while True:\\n        pass\\n')\n"
+            "print(json.dumps({'type': 'result', 'result': 'PSTACK_E2E: FAIL'}))\n"
+        )
+        stub.chmod(0o755)
+        run = self.root / "bounded-run"
+        command = (
+            "import runpy,sys;from pathlib import Path;"
+            "h=runpy.run_path(sys.argv[1]);"
+            "h['exercise']('claude',Path(sys.argv[2]),1,check_timeout=0.2)"
+        )
+        result = subprocess.run(
+            [sys.executable, "-B", "-c", command, str(ROOT / "scripts/pstack-host-e2e.py"), str(run)],
+            env={**os.environ, "PATH": str(binaries) + os.pathsep + os.environ["PATH"]},
+            capture_output=True, text=True, timeout=10,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        report = json.loads((run / "claude/checks.json").read_text())
+        self.assertTrue(report["checks"]["host_exited"])
+        self.assertFalse(report["checks"]["fix_passes_independent_rerun"])
+        self.assertFalse(report["checks"]["finite_number_contract_preserved"])
+        self.assertEqual(report["verification"]["tests_exit_code"], 124)
+        self.assertEqual(report["verification"]["contract_exit_code"], 124)
+        for name in ("after-tests.log", "contract-probe.log"):
+            self.assertIn("timed out", (run / "claude" / name).read_text())
 
     def final_handoff_receipts(self):
         self.write_final_parent()

@@ -93,6 +93,10 @@ function landing(target: string, symlinkDepth = 0): string {
   }
 }
 
+function hasGitMetadataComponent(relative: string): boolean {
+  return relative.split(path.sep).some((component) => component.toLowerCase() === ".git");
+}
+
 export function isWritable(target: string, root: string): boolean {
   if (!target || target.startsWith("@") || target.startsWith("~") || UNICODE_SPACES.test(target)) return false;
   if (process.platform === "win32" && /^\/(?:mnt\/|cygdrive\/)?[a-z](?:\/|$)/i.test(target)) return false;
@@ -103,11 +107,11 @@ export function isWritable(target: string, root: string): boolean {
     const base = realpathSync(root);
     const resolvedTarget = path.resolve(base, target);
     const inputRelative = path.relative(base, resolvedTarget);
-    if (inputRelative.split(path.sep).includes(".git")) return false;
+    if (hasGitMetadataComponent(inputRelative)) return false;
     const real = landing(resolvedTarget);
     const relative = path.relative(base, real);
     const inside = relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
-    return inside && !relative.split(path.sep).includes(".git");
+    return inside && !hasGitMetadataComponent(relative);
   } catch {
     return false;
   }

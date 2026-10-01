@@ -4,6 +4,7 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import runpy
@@ -11,6 +12,7 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
+RUN_CHECK = runpy.run_path(str(ROOT / "scripts/e2e-process.py"))["run_check"]
 CONTRACT_PROBE = '''from fractions import Fraction
 from stats import mean
 
@@ -36,12 +38,13 @@ SNAPSHOT = XAGENT["snapshot"]
 PARENT_VERIFIER_TEMPLATE = r'''#!/usr/bin/env python3
 import hashlib
 import json
-import os
 from pathlib import Path
-import subprocess
+import runpy
 import sys
 
 CONTRACT_PROBE = __CONTRACT_PROBE__
+RUN_CHECK = runpy.run_path(__PROCESS_HELPER__)["run_check"]
+CHECK_TIMEOUT = __CHECK_TIMEOUT__
 
 def sha256(path):
     try:
@@ -50,15 +53,10 @@ def sha256(path):
         return None
 
 def run_and_log(command, cwd, stdout_path, stderr_path):
-    try:
-        result = subprocess.run(command, cwd=cwd, text=True, capture_output=True)
-        stdout_path.write_text(result.stdout)
-        stderr_path.write_text(result.stderr)
-        return result.returncode
-    except OSError as error:
-        stdout_path.write_text("")
-        stderr_path.write_text(f"{error}\n")
-        return 127
+    result = RUN_CHECK(command, cwd, CHECK_TIMEOUT)
+    stdout_path.write_text(result.stdout)
+    stderr_path.write_text(result.stderr)
+    return result.returncode
 
 def main():
     if len(sys.argv) != 2:
@@ -88,6 +86,7 @@ def main():
         "stats_sha256_after": after,
         "tests_exit_code": tests_exit,
         "contract_exit_code": contract_exit,
+        "check_timeout_seconds": CHECK_TIMEOUT,
         "passed": passed,
         "logs": {
             "tests_stdout": "parent-tests.stdout.log",
@@ -110,10 +109,12 @@ def classify_host_reply(code, reply):
     return CLASSIFY(code, False, reply.replace("PSTACK_E2E:", "STATUS:"))
 
 
-def write_parent_verifier(directory):
+def write_parent_verifier(directory, check_timeout=30):
     directory = Path(directory).resolve()
     verifier = directory / "verify-parent.py"
     source = PARENT_VERIFIER_TEMPLATE.replace("__CONTRACT_PROBE__", repr(CONTRACT_PROBE))
+    source = source.replace("__PROCESS_HELPER__", repr(str(ROOT / "scripts/e2e-process.py")))
+    source = source.replace("__CHECK_TIMEOUT__", repr(check_timeout))
     verifier.write_text(source)
     verifier.chmod(0o755)
     return verifier
@@ -310,13 +311,13 @@ def git(work, *args):
     return subprocess.run(["git", "-C", str(work), *args], check=True, text=True, capture_output=True).stdout.strip()
 
 
-def exercise(host, run, host_timeout):
+def exercise(host, run, host_timeout, check_timeout=30):
     directory = run / host
     work = directory / "repo"
     work.mkdir(parents=True)
     evidence = directory / "evidence"
     evidence.mkdir()
-    verifier = write_parent_verifier(directory)
+    verifier = write_parent_verifier(directory, check_timeout)
     (work / "stats.py").write_text("def mean(xs):\n    return sum(xs) / (len(xs) - 1)\n")
     (work / "test_stats.py").write_text(TEST)
     (work / ".gitignore").write_text(".test-ran\n__pycache__/\n")
@@ -324,10 +325,10 @@ def exercise(host, run, host_timeout):
     git(work, "add", ".")
     git(work, "-c", "user.name=e2e", "-c", "user.email=e2e@local", "-c", "commit.gpgsign=false", "commit", "-qm", "fixture")
     base = git(work, "rev-parse", "HEAD")
-    failing = subprocess.run([sys.executable, "-m", "unittest", "-q"], cwd=work, text=True, capture_output=True)
+    failing = RUN_CHECK([sys.executable, "-m", "unittest", "-q"], work, check_timeout)
     (directory / "before-tests.log").write_text(failing.stdout + failing.stderr)
-    if failing.returncode == 0:
-        raise AssertionError("fixture did not start red")
+    if failing.returncode != 1:
+        raise AssertionError(f"expected a failing test fixture, got exit {failing.returncode}")
     (work / ".test-ran").unlink()
     policy = json.loads(subprocess.check_output(["node", str(ROOT / "bin/config.mjs"), "show", "--host", host], text=True))
     (directory / "policy.json").write_text(json.dumps(policy, indent=2) + "\n")
@@ -344,6 +345,8 @@ The contract includes finite integers beyond the float range; an exact rational 
 the mathematical mean cannot be represented as a finite float. The independent acceptance probe is
 {directory}/contract-probe.py; run it from the parent checkout with python3 -B -c and its file contents.
 Use swarm with one worker for this one-file repair. Select its agent from the effective policy, not by guessing.
+The writer can run python3 -m unittest -q from the shared allowlist. Do not require it to use -B or -c;
+the parent owns the contract probe and final verification commands below.
 Give the writer an exclusive worktree from fixture base {base}; keep all worktrees and outputs under {directory}.
 The parent checkout is {work}. Integrate the worker's patch locally, then run python3 -m unittest yourself.
 Use interrogate on the resulting change with all configured reviewers, selected from the effective policy.
@@ -360,6 +363,7 @@ After all integrations, fixes, and configured reviews are complete, personally r
 from the parent checkout by executing exactly: python3 {verifier} {work}
 The helper runs python3 -B -m unittest -q and the contract probe, writes separate stdout/stderr logs plus
 {directory}/parent-verification.json, and exits nonzero if the real cwd, stable stats.py hash, or either check fails.
+Each verification command has a {check_timeout:g}-second deadline and terminates its process group on timeout.
 Do not edit stats.py after running it. The harness checks that this receipt describes the final parent version,
 then independently reruns the tests and contract probe.
 
@@ -425,13 +429,14 @@ with no unresolved reproduced violation of the stated contract; otherwise PSTACK
         "parent_verification_valid": parent_verification_valid,
         **receipt_checks,
     }
-    verification = subprocess.run([sys.executable, "-B", "-m", "unittest", "-q"], cwd=work, capture_output=True, text=True)
+    verification = RUN_CHECK([sys.executable, "-B", "-m", "unittest", "-q"], work, check_timeout)
     (directory / "after-tests.log").write_text(verification.stdout + verification.stderr)
     checks["fix_passes_independent_rerun"] = verification.returncode == 0
-    contract = subprocess.run([sys.executable, "-B", "-c", CONTRACT_PROBE], cwd=work, capture_output=True, text=True)
+    contract = RUN_CHECK([sys.executable, "-B", "-c", CONTRACT_PROBE], work, check_timeout)
     (directory / "contract-probe.log").write_text(contract.stdout + contract.stderr)
     checks["finite_number_contract_preserved"] = contract.returncode == 0
-    report = {"host": host, "exit": finished.returncode, "base": base, "policy": policy["effective"], "checks": checks, "receipts": receipts}
+    report = {"host": host, "exit": finished.returncode, "base": base, "policy": policy["effective"], "checks": checks, "receipts": receipts,
+              "verification": {"tests_exit_code": verification.returncode, "contract_exit_code": contract.returncode, "timeout_seconds": check_timeout}}
     (directory / "checks.json").write_text(json.dumps(report, indent=2) + "\n")
     for name, passed in checks.items():
         print(f"{'ok' if passed else 'FAIL'} {host}: {name}", flush=True)
@@ -443,18 +448,21 @@ def main():
     parser.add_argument("run_dir", type=Path)
     parser.add_argument("--host", choices=("claude", "codex"), action="append")
     parser.add_argument("--host-timeout", type=int, default=1200, help="outer host deadline in seconds (default: 1200)")
+    parser.add_argument("--check-timeout", type=float, default=30, help="deadline for each verification command (default: 30)")
     options = parser.parse_args()
     if options.host_timeout <= 0:
         parser.error("host-timeout must be positive")
+    if not math.isfinite(options.check_timeout) or options.check_timeout <= 0:
+        parser.error("check-timeout must be positive and finite")
     run = options.run_dir.resolve()
     run.mkdir(parents=True, exist_ok=True)
     if any(run.iterdir()):
         parser.error("use a new empty run directory")
-    sources = ["bin/xagent", "bin/xagent-pi-guard.ts", "references/runtime.md", "references/claude-runtime.md", "references/codex-runtime.md", "skills/xagent/SKILL.md", "skills/swarm/SKILL.md", "skills/interrogate/SKILL.md", "scripts/pstack-host-e2e.py", "scripts/pstack-host-e2e.test.py"]
+    sources = ["bin/xagent", "bin/xagent-pi-guard.ts", "references/runtime.md", "references/claude-runtime.md", "references/codex-runtime.md", "skills/xagent/SKILL.md", "skills/swarm/SKILL.md", "skills/interrogate/SKILL.md", "scripts/pstack-host-e2e.py", "scripts/pstack-host-e2e.test.py", "scripts/e2e-process.py"]
     (run / "source-hashes.json").write_text(json.dumps({name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest() for name in sources}, indent=2) + "\n")
     hosts = options.host or ["claude", "codex"]
     with ThreadPoolExecutor(max_workers=len(hosts)) as pool:
-        results = list(pool.map(lambda host: exercise(host, run, options.host_timeout), hosts))
+        results = list(pool.map(lambda host: exercise(host, run, options.host_timeout, options.check_timeout), hosts))
     return 0 if all(results) else 1
 
 

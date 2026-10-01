@@ -18,6 +18,7 @@ case = os.environ.get('XAGENT_TEST_CASE', 'pass')
 if agent == 'grok': os.chdir(sys.argv[sys.argv.index('--cwd')+1])
 if agent == 'codex': os.chdir(sys.argv[sys.argv.index('-C')+1])
 reply = 'Completed.\nSTATUS: PASS\n'
+invalid_json = {'json_null': None, 'json_array': [], 'json_number': 42, 'json_null_changed': None}
 def git(*args): subprocess.run(['git', *args], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 if case == 'nonfinal': reply = 'STATUS: PASS\nThe review is not completed.\n'
 if case == 'quoted': reply = 'An example:\n> STATUS: PASS\n'
@@ -26,6 +27,7 @@ if case == 'unclosed_fence': reply = 'Example:\n```text\nSTATUS: PASS\n'
 if case == 'indented': reply = 'Example:\n\n    STATUS: PASS\n'
 if case == 'tab': reply = 'Example:\n\n\tSTATUS: PASS\n'
 if case == 'untracked': pathlib.Path('draft.txt').write_text('reader changed draft\n')
+if case == 'json_null_changed': pathlib.Path('reader-change.txt').write_text('reader changed checkout\n')
 if case == 'python_read': subprocess.run([sys.executable, '-c', 'import fixture_module'], check=True)
 if case in ('staged', 'commit'):
     pathlib.Path('tracked.txt').write_text('reader changed tracked\n')
@@ -37,8 +39,8 @@ if case == 'wait':
         s.connect(os.environ['XAGENT_TEST_SOCKET'])
         s.sendall(json.dumps({'pid':os.getpid()}).encode())
     time.sleep(30)
-if agent == 'claude': print(json.dumps({'result':reply}))
-elif agent == 'grok': print(json.dumps({'text':reply}))
+if agent == 'claude': print(json.dumps(invalid_json[case]) if case in invalid_json else json.dumps({'result':reply}))
+elif agent == 'grok': print(json.dumps(invalid_json[case]) if case in invalid_json else json.dumps({'text':reply}))
 elif agent == 'codex': pathlib.Path(sys.argv[sys.argv.index('-o')+1]).write_text(reply)
 else: print(reply)
 '''
@@ -94,6 +96,27 @@ class XAgentTests(unittest.TestCase):
                 result, meta = self.run_case(case)
                 self.assertEqual(meta["status"], "DROPOUT")
                 self.assertEqual(result.returncode, 3)
+
+    def test_given_json_stdout_has_a_non_object_top_level_then_it_finishes_as_execution_dropout(self):
+        for agent in ("claude", "grok"):
+            for case in ("json_null", "json_array", "json_number"):
+                with self.subTest(agent=agent, case=case):
+                    result, meta = self.run_case(case, agent=agent)
+                    self.assertEqual(result.returncode, 3, result.stderr)
+                    self.assertEqual(meta["status"], "DROPOUT")
+                    self.assertEqual(meta["reason"], "execution_error")
+                    self.assertIs(meta["completed"], True)
+                    self.assertRegex(meta["snapshot_after"], r"^[a-f0-9]{64}$")
+                    self.assertEqual(meta["snapshot_before"], meta["snapshot_after"])
+
+    def test_given_json_shape_error_and_readonly_change_then_dropout_keeps_final_snapshot(self):
+        result, meta = self.run_case("json_null_changed", agent="grok")
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertEqual(meta["status"], "DROPOUT")
+        self.assertEqual(meta["reason"], "execution_error")
+        self.assertIs(meta["completed"], True)
+        self.assertIs(meta["changed_workdir"], True)
+        self.assertNotEqual(meta["snapshot_before"], meta["snapshot_after"])
 
     def test_given_a_reader_changes_untracked_content_then_it_cannot_pass(self):
         (self.work / "draft.txt").write_text("original draft\n")
