@@ -93,6 +93,18 @@ class XAgentTests(unittest.TestCase):
                 self.assertRegex(meta["snapshot_before"], r"^[a-f0-9]{64}$")
                 self.assertEqual(meta["snapshot_before"], meta["snapshot_after"])
 
+    def test_given_gemini_run_then_agy_uses_its_own_configured_model(self):
+        captured = self.base / "agy-argv.json"
+        self.env["XAGENT_TEST_ARGV"] = str(captured)
+        for mode in ("ro", "rw"):
+            with self.subTest(mode=mode):
+                result, meta = self.run_case("pass", "gemini", out=self.base / f"gemini-{mode}", mode=mode)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(meta["status"], "PASS")
+                args = json.loads(captured.read_text())
+                self.assertEqual(args[args.index("--mode") + 1], "plan" if mode == "ro" else "accept-edits")
+                self.assertNotIn("--model", args)
+
     def test_given_claude_run_when_ephemeral_is_opted_in_then_persistence_is_disabled(self):
         captured = self.base / "claude-argv.json"
         self.env["XAGENT_TEST_ARGV"] = str(captured)

@@ -27,7 +27,7 @@ Claude workers keep their normal session persistence by default. For disposable 
 | gemini | plan mode | accept-edits; commands from `permissions.allow` in `~/.gemini/antigravity-cli/settings.json` |
 | pi | read/grep/find/ls | + edit/write inside workdir, bash from `bin/xagent-allowed-commands`, both through `bin/xagent-pi-guard.ts` |
 
-claude needs `claude auth login` once. The agy allowlist mirrors `bin/xagent-allowed-commands`; `scripts/xagent-e2e.sh` fails on drift. agy ends a headless run with no reply when gemini tries any other command, so xagent tells gemini its limits in the brief; a gemini `DROPOUT` usually means it tried anyway.
+xagent passes no model flag: every agent runs the default model and reasoning settings from its own CLI configuration, so change a worker's model there. claude needs `claude auth login` once. The agy allowlist mirrors `bin/xagent-allowed-commands`; `scripts/xagent-e2e.sh` fails on drift. agy ends a headless run with no reply when gemini tries any other command, so xagent tells gemini its limits in the brief; a gemini `DROPOUT` usually means it tried anyway.
 
 Grok's built-in read-only sandbox refuses to start while `/var/run/docker.sock` is a symlink, so its readers can still write the workdir. A prompt or a tool allowlist is not an OS sandbox. Give every external reviewer an exclusively owned checkout at the intended revision, just as for writers; never dispatch a potentially writable reader into the user's shared checkout. If reviewing uncommitted work, copy the intended patch and needed untracked files into that isolated checkout first and record what was reviewed. The parent creates and verifies this isolation; xagent does not create worktrees.
 

@@ -95,7 +95,7 @@ def command(agent, mode, workdir, out, prompt, allowed):
     if agent == "grok":
         return ["grok", "--cwd", str(workdir), "--prompt-file", str(out / "prompt.md"), "--permission-mode", "auto", "--sandbox", "workspace", "--output-format", "json"], out / "grok.json", "text"
     if agent == "gemini":
-        return ["agy", "-p", prompt, "--mode", "plan" if mode == "ro" else "accept-edits", "--model", os.environ.get("XAGENT_GEMINI_MODEL", "gemini-3.1-pro-high")], out / "result.md", None
+        return ["agy", "-p", prompt, "--mode", "plan" if mode == "ro" else "accept-edits"], out / "result.md", None
     args = ["pi", "-p", "--no-session", "--tools", "read,grep,find,ls" if mode == "ro" else "read,grep,find,ls,edit,write,bash"]
     if mode == "rw":
         args += ["-e", str(ROOT / "xagent-pi-guard.ts")]

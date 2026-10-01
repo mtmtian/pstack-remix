@@ -74,7 +74,7 @@ done
 [ "$claude_ready" = 1 ] || "$xagent" claude ro "$run/wt-review-claude" "$run/review.md" "$run/review-claude" 120 &
 "$xagent" gemini rw "$run/wt-probe-gemini" "$run/probe.md" "$run/probe-gemini" 480 &
 # xagent tells gemini its command limits, so it usually declines; agy's own enforcement is exercised without that note.
-(cd "$run/wt-probe-agy" && timeout -k 2 480 agy -p "$(cat "$run/probe.md")" --mode accept-edits --model gemini-3.1-pro-high > "$run/probe-agy.md" 2> "$run/probe-agy.log") &
+(cd "$run/wt-probe-agy" && timeout -k 2 480 agy -p "$(cat "$run/probe.md")" --mode accept-edits > "$run/probe-agy.md" 2> "$run/probe-agy.log") &
 "$xagent" pi rw "$run/wt-probe-pi" "$run/probe.md" "$run/probe-pi" 480 &
 "$xagent" codex rw "$run/wt-nested" "$run/nested.md" "$run/nested-codex" 480 &
 # Codex as the host, in its own configured sandbox, dispatching through xagent like any pstack parent.
