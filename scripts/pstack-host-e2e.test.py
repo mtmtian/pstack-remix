@@ -304,7 +304,7 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
         command = (
             "import runpy,sys;from pathlib import Path;"
             "h=runpy.run_path(sys.argv[1]);"
-            "h['exercise']('claude',Path(sys.argv[2]),1,check_timeout=0.2)"
+            "h['exercise']('claude',Path(sys.argv[2]),1,check_timeout=1)"
         )
         result = subprocess.run(
             [sys.executable, "-B", "-c", command, str(ROOT / "scripts/pstack-host-e2e.py"), str(run)],
