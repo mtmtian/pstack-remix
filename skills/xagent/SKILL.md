@@ -47,7 +47,7 @@ The pi write guard accepts plain relative or absolute paths, including paths thr
 
 ## With pstack
 
-A role or panel entry `xagent:<agent>` runs that worker through xagent instead of the host's subagent tool, with the brief the workflow would give a native worker. Reviewers, judges and explorers run `ro`; writers run `rw`. Shared entries apply to every host; `hosts.<host>` entries override them, which is how each host gets the other family as its reviewer.
+A role or panel entry `xagent:<agent>` runs that worker through xagent instead of the host's subagent tool, with the brief the workflow would give a native worker. Reviewers, judges and explorers run `ro`; writers run `rw`. Shared entries apply to every host; `hosts.<host>` entries override them, which is how each host gets the other family as its reviewer. Shared `required_panel_members` adds its agents to every panel on both hosts, and the runtime never lets a panel substitute or silently drop an `xagent:<agent>` entry.
 
 ## Checks
 

@@ -25,7 +25,7 @@ Marketplace registration is needed only once per host. Host caches are generated
 - Claude Code entry: `/pstack:poteto-mode`.
 - Optional setup: `$pstack-codex:setup-pstack` or `/pstack:setup-pstack`.
 
-Preferences are shared in `~/.config/pstack/config.json`. Roles inherit the main conversation unless configured; workers receive the resolved policy and do not need setup. Concrete model choices are host-scoped so one vendor's model ID never leaks into another host. Shared reasoning and panel-size preferences apply to both when the actual runtime supports them. See [the runtime contract](./references/runtime.md).
+Preferences are shared in `~/.config/pstack/config.json`. Roles inherit the main conversation unless configured; workers receive the resolved policy and do not need setup. Concrete model choices are host-scoped so one vendor's model ID never leaks into another host. Shared reasoning and panel-size preferences apply to both when the actual runtime supports them. Shared `required_panel_members` adds external agents such as `xagent:grok` to every panel on both hosts, and those entries are never silently skipped. See [the runtime contract](./references/runtime.md).
 
 Examples below use `$skill` as a short reference to the bundled skill; in Claude Code invoke `/pstack:skill` or read its file through the host's skill interface.
 

@@ -26,7 +26,7 @@ The N candidates will receive the same prompt, so the prompt is the contract.
 
 1. State the artifact each candidate is producing.
 2. Derive the rubric. State what success looks like for *this* task, then turn it into 3-6 concrete gradeable criteria. The rubric is the picker's tool in Phase D. Candidates only see the task.
-3. Pick the runners. Use `arena runners` from the effective policy from `node <plugin-root>/bin/config.mjs show --host <codex|claude>` when present. Otherwise use two independent attempts, inheriting the parent unless distinct available models are configured. Spawn more when the arena covers multiple design directions. Same model N times when the work is generation-bound rather than judgment-sensitive.
+3. Pick the runners. Use `arena runners` from the effective policy from `node <plugin-root>/bin/config.mjs show --host <codex|claude>` when present. Otherwise use that output's `defaultPanel`, two inherited attempts plus any required panel members. Spawn more when the arena covers multiple design directions. Same model N times when the work is generation-bound rather than judgment-sensitive.
 4. Assign output paths. Each candidate writes to its own location (a git worktree where possible, otherwise `/tmp/arena-<slug>/candidate-<n>/`), per the **separate-before-serializing-shared-state** principle skill.
 
 ## Phase B: Fan out
@@ -35,7 +35,7 @@ Spawn all N subagents in one message with the host's asynchronous spawn mechanis
 
 Each rationale names the alternatives the candidate considered and what it rejected.
 
-If a candidate fails to produce output, proceed with N-1 and note the dropout in the synthesis record.
+If a candidate fails to produce output, proceed with N-1 and note the dropout in the synthesis record. An `xagent:<agent>` candidate is the exception: it follows the shared runtime's retry and unresolved-outcome rule and is never dropped silently.
 
 ## Phase C: Cross-judge
 

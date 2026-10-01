@@ -34,7 +34,7 @@ Write one clear paragraph. If you're unsure about the intent, ask the user befor
 
 ## Step 3, Spawn Reviewers
 
-Launch all reviewers in a single message using the host collaboration tools. Use the `interrogate reviewers` list from the effective policy from `node <plugin-root>/bin/config.mjs show --host <codex|claude>` when present, one reviewer per entry, extending or shrinking the Reviewer A/B/C/D labels below to the configured entry count. Otherwise use the two table defaults and disclose that inherited-model attempts are independent runs, not distinct model families.
+Launch all reviewers in a single message using the host collaboration tools. Use the `interrogate reviewers` list from the effective policy from `node <plugin-root>/bin/config.mjs show --host <codex|claude>` when present, one reviewer per entry, extending or shrinking the Reviewer A/B/C/D labels below to the configured entry count. Otherwise use that output's `defaultPanel`: the two table defaults plus any required panel members. Disclose that inherited-model attempts are independent runs, not distinct model families.
 
 | Subagent | Default model |
 |----------|---------------|
@@ -46,7 +46,7 @@ For each reviewer:
 - `model`: the configured `interrogate reviewers` entry, or the table default with no configured line
 - Read-only scope in the agent brief
 
-If an explicitly configured model is unavailable, use an actually supported alternative or inherit the parent and disclose the substitution. If a cross-model comparison was an explicit requirement, report that gap rather than claiming it passed. Report stale configuration; change it only within an authorized configuration task. Do not block the review on the slug issue. If the configured value is `inherit-parent` or `auto`, omit `model` instead. Never treat those aliases as broken slugs or enter this fallback for them. An `xagent:<agent>` value is dispatched through xagent as the shared runtime describes, never passed as `model`.
+If an explicitly configured concrete model is unavailable, use an actually supported alternative or inherit the parent and disclose the substitution. If a cross-model comparison was an explicit requirement, report that gap rather than claiming it passed. Report stale configuration; change it only within an authorized configuration task. Do not block the review on the slug issue. If the configured value is `inherit-parent` or `auto`, omit `model` instead. Never treat those aliases as broken slugs or enter this fallback for them. An `xagent:<agent>` value is dispatched through xagent as the shared runtime describes, never passed as `model` and never substituted; its dropouts follow the runtime's retry and unresolved-outcome rule.
 
 Read `references/reviewer-prompt.md` and fill in the template with:
 1. The stated intent

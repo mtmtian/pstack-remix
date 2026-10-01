@@ -12,6 +12,8 @@ const COMMON_MODEL_VALUES = new Set(["inherit-parent", "auto"]);
 const XAGENT_VALUE = /^xagent:[a-z][a-z0-9-]*$/;
 const REASONING_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
 const DEFAULT_PANEL = ["inherit-parent", "inherit-parent"];
+// External agents that must join every panel, so a per-panel or per-host list cannot leave them out.
+const REQUIRED_MEMBERS = "required_panel_members";
 
 export function getDefaultConfigPath(homeDir = homedir()) {
   return path.join(homeDir, ".config", "pstack", "config.json");
@@ -75,6 +77,20 @@ function validateEffort(policy, label) {
   }
 }
 
+// null means unset, in a stored config as in a patch.
+function validateRequiredMembers(policy, scope, label) {
+  if (!Object.hasOwn(policy, REQUIRED_MEMBERS)) return;
+  const field = `${label}.${REQUIRED_MEMBERS}`;
+  if (scope !== "common") throw new Error(`${field} is shared policy and cannot be set per host`);
+  const members = policy[REQUIRED_MEMBERS];
+  if (members === null) return;
+  if (!Array.isArray(members) || members.length === 0) throw new Error(`${field} must be a nonempty array or null`);
+  for (const member of members) {
+    if (typeof member !== "string" || !XAGENT_VALUE.test(member)) throw new Error(`${field} entries must be xagent:<agent>`);
+  }
+  if (new Set(members).size !== members.length) throw new Error(`${field} entries must be unique`);
+}
+
 function validatePolicy(policy, scope, label) {
   requireObject(policy, label);
   if (!Object.hasOwn(policy, "roles") || !Object.hasOwn(policy, "panels")) {
@@ -83,6 +99,7 @@ function validatePolicy(policy, scope, label) {
   validateRoles(policy.roles, scope, label);
   validatePanels(policy.panels, scope, label);
   validateEffort(policy, label);
+  validateRequiredMembers(policy, scope, label);
 }
 
 function validateConfig(config) {
@@ -96,7 +113,7 @@ function validateConfig(config) {
 
 function validatePatch(patch, scope, label) {
   requireObject(patch, label);
-  const allowed = new Set(["roles", "panels", "reasoning_effort"]);
+  const allowed = new Set(["roles", "panels", "reasoning_effort", REQUIRED_MEMBERS]);
   for (const key of Object.keys(patch)) {
     if (!allowed.has(key)) throw new Error(`${label}.${key} is not a supported update field`);
   }
@@ -125,6 +142,7 @@ function validatePatch(patch, scope, label) {
       }
     }
   }
+  validateRequiredMembers(patch, scope, label);
   if (Object.hasOwn(patch, "reasoning_effort") && patch.reasoning_effort !== null && !REASONING_EFFORTS.has(patch.reasoning_effort)) {
     throw new Error(`${label}.reasoning_effort must be one of ${[...REASONING_EFFORTS].join(", ")} or null`);
   }
@@ -231,9 +249,10 @@ function applyPatch(policy, patch) {
       });
     }
   }
-  if (Object.hasOwn(patch, "reasoning_effort")) {
-    if (patch.reasoning_effort === null) delete policy.reasoning_effort;
-    else policy.reasoning_effort = patch.reasoning_effort;
+  for (const key of ["reasoning_effort", REQUIRED_MEMBERS]) {
+    if (!Object.hasOwn(patch, key)) continue;
+    if (patch[key] === null) delete policy[key];
+    else policy[key] = cloneJson(patch[key]);
   }
 }
 
@@ -257,16 +276,20 @@ export function showConfig({ configPath = getDefaultConfigPath(), host } = {}) {
   if (!HOSTS.includes(host)) throw new Error(`host must be one of ${HOSTS.join(" or ")}`);
   const config = readConfig(configPath) ?? defaultConfig();
   const hostPolicy = config.hosts[host];
+  const required = config[REQUIRED_MEMBERS] ?? [];
+  const withRequired = (panel) => [...panel, ...required.filter((member) => !panel.includes(member))];
+  const panels = { ...config.panels, ...hostPolicy.panels };
   return {
     path: configPath,
     exists: existsSync(configPath),
     host,
     effective: {
       roles: { ...config.roles, ...hostPolicy.roles },
-      panels: { ...config.panels, ...hostPolicy.panels },
+      panels: Object.fromEntries(Object.entries(panels).map(([name, panel]) => [name, withRequired(panel)])),
+      [REQUIRED_MEMBERS]: [...required],
       reasoning_effort: hostPolicy.reasoning_effort ?? config.reasoning_effort ?? null,
       defaultModel: "inherit-parent",
-      defaultPanel: [...DEFAULT_PANEL],
+      defaultPanel: withRequired(DEFAULT_PANEL),
     },
   };
 }

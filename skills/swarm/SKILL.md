@@ -34,7 +34,7 @@ When a worker needs a non-default branch, prepare and verify a worktree at that 
 
 Every brief stands alone. Include the goal, scope, exact slice or race arm, how to verify, and what to report. Reports use `PASS`, `ISSUES`, or `BLOCKED` with evidence. A worker that can prove a defect reports `ISSUES` and lists every issue it can prove, not only the first.
 
-If a worker drops out, proceed with N-1 and note it.
+If a worker drops out, proceed with N-1 and note it, except an `xagent:<agent>` worker, which follows the shared runtime's retry and unresolved-outcome rule.
 
 ## Phase C: Aggregate
 
