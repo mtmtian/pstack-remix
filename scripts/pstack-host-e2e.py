@@ -378,10 +378,10 @@ with no unresolved reproduced violation of the stated contract; otherwise PSTACK
 '''
     (directory / "prompt.md").write_text(prompt)
     if host == "codex":
-        args = ["codex", "exec", "--skip-git-repo-check", "--ephemeral", "--json", "-C", str(work), "-o", str(directory / "result.md"), "-"]
+        args = ["codex", "exec", "--skip-git-repo-check", "--ephemeral", "--json", "-C", str(work), "-c", 'shell_environment_policy.set.XAGENT_EPHEMERAL="1"', "-o", str(directory / "result.md"), "-"]
     else:
-        args = ["claude", "-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits", "--plugin-dir", str(ROOT), "--allowedTools", "Bash", "Read", "Write", "Edit", "Glob", "Grep"]
-    env = dict(os.environ)
+        args = ["claude", "-p", "--no-session-persistence", "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits", "--plugin-dir", str(ROOT), "--allowedTools", "Bash", "Read", "Write", "Edit", "Glob", "Grep"]
+    env = {**os.environ, "XAGENT_EPHEMERAL": "1"}
     env.pop("XAGENT_DEPTH", None)
     with (directory / "host.log").open("w") as log:
         finished = subprocess.run(["timeout", "-k", "5", str(host_timeout), *args], cwd=work, env=env, input=prompt, text=True, stdout=log, stderr=subprocess.STDOUT)

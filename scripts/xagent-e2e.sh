@@ -3,6 +3,7 @@
 # usage: scripts/xagent-e2e.sh [run-dir]   evidence stays in run-dir.
 # claude joins once `claude auth login` is done; until then it is only checked to come back as DROPOUT.
 set -uo pipefail
+export XAGENT_EPHEMERAL=1
 root=$(cd "$(dirname "$0")/.." && pwd)
 xagent="$root/bin/xagent"
 verify="$root/scripts/xagent-e2e-verify.py"
@@ -77,7 +78,7 @@ done
 "$xagent" pi rw "$run/wt-probe-pi" "$run/probe.md" "$run/probe-pi" 480 &
 "$xagent" codex rw "$run/wt-nested" "$run/nested.md" "$run/nested-codex" 480 &
 # Codex as the host, in its own configured sandbox, dispatching through xagent like any pstack parent.
-(cd "$run" && timeout -k 2 900 codex exec --skip-git-repo-check --ephemeral -o "$run/host-codex.md" - < "$run/host.md" > "$run/host-codex.log" 2>&1) &
+(cd "$run" && timeout -k 2 900 codex exec --skip-git-repo-check --ephemeral -c 'shell_environment_policy.set.XAGENT_EPHEMERAL="1"' -o "$run/host-codex.md" - < "$run/host.md" > "$run/host-codex.log" 2>&1) &
 "$xagent" gemini ro "$repo" "$run/review.md" "$run/timeout-gemini" 5 & timeout_pid=$!
 wait "$timeout_pid"; timeout_exit=$?
 wait

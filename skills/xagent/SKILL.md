@@ -15,6 +15,8 @@ One CLI turns any local agent into a pstack worker, whichever agent is the host.
 
 `~/.local/bin/xagent` links to the checkout's `bin/xagent` on this machine. Each attempt needs a new empty out-dir, separate from workdir. Each run writes `prompt.md`, `result.md`, `agent.log` and an atomically replaced `meta.json`; pi also writes `guard.log`. The receipt includes `status`, `exit`, `seconds`, `completed`, `timed_out`, `cancelled`, `reason` and `changed_workdir`. A receipt with `completed=false` is an interrupted/in-progress attempt, never completion evidence. Timeout and cancellation stop the worker's process group, with one second for termination before a forced stop, and preserve partial output.
 
+Claude workers keep their normal session persistence by default. For disposable checks, set `XAGENT_EPHEMERAL=1` to pass `--no-session-persistence`; those Claude sessions cannot be resumed. Both `scripts/xagent-e2e.sh` and `scripts/pstack-host-e2e.py` enable it for their hosts and workers automatically. Run evidence and receipts are still written to the output directory.
+
 ## Agents
 
 | agent | ro | rw |

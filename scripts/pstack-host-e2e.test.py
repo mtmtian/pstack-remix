@@ -289,6 +289,48 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
         self.assertNotEqual(independent.returncode, 0)
         self.assertIn("AssertionError", independent.stderr)
 
+    def test_given_disposable_hosts_then_they_and_their_workers_disable_session_persistence(self):
+        binaries = self.root / "bin"
+        binaries.mkdir()
+        for host in ("claude", "codex"):
+            stub = binaries / host
+            stub.write_text(
+                "#!/usr/bin/env python3\n"
+                "from pathlib import Path\nimport json, os, sys\n"
+                "capture = {'argv': sys.argv[1:], 'ephemeral': os.environ.get('XAGENT_EPHEMERAL')}\n"
+                "Path(os.environ['PSTACK_TEST_HOST_CAPTURE']).write_text(json.dumps(capture))\n"
+                "reply = 'PSTACK_E2E: FAIL'\n"
+                "if Path(sys.argv[0]).name == 'codex':\n"
+                "    Path(sys.argv[sys.argv.index('-o') + 1]).write_text(reply)\n"
+                "else:\n"
+                "    print(json.dumps({'type': 'result', 'result': reply}))\n"
+            )
+            stub.chmod(0o755)
+        command = (
+            "import runpy,sys;from pathlib import Path;"
+            "h=runpy.run_path(sys.argv[1]);"
+            "h['exercise'](sys.argv[3],Path(sys.argv[2]),5,check_timeout=1)"
+        )
+        for host in ("claude", "codex"):
+            with self.subTest(host=host):
+                captured = self.root / f"{host}-command.json"
+                run = self.root / f"{host}-disposable-run"
+                result = subprocess.run(
+                    [sys.executable, "-B", "-c", command, str(ROOT / "scripts/pstack-host-e2e.py"), str(run), host],
+                    env={**os.environ, "PATH": str(binaries) + os.pathsep + os.environ["PATH"],
+                         "XAGENT_EPHEMERAL": "0", "PSTACK_TEST_HOST_CAPTURE": str(captured)},
+                    capture_output=True, text=True, timeout=15,
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                launch = json.loads(captured.read_text())
+                self.assertEqual(launch["ephemeral"], "1")
+                if host == "claude":
+                    self.assertIn("-p", launch["argv"])
+                    self.assertIn("--no-session-persistence", launch["argv"])
+                else:
+                    self.assertIn("--ephemeral", launch["argv"])
+                    self.assertIn('shell_environment_policy.set.XAGENT_EPHEMERAL="1"', launch["argv"])
+
     def test_given_host_leaves_nonterminating_code_when_independently_verified_then_harness_finishes_failed(self):
         binaries = self.root / "bin"
         binaries.mkdir()
