@@ -1,6 +1,13 @@
 # Run the CI checks locally
 
-Use POSIX, Git, Node 22.18 or newer, and Python 3.9 or newer. Build checks also require the Bun version in [`.bun-version`](../.bun-version).
+Use POSIX, Git, Node 22.18 or newer, Python 3.9 or newer, and GNU `timeout` with `-k` support. Build checks also require the Bun version in [`.bun-version`](../.bun-version).
+
+On macOS, make the coreutils commands available in the current shell before running runtime checks:
+
+```sh
+brew install coreutils
+export PATH="$(brew --prefix coreutils)/libexec/gnubin:$PATH"
+```
 
 Install the locked development dependencies once, then run the same checks as GitHub Actions:
 
@@ -48,6 +55,8 @@ The [workflow](../.github/workflows/ci.yml) runs on every pull request, pushes t
 | Build and types | Ubuntu 24.04, Node 24, Python 3.14, pinned Bun | Check TypeScript, source behavior, reproducibility, and artifact freshness |
 
 Each job has a ten-minute limit. A newer run on the same PR or ref cancels the older run. Jobs use read-only repository permissions, discard checkout credentials, and pin actions to full commit SHAs, following [GitHub's secure-use guidance](https://docs.github.com/en/actions/reference/security/secure-use). They run on GitHub-hosted runners and need no custom secrets.
+
+The macOS runtime job installs coreutils. Ubuntu already supplies GNU `timeout`.
 
 After the first successful GitHub run, select all three check names in branch protection if they must block merges. Adding the workflow does not configure branch protection.
 

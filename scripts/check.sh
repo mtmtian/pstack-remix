@@ -13,6 +13,11 @@ if [[ "$suite" != build ]]; then
   printf '\nRunning offline runtime checks\n'
   node --version
   python3 --version
+  if ! command -v timeout >/dev/null; then
+    printf 'GNU timeout is required for the host regression tests. See docs/ci.md for macOS setup.\n' >&2
+    exit 1
+  fi
+  timeout -k 1 1 true
   node --test scripts/*.test.mjs
   bash scripts/xagent-classify.test.sh
   for test in scripts/xagent.test.py scripts/xagent-e2e-verify.test.py scripts/e2e-process.test.py scripts/pstack-host-e2e.test.py; do
