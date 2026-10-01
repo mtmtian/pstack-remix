@@ -4,11 +4,11 @@ Both hosts install the same source tree. The shared configuration lives outside 
 
 ## Clone on a new machine
 
-Prerequisites: Git, Node.js 22.18 or newer, and the host CLI you want to use. Cross-agent dispatch additionally needs Python 3.9+ on a POSIX host and each selected agent's authenticated CLI (`claude`, `codex`, `grok`, `agy` for Gemini, or `pi`). The repository is private: authenticate GitHub CLI with an account that can read `mtmtian/pstack-codex`. Bun is needed only when rebuilding or testing the TypeScript helpers; the checked-in Node bundles run without installing dependencies.
+Prerequisites: Git, Node.js 22.18 or newer, and the host CLI you want to use. Cross-agent dispatch additionally needs Python 3.9+ on a POSIX host and each selected agent's authenticated CLI (`claude`, `codex`, `grok`, `agy` for Gemini, or `pi`). The source repository is `mtmtian/pstack-remix`; the Codex plugin name remains `pstack-codex`. Bun is needed only when rebuilding or testing the TypeScript helpers; the checked-in Node bundles run without installing dependencies.
 
 ```sh
 mkdir -p "$HOME/plugins"
-gh repo clone mtmtian/pstack-codex "$HOME/plugins/pstack-codex"
+git clone https://github.com/mtmtian/pstack-remix.git "$HOME/plugins/pstack-codex"
 cd "$HOME/plugins/pstack-codex"
 node --test scripts/config.test.mjs
 ```

@@ -1,15 +1,17 @@
 # pstack for Codex and Claude Code
 
+English | [简体中文](./README.zh-CN.md)
+
 One source tree, one configuration, two native host entry points. This independent local adaptation tracks Lauren Tan's MIT-licensed upstream pstack 0.15.5 at [`12d587df`](https://github.com/cursor/plugins/tree/12d587dfb20741cafc376c42c696c5f6e2a64487/pstack). It is not maintained by Lauren Tan, Cursor, OpenAI, or Anthropic.
 
 The 48 skills, 23 playbooks, engineering principles, agent prompts, and Node helpers are shared. Only the plugin manifests and two short runtime adapters differ. Codex retains its installed `pstack-codex` name; Claude Code uses `pstack` from the same directory.
 
 ## Install and use
 
-Clone the private repository once per machine, then register that same checkout with each host. See [setup and updates](./docs/guide/01-setup.md) for prerequisites and existing installations.
+Clone the repository once per machine, then register that same checkout with each host. See [setup and updates](./docs/guide/01-setup.md) for prerequisites and existing installations.
 
 ```sh
-gh repo clone mtmtian/pstack-codex "$HOME/plugins/pstack-codex"
+git clone https://github.com/mtmtian/pstack-remix.git "$HOME/plugins/pstack-codex"
 cd "$HOME/plugins/pstack-codex"
 codex plugin marketplace add "$PWD"
 codex plugin add pstack-codex@pstack-local
