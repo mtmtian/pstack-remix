@@ -85,6 +85,8 @@ def snapshot(workdir, out):
 def command(agent, mode, workdir, out, prompt, allowed):
     if agent == "claude":
         args = ["claude", "-p", "--output-format", "json", "--permission-mode", "plan" if mode == "ro" else "acceptEdits"]
+        if os.environ.get("XAGENT_EPHEMERAL") == "1":
+            args += ["--no-session-persistence"]
         if mode == "rw":
             args += ["--allowedTools", *[f"Bash({prefix}:*)" for prefix in allowed]]
         return args, out / "claude.json", "result"

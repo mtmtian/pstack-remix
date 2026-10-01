@@ -15,6 +15,8 @@ STUB = r'''#!/usr/bin/env python3
 import json, os, pathlib, signal, socket, subprocess, sys, time
 agent = pathlib.Path(sys.argv[0]).name
 case = os.environ.get('XAGENT_TEST_CASE', 'pass')
+if os.environ.get('XAGENT_TEST_ARGV'):
+    pathlib.Path(os.environ['XAGENT_TEST_ARGV']).write_text(json.dumps(sys.argv[1:]))
 if agent == 'grok': os.chdir(sys.argv[sys.argv.index('--cwd')+1])
 if agent == 'codex': os.chdir(sys.argv[sys.argv.index('-C')+1])
 reply = 'Completed.\nSTATUS: PASS\n'
@@ -67,16 +69,17 @@ class XAgentTests(unittest.TestCase):
         self.git("-c", "user.name=fixture", "-c", "user.email=fixture@local", "-c", "commit.gpgsign=false", "commit", "-qm", "fixture")
         self.env = {**os.environ, "PATH": str(self.binaries) + os.pathsep + os.environ["PATH"]}
         self.env.pop("XAGENT_DEPTH", None)
+        self.env.pop("XAGENT_EPHEMERAL", None)
 
     def git(self, *args):
         return subprocess.run(["git", "-C", str(self.work), *args], check=True, capture_output=True)
 
-    def args(self, out, agent="grok", work=None, timeout="10"):
-        return [str(XAGENT), agent, "ro", str(work or self.work), str(self.brief), str(out), timeout]
+    def args(self, out, agent="grok", work=None, timeout="10", mode="ro"):
+        return [str(XAGENT), agent, mode, str(work or self.work), str(self.brief), str(out), timeout]
 
-    def run_case(self, case, agent="grok", work=None, out=None):
+    def run_case(self, case, agent="grok", work=None, out=None, mode="ro"):
         out = out or self.base / (case + "-" + agent)
-        result = subprocess.run(self.args(out, agent, work), env={**self.env, "XAGENT_TEST_CASE": case}, capture_output=True, text=True, timeout=15)
+        result = subprocess.run(self.args(out, agent, work, mode=mode), env={**self.env, "XAGENT_TEST_CASE": case}, capture_output=True, text=True, timeout=15)
         self.assertTrue((out / "meta.json").exists(), result.stderr)
         return result, json.loads((out / "meta.json").read_text())
 
@@ -89,6 +92,22 @@ class XAgentTests(unittest.TestCase):
                 self.assertIs(meta["changed_workdir"], False)
                 self.assertRegex(meta["snapshot_before"], r"^[a-f0-9]{64}$")
                 self.assertEqual(meta["snapshot_before"], meta["snapshot_after"])
+
+    def test_given_claude_run_when_ephemeral_is_opted_in_then_persistence_is_disabled(self):
+        captured = self.base / "claude-argv.json"
+        self.env["XAGENT_TEST_ARGV"] = str(captured)
+        for mode in ("ro", "rw"):
+            for setting in (None, "0", "1"):
+                with self.subTest(mode=mode, ephemeral=setting):
+                    self.env.pop("XAGENT_EPHEMERAL", None)
+                    if setting is not None:
+                        self.env["XAGENT_EPHEMERAL"] = setting
+                    result, meta = self.run_case("pass", "claude", out=self.base / f"{mode}-{setting}", mode=mode)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(meta["status"], "PASS")
+                    args = json.loads(captured.read_text())
+                    self.assertIn("-p", args)
+                    self.assertEqual(args.count("--no-session-persistence"), int(setting == "1"))
 
     def test_given_no_valid_terminal_verdict_then_result_is_dropout(self):
         for case in ("nonfinal", "quoted", "fenced", "unclosed_fence", "indented", "tab"):
