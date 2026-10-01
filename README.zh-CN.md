@@ -277,13 +277,10 @@ node scripts/check-upstream.mjs
 本地基础检查：
 
 ```sh
-node --test scripts/config.test.mjs scripts/xagent-pi-guard.test.mjs
-bash scripts/xagent-classify.test.sh
-python3 -B scripts/xagent.test.py
-python3 -B scripts/xagent-e2e-verify.test.py
-python3 -B scripts/e2e-process.test.py
-python3 -B scripts/pstack-host-e2e.test.py
+bash scripts/check.sh runtime
 ```
+
+完整 CI 还包含 `orch` 与 `watch-pr` 的类型检查、Bun 测试和分发产物一致性检查。按 [CI 指南](./docs/ci.md)安装锁定的构建依赖后，运行 `bash scripts/check.sh`。GitHub Actions 对每个 PR 检查 Linux 最低支持版本、macOS 当前运行版本和构建产物，不需要厂商登录态。
 
 真实跨厂商 E2E 会使用相应 CLI 登录态、发送合成任务并消耗厂商额度，还需要支持 `-k` 的 `timeout` 命令。具备对应授权和前置条件后，使用新的结果目录运行：
 

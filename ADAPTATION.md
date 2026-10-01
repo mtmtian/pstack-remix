@@ -20,16 +20,13 @@ The 0.15.5 sync (upstream #419, #422) takes the instruction trims (principles, t
 
 ## Verification
 
-Run these offline checks for configuration, guard, receipt, process and host-acceptance behavior:
+Run the offline runtime checks for configuration, guard, receipt, process and host-acceptance behavior:
 
 ```sh
-node --test scripts/config.test.mjs scripts/xagent-pi-guard.test.mjs
-bash scripts/xagent-classify.test.sh
-python3 -B scripts/xagent.test.py
-python3 -B scripts/xagent-e2e-verify.test.py
-python3 -B scripts/e2e-process.test.py
-python3 -B scripts/pstack-host-e2e.test.py
+bash scripts/check.sh runtime
 ```
+
+For all CI checks, including strict TypeScript checks, Bun tests and reproducible bundle verification, follow [Run the CI checks locally](./docs/ci.md). The same entrypoint runs in GitHub Actions without vendor credentials.
 
 The CLI tests use real Git checkouts and subprocesses with vendor stand-ins, including staged/committed read-only violations, misleading verdicts, timeout and cancellation. Vendor acceptance pins the fixture's test contents and checks the worker's successful test receipt against its final source before independently rerunning it. The shared verification runner gives each command a fresh Python bytecode-cache prefix and disables cache writes; `-B` alone can still load stale bytecode after an equal-size edit in the same second. A worker receipt is not sufficient without that independent run. Importing the test, rewriting it, or reusing a receipt from older code cannot satisfy the full acceptance gate.
 
@@ -37,6 +34,6 @@ Run `scripts/xagent-e2e.sh` after changing `bin/xagent*` or upgrading an agent C
 
 Validate both manifests, all SKILL.md frontmatter and local links. Use a fresh Codex app-server skills/list and Claude `plugin details` to verify inventory; a manifest validator alone is not a discovery or behavioral test.
 
-The source `orch`/`watch-pr` helpers and their bundled Node code are unchanged by this shared-host adaptation. Rebuild with `python3 scripts/build-runtime.py` only when those sources change, using their development dependencies. Node runtime helpers never download dependencies.
+Rebuild the `orch` and `watch-pr` bundles with `python3 scripts/build-runtime.py` when their sources, dependencies or builder change. Use the Bun version in `.bun-version` and locked development dependencies. `python3 scripts/build-runtime.py --check` compares a temporary build with the working tree without writing artifacts. Node runtime helpers never download dependencies.
 
 See the task's shared-installation report for actual dated commands/results and any remaining gaps. No overnight, real PR queue, remote runner, or Slack workflow is implied by local package validation.

@@ -238,6 +238,8 @@ Models are configurable through [setup-pstack](./skills/setup-pstack/SKILL.md), 
 
 ## Keeping up with upstream
 
+Run [the CI checks locally](./docs/ci.md) with `bash scripts/check.sh` after installing the locked build dependencies. GitHub Actions checks the minimum runtime versions, macOS behavior, TypeScript, and distributed bundle freshness on every PR.
+
 Run `node <plugin-root>/scripts/check-upstream.mjs`. The read-only report compares the pinned `UPSTREAM.json` commit with the latest pstack change. Review the diff once in this shared tree, preserve both host adapters, run `node --test scripts/config.test.mjs`, validate/discover both plugins, then refresh both installations per the [setup guide](./docs/guide/01-setup.md). Do not overwrite this adaptation with the upstream Cursor directory.
 
 ## automations
