@@ -230,7 +230,7 @@ test("Given a concrete model in common policy, When update runs, Then it rejects
   assert.equal(readFileSync(configPath, "utf8"), original);
 });
 
-test("Given xagent entries in a shared patch, When both hosts run show, Then both dispatch the same external agents", (t) => {
+test("Given xagent entries in a shared patch, When both hosts run show, Then both resolve the same external agent policy", (t) => {
   const dir = tempDir();
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const configPath = path.join(dir, "config.json");

@@ -4,7 +4,7 @@ Both hosts install the same source tree. The shared configuration lives outside 
 
 ## Clone on a new machine
 
-Prerequisites: Git, Node.js 22 or newer, and the host CLI you want to use. The repository is private: authenticate GitHub CLI with an account that can read `mtmtian/pstack-codex`. Bun is needed only when rebuilding or testing the TypeScript helpers; the checked-in Node bundles run without installing dependencies.
+Prerequisites: Git, Node.js 22.18 or newer, and the host CLI you want to use. Cross-agent dispatch additionally needs Python 3.9+ on a POSIX host and each selected agent's authenticated CLI (`claude`, `codex`, `grok`, `agy` for Gemini, or `pi`). The repository is private: authenticate GitHub CLI with an account that can read `mtmtian/pstack-codex`. Bun is needed only when rebuilding or testing the TypeScript helpers; the checked-in Node bundles run without installing dependencies.
 
 ```sh
 mkdir -p "$HOME/plugins"
@@ -79,7 +79,7 @@ Use `pstack-codex@personal` instead for an existing personal-marketplace install
 
 ## Maintain and publish
 
-Edit this checkout, preserve the host adapters, and bump both plugin manifest versions together when publishing runtime or skill changes. Run `node --test scripts/config.test.mjs scripts/xagent-pi-guard.test.mjs` and `scripts/xagent-classify.test.sh` (plus `scripts/xagent-e2e.sh` when `bin/xagent*` changes), validate the manifests, and check any changed helper scripts before committing and pushing. When TypeScript helper sources change, install their pinned dependencies with `bun install --frozen-lockfile` in `skills/poteto-mode/scripts`, run `bun test orch watch-pr` and `bun run typecheck` there, then rebuild from the repository root with `python3 scripts/build-runtime.py`.
+Edit this checkout, preserve the host adapters, and bump both plugin manifest versions together when publishing runtime or skill changes. Run `node --test scripts/config.test.mjs scripts/xagent-pi-guard.test.mjs`, `scripts/xagent-classify.test.sh`, `python3 scripts/xagent.test.py` and `python3 scripts/pstack-host-e2e.test.py` (plus `scripts/xagent-e2e.sh` when `bin/xagent*` changes), validate the manifests, and check any changed helper scripts before committing and pushing. After changing cross-agent routing or host lifecycle rules, run `python3 scripts/pstack-host-e2e.py <new-run-dir>` with authorized vendor access; it checks both hosts against synthetic fixtures using their current configured external workers and reviewers, with final-source verification and separate reviewer worktrees. The live harnesses also need a `timeout` command supporting `-k`. When TypeScript helper sources change, install their pinned dependencies with `bun install --frozen-lockfile` in `skills/poteto-mode/scripts`, run `bun test orch watch-pr` and `bun run typecheck` there, then rebuild from the repository root with `python3 scripts/build-runtime.py`.
 
 Run `node scripts/check-upstream.mjs` for a read-only upstream comparison. Review changes before applying them; it never overwrites adapters or model preferences. Retain the MIT license and update `UPSTREAM.json` when accepting a new upstream version.
 
