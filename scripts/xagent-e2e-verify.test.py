@@ -2,6 +2,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import py_compile
 import subprocess
 import sys
 import tempfile
@@ -97,6 +98,32 @@ class VerifyFixtureTest(unittest.TestCase):
         self.assertEqual(receipt["stats_sha256"], expected_hash)
         self.assertEqual(verify.check_test_integrity(repo), [])
         self.assertEqual(verify.check_worker_receipt(repo), [])
+
+    def test_stale_bytecode_receipt_cannot_pass_fresh_independent_verification(self):
+        repo = self.make_repo("stale-bytecode")
+        source = repo / "stats.py"
+        for _ in range(5):
+            source.write_text(FIXED_STATS)
+            py_compile.compile(str(source), doraise=True, invalidation_mode=py_compile.PycInvalidationMode.TIMESTAMP)
+            before = source.stat()
+            source.write_text(FIXED_STATS.replace(" / ", " * "))
+            after = source.stat()
+            if int(before.st_mtime) == int(after.st_mtime):
+                break
+        self.assertEqual(int(before.st_mtime), int(after.st_mtime))
+        self.assertEqual(before.st_size, after.st_size)
+        self.assertEqual(self.run_unittest(repo).returncode, 0, "ordinary unittest reads stale bytecode")
+        self.assertEqual(verify.check_test_integrity(repo), [])
+        self.assertEqual(verify.check_worker_receipt(repo), [])
+
+        result = subprocess.run(
+            [sys.executable, "-B", str(Path(__file__).with_name("e2e-process.py")),
+             "--timeout", "2", "--cwd", str(repo), "--", sys.executable, "-m", "unittest", "-q"],
+            capture_output=True, text=True, timeout=5,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("AssertionError: 36 != 4", result.stderr)
 
     def test_import_only_does_not_create_worker_receipt(self):
         repo = self.make_repo("import-only")

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run a verification command with a deadline and process-group cleanup."""
+"""Verify current source with a fresh Python cache, deadline and process-group cleanup."""
 import argparse
 from contextlib import suppress
 import math
@@ -8,49 +8,55 @@ from pathlib import Path
 import signal
 import subprocess
 import sys
+import tempfile
 
 
 def run_check(command, cwd, timeout=30, env=None):
     if not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("verification timeout must be positive and finite")
-    try:
-        process = subprocess.Popen(
-            command, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, encoding="utf-8", errors="replace", start_new_session=True,
-        )
-    except OSError as error:
-        return subprocess.CompletedProcess(command, 127, "", f"{error}\n")
-
-    def signal_group(signum):
-        process.poll()
-        with suppress(ProcessLookupError):
-            os.killpg(process.pid, signum)
-
-    timed_out = False
-    try:
+    # -B prevents writes but still reads old .pyc files. Each verification needs
+    # an empty cache namespace so timestamp/size collisions cannot hide edits.
+    with tempfile.TemporaryDirectory(prefix="pstack-verify-pyc-") as cache:
+        check_env = dict(os.environ if env is None else env)
+        check_env.update(PYTHONPYCACHEPREFIX=cache, PYTHONDONTWRITEBYTECODE="1")
         try:
-            stdout, stderr = process.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            signal_group(signal.SIGTERM)
+            process = subprocess.Popen(
+                command, cwd=cwd, env=check_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, encoding="utf-8", errors="replace", start_new_session=True,
+            )
+        except OSError as error:
+            return subprocess.CompletedProcess(command, 127, "", f"{error}\n")
+
+        def signal_group(signum):
+            process.poll()
+            with suppress(ProcessLookupError):
+                os.killpg(process.pid, signum)
+
+        timed_out = False
+        try:
             try:
-                stdout, stderr = process.communicate(timeout=1)
+                stdout, stderr = process.communicate(timeout=timeout)
             except subprocess.TimeoutExpired:
-                signal_group(signal.SIGKILL)
+                timed_out = True
+                signal_group(signal.SIGTERM)
                 try:
                     stdout, stderr = process.communicate(timeout=1)
-                except subprocess.TimeoutExpired as error:
-                    stdout = (error.output or b"").decode("utf-8", errors="replace")
-                    stderr = (error.stderr or b"").decode("utf-8", errors="replace")
-                    stderr += "\nOutput pipes remained open after process-group termination.\n"
-                    process.stdout.close()
-                    process.stderr.close()
-    finally:
-        signal_group(signal.SIGKILL)
-        process.wait()
-    if timed_out:
-        stderr += f"\nVerification timed out after {timeout:g} seconds.\n"
-    return subprocess.CompletedProcess(command, 124 if timed_out else process.returncode, stdout, stderr)
+                except subprocess.TimeoutExpired:
+                    signal_group(signal.SIGKILL)
+                    try:
+                        stdout, stderr = process.communicate(timeout=1)
+                    except subprocess.TimeoutExpired as error:
+                        stdout = (error.output or b"").decode("utf-8", errors="replace")
+                        stderr = (error.stderr or b"").decode("utf-8", errors="replace")
+                        stderr += "\nOutput pipes remained open after process-group termination.\n"
+                        process.stdout.close()
+                        process.stderr.close()
+        finally:
+            signal_group(signal.SIGKILL)
+            process.wait()
+        if timed_out:
+            stderr += f"\nVerification timed out after {timeout:g} seconds.\n"
+        return subprocess.CompletedProcess(command, 124 if timed_out else process.returncode, stdout, stderr)
 
 
 def main():

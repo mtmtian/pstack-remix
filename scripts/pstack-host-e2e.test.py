@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import py_compile
 import runpy
 import subprocess
 import sys
@@ -256,6 +257,37 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
         self.assertFalse(validate_parent_verification(self.scope, self.parent))
         for name in ("parent-tests.stderr.log", "parent-contract.stderr.log"):
             self.assertIn("timed out", (self.scope / name).read_text())
+
+    def test_given_stale_passing_bytecode_then_parent_and_independent_verification_reject_bad_source(self):
+        source = self.parent / "stats.py"
+        for _ in range(5):
+            source.write_text(FIXED_STATS)
+            py_compile.compile(str(source), doraise=True, invalidation_mode=py_compile.PycInvalidationMode.TIMESTAMP)
+            before = source.stat()
+            source.write_text(FIXED_STATS.replace("value / len(xs)", "value * len(xs)"))
+            after = source.stat()
+            if int(before.st_mtime) == int(after.st_mtime):
+                break
+        self.assertEqual(int(before.st_mtime), int(after.st_mtime))
+        self.assertEqual(before.st_size, after.st_size)
+        command = [sys.executable, "-B", "-c", HARNESS["CONTRACT_PROBE"]]
+        stale = subprocess.run(command, cwd=self.parent, capture_output=True, text=True, timeout=5)
+        self.assertEqual(stale.returncode, 0, "-B still accepts the previously cached implementation")
+        verifier = write_parent_verifier(self.scope)
+
+        result = subprocess.run(
+            [sys.executable, "-B", str(verifier), str(self.parent)],
+            cwd=self.parent, capture_output=True, text=True, timeout=5,
+        )
+        independent = HARNESS["RUN_CHECK"](command, self.parent, timeout=2)
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        receipt = json.loads((self.scope / "parent-verification.json").read_text())
+        self.assertEqual(receipt["tests_exit_code"], 0)
+        self.assertNotEqual(receipt["contract_exit_code"], 0)
+        self.assertFalse(validate_parent_verification(self.scope, self.parent))
+        self.assertNotEqual(independent.returncode, 0)
+        self.assertIn("AssertionError", independent.stderr)
 
     def test_given_host_leaves_nonterminating_code_when_independently_verified_then_harness_finishes_failed(self):
         binaries = self.root / "bin"

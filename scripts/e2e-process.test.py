@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+import py_compile
 import runpy
 import signal
 import subprocess
@@ -15,6 +16,33 @@ run_check = runpy.run_path(str(ROOT / "scripts/e2e-process.py"))["run_check"]
 
 
 class BoundedVerificationTest(unittest.TestCase):
+    def test_given_stale_bytecode_when_source_changes_in_same_second_then_current_source_is_checked(self):
+        with tempfile.TemporaryDirectory(prefix="pstack-stale-bytecode-") as directory:
+            source = Path(directory) / "stats.py"
+            good = "def mean(xs):\n    return sum(xs) / len(xs)\n"
+            bad = good.replace(" / ", " * ")
+            for _ in range(5):
+                source.write_text(good)
+                py_compile.compile(str(source), doraise=True, invalidation_mode=py_compile.PycInvalidationMode.TIMESTAMP)
+                before = source.stat()
+                source.write_text(bad)
+                after = source.stat()
+                if int(before.st_mtime) == int(after.st_mtime):
+                    break
+            self.assertEqual(int(before.st_mtime), int(after.st_mtime))
+            self.assertEqual(before.st_size, after.st_size)
+            command = [sys.executable, "-B", "-c", "from stats import mean; assert mean([2,4,6]) == 4"]
+            stale = subprocess.run(command, cwd=directory, capture_output=True, text=True, timeout=5)
+            self.assertEqual(stale.returncode, 0, "-B alone still reads the old passing bytecode")
+            current = {}
+            exec(compile(source.read_text(), str(source), "exec"), current)
+            self.assertEqual(current["mean"]([2, 4, 6]), 36)
+
+            checked = run_check(command, directory, timeout=2)
+
+            self.assertNotEqual(checked.returncode, 0, checked.stdout)
+            self.assertIn("AssertionError", checked.stderr)
+
     def test_given_a_failing_check_when_run_then_output_and_exit_are_preserved(self):
         result = run_check(
             [sys.executable, "-c", "import sys; print('evidence'); print('failure', file=sys.stderr); sys.exit(7)"],
