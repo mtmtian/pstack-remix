@@ -182,6 +182,8 @@ pstack 本身不安装定时器；长任务流程也不保证会话退出或主�
 
 共享策略中的 `xagent:<agent>` 表示外部 Agent CLI，例如 `xagent:pi` 或 `xagent:codex`。它可以用于 worker 角色或评审组；它不是主控模型 ID，也不应作为原生子 Agent 的 `model` 参数传入。
 
+共享配置中的 `required_panel_members`（例如 `["xagent:grok", "xagent:gemini"]`）会把这些外部 Agent 追加到两个主控的每个评审组和默认评审组，单个评审组或主控覆盖都无法遗漏它们。评审组里的 `xagent:<agent>` 不会被替换成继承模型，也不会以 N-1 静默跳过；重试和失败报告规则见[运行时契约](./references/runtime.md)。
+
 | 配置值 | 本机执行入口 |
 |---|---|
 | `xagent:claude` | `claude` |

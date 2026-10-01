@@ -250,6 +250,77 @@ test("Given xagent entries in a shared patch, When both hosts run show, Then bot
   }
 });
 
+test("Given required panel members, When both hosts run show, Then every panel and the default panel include each member once", (t) => {
+  const dir = tempDir();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const configPath = path.join(dir, "config.json");
+  const inputPath = path.join(dir, "patch.json");
+  const config = validConfig();
+  config.panels["interrogate reviewers"] = ["xagent:gemini", "xagent:claude"];
+  config.hosts.codex.panels["interrogate reviewers"] = ["inherit-parent"];
+  config.hosts.claude.panels["arena runners"] = ["xagent:codex", "xagent:grok"];
+  writeJson(configPath, config);
+  writeJson(inputPath, { required_panel_members: ["xagent:grok", "xagent:gemini"] });
+
+  const update = runCli(["update", "--input", inputPath, "--config", configPath]);
+  assert.equal(update.status, 0, update.stderr);
+  const codex = JSON.parse(runCli(["show", "--host", "codex", "--config", configPath]).stdout).effective;
+  assert.deepEqual(codex.required_panel_members, ["xagent:grok", "xagent:gemini"]);
+  assert.deepEqual(codex.panels["interrogate reviewers"], ["inherit-parent", "xagent:grok", "xagent:gemini"]);
+  assert.deepEqual(codex.defaultPanel, ["inherit-parent", "inherit-parent", "xagent:grok", "xagent:gemini"]);
+  const claude = JSON.parse(runCli(["show", "--host", "claude", "--config", configPath]).stdout).effective;
+  assert.deepEqual(claude.panels["interrogate reviewers"], ["xagent:gemini", "xagent:claude", "xagent:grok"]);
+  assert.deepEqual(claude.panels["arena runners"], ["xagent:codex", "xagent:grok", "xagent:gemini"]);
+  assert.deepEqual(JSON.parse(readFileSync(configPath, "utf8")).hosts.codex.panels["interrogate reviewers"], ["inherit-parent"]);
+});
+
+test("Given required panel members, When a null patch removes them, Then panels return to their configured entries", (t) => {
+  const dir = tempDir();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const configPath = path.join(dir, "config.json");
+  const inputPath = path.join(dir, "patch.json");
+  const config = validConfig();
+  config.panels.review = ["auto"];
+  config.required_panel_members = ["xagent:grok"];
+  writeJson(configPath, config);
+  writeJson(inputPath, { required_panel_members: null });
+
+  const update = runCli(["update", "--input", inputPath, "--config", configPath]);
+  assert.equal(update.status, 0, update.stderr);
+  const effective = JSON.parse(runCli(["show", "--host", "codex", "--config", configPath]).stdout).effective;
+  assert.deepEqual(effective.required_panel_members, []);
+  assert.deepEqual(effective.panels.review, ["auto"]);
+  assert.deepEqual(effective.defaultPanel, ["inherit-parent", "inherit-parent"]);
+  assert.equal(Object.hasOwn(JSON.parse(readFileSync(configPath, "utf8")), "required_panel_members"), false);
+});
+
+test("Given malformed or host-scoped required panel members, When update or show runs, Then they are rejected without writing", (t) => {
+  const dir = tempDir();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const configPath = path.join(dir, "config.json");
+  const inputPath = path.join(dir, "patch.json");
+  writeJson(configPath, validConfig());
+  const original = readFileSync(configPath, "utf8");
+
+  for (const value of [[], "xagent:grok", ["inherit-parent"], ["xagent:grok", "xagent:grok"], ["xagent:Grok Model"]]) {
+    writeJson(inputPath, { required_panel_members: value });
+    const result = runCli(["update", "--input", inputPath, "--config", configPath]);
+    assert.notEqual(result.status, 0, JSON.stringify(value));
+    assert.equal(readFileSync(configPath, "utf8"), original);
+  }
+  writeJson(inputPath, { required_panel_members: ["xagent:grok"] });
+  const hostUpdate = runCli(["update", "--host", "codex", "--input", inputPath, "--config", configPath]);
+  assert.notEqual(hostUpdate.status, 0);
+  assert.equal(readFileSync(configPath, "utf8"), original);
+
+  const handWritten = validConfig();
+  handWritten.hosts.claude.required_panel_members = ["xagent:grok"];
+  writeJson(configPath, handWritten);
+  const shown = runCli(["show", "--host", "claude", "--config", configPath]);
+  assert.notEqual(shown.status, 0);
+  assert.match(shown.stderr, /required_panel_members/);
+});
+
 test("Given a malformed xagent entry in common policy, When update runs, Then it is rejected without writing", (t) => {
   const dir = tempDir();
   t.after(() => rmSync(dir, { recursive: true, force: true }));
