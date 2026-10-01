@@ -8,6 +8,8 @@ import { fileURLToPath } from "node:url";
 
 const HOSTS = ["codex", "claude"];
 const COMMON_MODEL_VALUES = new Set(["inherit-parent", "auto"]);
+// External agents run through the xagent CLI identically from every host, so they may be shared policy.
+const XAGENT_VALUE = /^xagent:[a-z][a-z0-9-]*$/;
 const REASONING_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
 const DEFAULT_PANEL = ["inherit-parent", "inherit-parent"];
 
@@ -38,13 +40,17 @@ function parseJson(text, label) {
   }
 }
 
+function isCommonModelValue(value) {
+  return COMMON_MODEL_VALUES.has(value) || XAGENT_VALUE.test(value);
+}
+
 function validateRoles(roles, scope, label) {
   requireObject(roles, `${label}.roles`);
   for (const [name, value] of Object.entries(roles)) {
     if (!name.trim()) throw new Error(`${label}.roles keys must not be empty`);
     if (typeof value !== "string" || !value.trim()) throw new Error(`${label}.roles.${name} must be a nonempty string`);
-    if (scope === "common" && !COMMON_MODEL_VALUES.has(value)) {
-      throw new Error(`${label}.roles.${name} must be inherit-parent or auto in common policy`);
+    if (scope === "common" && !isCommonModelValue(value)) {
+      throw new Error(`${label}.roles.${name} must be inherit-parent, auto or xagent:<agent> in common policy`);
     }
   }
 }
@@ -56,8 +62,8 @@ function validatePanels(panels, scope, label) {
     if (!Array.isArray(values) || values.length === 0) throw new Error(`${label}.panels.${name} must be a nonempty array`);
     for (const value of values) {
       if (typeof value !== "string" || !value.trim()) throw new Error(`${label}.panels.${name} entries must be nonempty strings`);
-      if (scope === "common" && !COMMON_MODEL_VALUES.has(value)) {
-        throw new Error(`${label}.panels.${name} entries must be inherit-parent or auto in common policy`);
+      if (scope === "common" && !isCommonModelValue(value)) {
+        throw new Error(`${label}.panels.${name} entries must be inherit-parent, auto or xagent:<agent> in common policy`);
       }
     }
   }
@@ -100,8 +106,8 @@ function validatePatch(patch, scope, label) {
       if (!name.trim()) throw new Error(`${label}.roles keys must not be empty`);
       if (value === null) continue;
       if (typeof value !== "string" || !value.trim()) throw new Error(`${label}.roles.${name} must be a nonempty string or null`);
-      if (scope === "common" && !COMMON_MODEL_VALUES.has(value)) {
-        throw new Error(`${label}.roles.${name} must be inherit-parent or auto in common policy`);
+      if (scope === "common" && !isCommonModelValue(value)) {
+        throw new Error(`${label}.roles.${name} must be inherit-parent, auto or xagent:<agent> in common policy`);
       }
     }
   }
@@ -113,8 +119,8 @@ function validatePatch(patch, scope, label) {
       if (!Array.isArray(values) || values.length === 0) throw new Error(`${label}.panels.${name} must be a nonempty array or null`);
       for (const value of values) {
         if (typeof value !== "string" || !value.trim()) throw new Error(`${label}.panels.${name} entries must be nonempty strings`);
-        if (scope === "common" && !COMMON_MODEL_VALUES.has(value)) {
-          throw new Error(`${label}.panels.${name} entries must be inherit-parent or auto in common policy`);
+        if (scope === "common" && !isCommonModelValue(value)) {
+          throw new Error(`${label}.panels.${name} entries must be inherit-parent, auto or xagent:<agent> in common policy`);
         }
       }
     }

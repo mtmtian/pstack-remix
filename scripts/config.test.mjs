@@ -230,6 +230,42 @@ test("Given a concrete model in common policy, When update runs, Then it rejects
   assert.equal(readFileSync(configPath, "utf8"), original);
 });
 
+test("Given xagent entries in a shared patch, When both hosts run show, Then both resolve the same external agent policy", (t) => {
+  const dir = tempDir();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const configPath = path.join(dir, "config.json");
+  const inputPath = path.join(dir, "patch.json");
+  writeJson(configPath, validConfig());
+  writeJson(inputPath, {
+    roles: { "swarm workers": "xagent:pi" },
+    panels: { "arena runners": ["xagent:codex", "xagent:grok", "inherit-parent"] },
+  });
+
+  const update = runCli(["update", "--input", inputPath, "--config", configPath]);
+  assert.equal(update.status, 0, update.stderr);
+  for (const host of ["codex", "claude"]) {
+    const effective = JSON.parse(runCli(["show", "--host", host, "--config", configPath]).stdout).effective;
+    assert.equal(effective.roles["swarm workers"], "xagent:pi");
+    assert.deepEqual(effective.panels["arena runners"], ["xagent:codex", "xagent:grok", "inherit-parent"]);
+  }
+});
+
+test("Given a malformed xagent entry in common policy, When update runs, Then it is rejected without writing", (t) => {
+  const dir = tempDir();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const configPath = path.join(dir, "config.json");
+  const inputPath = path.join(dir, "patch.json");
+  writeJson(configPath, validConfig());
+  const original = readFileSync(configPath, "utf8");
+
+  for (const value of ["xagent:", "xagent:Grok Model", "xagent:grok;rm"]) {
+    writeJson(inputPath, { panels: { "arena runners": [value] } });
+    const result = runCli(["update", "--input", inputPath, "--config", configPath]);
+    assert.notEqual(result.status, 0, value);
+    assert.equal(readFileSync(configPath, "utf8"), original);
+  }
+});
+
 test("Given a valid config, When update omits --input, Then the CLI rejects the request without writing", (t) => {
   const dir = tempDir();
   t.after(() => rmSync(dir, { recursive: true, force: true }));

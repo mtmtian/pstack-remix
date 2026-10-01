@@ -1,0 +1,247 @@
+#!/usr/bin/env python3
+"""Run one local agent, collect its verdict, and leave a bounded execution receipt."""
+import argparse
+import hashlib
+import json
+import math
+import os
+from pathlib import Path
+import re
+import signal
+import stat
+import subprocess
+import sys
+import time
+
+ROOT = Path(__file__).resolve().parent
+AGENTS = ("claude", "codex", "grok", "gemini", "pi")
+VERDICT = re.compile(r"(?:STATUS: (PASS|ISSUES|BLOCKED)|\*\*STATUS: (PASS|ISSUES|BLOCKED)\*\*)")
+
+
+def classify(code, timed_out, text):
+    if code != 0 or timed_out:
+        return "DROPOUT"
+    fence = None
+    last = ""
+    last_in_fence = False
+    for line in text.splitlines():
+        indented = line.expandtabs(4).startswith("    ")
+        line = line.strip()
+        if not line:
+            continue
+        marker = re.match(r"^(`{3,}|~{3,})(.*)$", line) if not indented else None
+        if marker:
+            ticks, suffix = marker.groups()
+            if fence is None:
+                fence = ticks
+            elif ticks[0] == fence[0] and len(ticks) >= len(fence) and not suffix.strip():
+                fence = None
+            last, last_in_fence = line, True
+        else:
+            last, last_in_fence = line, fence is not None or indented
+    match = VERDICT.fullmatch(last) if not last_in_fence else None
+    return next((value for value in match.groups() if value), "DROPOUT") if match else "DROPOUT"
+
+
+def git(workdir, *args):
+    return subprocess.run(["git", "-C", str(workdir), *args], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE).stdout
+
+
+def snapshot(workdir, out):
+    git(workdir, "rev-parse", "--show-toplevel")
+    scope = ["."]
+    if out.is_relative_to(workdir):
+        scope.append(":(exclude,literal)" + str(out.relative_to(workdir)))
+    digest = hashlib.sha256()
+    # An unborn branch has no HEAD yet, but is still a valid checkout.
+    head = subprocess.run(["git", "-C", str(workdir), "rev-parse", "--verify", "HEAD"], capture_output=True)
+    digest.update(head.stdout if head.returncode == 0 else b"unborn\n")
+    digest.update(git(workdir, "ls-files", "--stage", "-z", "--", *scope))
+    digest.update(git(workdir, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--", *scope))
+    files = git(workdir, "ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", *scope)
+    for name in sorted(set(files.split(b"\0")) - {b""}):
+        digest.update(name + b"\0")
+        target = workdir / os.fsdecode(name)
+        try:
+            info = target.lstat()
+        except FileNotFoundError:
+            digest.update(b"missing\0")
+            continue
+        digest.update(str(info.st_mode).encode() + b"\0")
+        if stat.S_ISLNK(info.st_mode):
+            digest.update(os.fsencode(os.readlink(target)))
+        elif stat.S_ISREG(info.st_mode):
+            with target.open("rb") as contents:
+                for chunk in iter(lambda: contents.read(1024 * 1024), b""):
+                    digest.update(chunk)
+        elif stat.S_ISDIR(info.st_mode):
+            raise ValueError("read-only snapshot requires submodules to be reviewed separately")
+        else:
+            raise ValueError("read-only snapshot contains an unsupported file type")
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def command(agent, mode, workdir, out, prompt, allowed):
+    if agent == "claude":
+        args = ["claude", "-p", "--output-format", "json", "--permission-mode", "plan" if mode == "ro" else "acceptEdits"]
+        if mode == "rw":
+            args += ["--allowedTools", *[f"Bash({prefix}:*)" for prefix in allowed]]
+        return args, out / "claude.json", "result"
+    if agent == "codex":
+        return ["codex", "exec", "--skip-git-repo-check", "--ephemeral", "-s", "read-only" if mode == "ro" else "workspace-write", "-C", str(workdir), "-c", 'shell_environment_policy.set.XAGENT_DEPTH="1"', "-o", str(out / "result.md"), "-"], out / "agent.log", None
+    if agent == "grok":
+        return ["grok", "--cwd", str(workdir), "--prompt-file", str(out / "prompt.md"), "--permission-mode", "auto", "--sandbox", "workspace", "--output-format", "json"], out / "grok.json", "text"
+    if agent == "gemini":
+        return ["agy", "-p", prompt, "--mode", "plan" if mode == "ro" else "accept-edits", "--model", os.environ.get("XAGENT_GEMINI_MODEL", "gemini-3.1-pro-high")], out / "result.md", None
+    args = ["pi", "-p", "--no-session", "--tools", "read,grep,find,ls" if mode == "ro" else "read,grep,find,ls,edit,write,bash"]
+    if mode == "rw":
+        args += ["-e", str(ROOT / "xagent-pi-guard.ts")]
+    return [*args, "--", prompt], out / "result.md", None
+
+
+def kill_group(pid, sig):
+    try:
+        os.killpg(pid, sig)
+    except ProcessLookupError:
+        pass
+
+
+def run_process(args, workdir, out, stdout_path, timeout, env):
+    cancelled = 0
+    def cancel(signum, _frame):
+        nonlocal cancelled
+        cancelled = signum
+    previous = {sig: signal.signal(sig, cancel) for sig in (signal.SIGTERM, signal.SIGINT)}
+    process = None
+    try:
+        with (out / "prompt.md").open("rb") as stdin, stdout_path.open("wb") as stdout, (out / "agent.log").open("ab") as log:
+            process = subprocess.Popen(args, cwd=workdir, env=env, stdin=stdin, stdout=stdout, stderr=stdout if stdout_path == out / "agent.log" else log, start_new_session=True)
+            deadline = time.monotonic() + timeout
+            while process.poll() is None and not cancelled:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                try:
+                    process.wait(timeout=min(remaining, 0.1))
+                except subprocess.TimeoutExpired:
+                    pass
+            timed_out = not cancelled and process.poll() is None
+            if cancelled or timed_out:
+                kill_group(process.pid, signal.SIGTERM)
+                try:
+                    process.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    pass
+            return (128 + cancelled if cancelled else 124 if timed_out else process.returncode), timed_out, bool(cancelled)
+    finally:
+        if process is not None:
+            # Reap the leader and stop any background tools still in its process group.
+            kill_group(process.pid, signal.SIGKILL)
+            process.wait()
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+
+
+def write_meta(out, meta):
+    temporary = out / "meta.json.tmp"
+    temporary.write_text(json.dumps(meta, indent=2) + "\n")
+    temporary.replace(out / "meta.json")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("agent", choices=AGENTS)
+    parser.add_argument("mode", choices=("ro", "rw"))
+    parser.add_argument("workdir", type=Path)
+    parser.add_argument("prompt_file", type=Path)
+    parser.add_argument("out_dir", type=Path)
+    parser.add_argument("timeout", nargs="?", type=float, default=900)
+    options = parser.parse_args()
+    if os.environ.get("XAGENT_DEPTH", "0") != "0":
+        parser.error("refusing nested dispatch from inside an xagent worker")
+    if not math.isfinite(options.timeout) or options.timeout <= 0:
+        parser.error("timeout must be a positive number of seconds")
+    workdir, out = options.workdir.resolve(), options.out_dir.resolve()
+    if not workdir.is_dir() or not options.prompt_file.is_file():
+        parser.error("workdir must be a directory and prompt_file must exist")
+    if workdir == out:
+        parser.error("out_dir must be separate from workdir")
+    brief = options.prompt_file.read_text()
+    out.mkdir(parents=True, exist_ok=True)
+    if any(out.iterdir()):
+        parser.error("out_dir must be empty; use a new directory for each retry")
+    allowed = [line.strip() for line in (ROOT / "xagent-allowed-commands").read_text().splitlines() if line.strip() and not line.lstrip().startswith("#")]
+    notes = ["You are a delegated worker: do the task yourself and do not delegate it to other agents."]
+    if options.mode == "ro":
+        notes.append("This is a read-only task. Do not edit files, stage changes, or make commits.")
+        notes.append("In a read-only review, every defect you report means STATUS: ISSUES, even when you finished the review successfully. A suggested fix is not an applied fix. PASS means you found no remaining defects.")
+    if options.agent == "gemini":
+        notes.append("Do not run shell commands; read the files instead. Any shell command ends your turn with no reply." if options.mode == "ro" else "The only shell commands you may run are: " + ", ".join(allowed) + ". Any other shell command ends your turn with no reply.")
+    notes += ["Verdict: ISSUES when defects remain or the task (including required checks) is incomplete; BLOCKED when you could not do it; otherwise PASS. Name any unverified optional checks.", "End your reply with exactly one final line: STATUS: PASS, STATUS: ISSUES, or STATUS: BLOCKED."]
+    prompt = brief + "\n\n" + "\n".join(notes) + "\n"
+    (out / "prompt.md").write_text(prompt)
+    (out / "result.md").write_text("")
+    (out / "agent.log").write_text("")
+    meta = dict(
+        agent=options.agent, mode=options.mode, workdir=str(workdir), exit=None,
+        timed_out=False, cancelled=False, seconds=0, status="DROPOUT",
+        changed_workdir=None, snapshot_before=None, snapshot_after=None,
+        completed=False, reason="incomplete",
+    )
+    write_meta(out, meta)
+    started = time.monotonic()
+    try:
+        before = snapshot(workdir, out) if options.mode == "ro" else None
+    except (OSError, subprocess.CalledProcessError, ValueError) as error:
+        meta.update(status="BLOCKED", reason="snapshot_unavailable", completed=True)
+        (out / "agent.log").write_text(f"Cannot verify a read-only checkout: {error}\n")
+        write_meta(out, meta)
+        print(f"{options.agent} BLOCKED 0s -> {out}")
+        return 0
+    if options.mode == "ro":
+        meta["snapshot_before"] = before
+        write_meta(out, meta)
+    env = {**os.environ, "XAGENT_DEPTH": "1", "XAGENT_ALLOWED_FILE": str(ROOT / "xagent-allowed-commands"), "XAGENT_GUARD_LOG": str(out / "guard.log")}
+    if options.mode == "ro":
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env["PATH"] = os.pathsep.join([env.get("PATH", ""), str(Path.home() / ".local/bin"), str(Path.home() / ".npm-global/bin"), str(Path.home() / ".grok/bin")])
+    args, stdout_path, json_field = command(options.agent, options.mode, workdir, out, prompt, allowed)
+    try:
+        code, timed_out, cancelled = run_process(args, workdir, out, stdout_path, options.timeout, env)
+        meta.update(exit=code, timed_out=timed_out, cancelled=cancelled)
+        if json_field:
+            payload = json.loads(stdout_path.read_text())
+            if not isinstance(payload, dict):
+                raise ValueError("agent JSON response must be an object")
+            reply = payload.get(json_field)
+            if not isinstance(reply, str):
+                raise ValueError("agent JSON reply field must be a string")
+            (out / "result.md").write_text(reply)
+        status = classify(code, timed_out, (out / "result.md").read_text())
+        reason = "cancelled" if cancelled else "timeout" if timed_out else "process_failed" if code else "invalid_verdict" if status == "DROPOUT" else None
+        meta.update(status=status, reason=reason)
+    except (OSError, ValueError, KeyError) as error:
+        meta.update(status="DROPOUT", reason="timeout" if meta["timed_out"] else "cancelled" if meta["cancelled"] else "execution_error")
+        with (out / "agent.log").open("a") as log:
+            log.write(f"\nxagent: {error}\n")
+    if options.mode == "ro":
+        try:
+            after = snapshot(workdir, out)
+            meta.update(snapshot_after=after, changed_workdir=after != before)
+            if meta["changed_workdir"] and meta["status"] != "DROPOUT":
+                meta.update(status="ISSUES", reason="read_only_violation")
+        except (OSError, subprocess.CalledProcessError, ValueError) as error:
+            meta.update(changed_workdir=None)
+            if meta["status"] != "DROPOUT":
+                meta.update(status="BLOCKED", reason="snapshot_unavailable")
+            with (out / "agent.log").open("a") as log:
+                log.write(f"\nCannot verify the final checkout: {error}\n")
+    meta.update(seconds=round(time.monotonic() - started, 2), completed=True)
+    write_meta(out, meta)
+    print(f"{options.agent} {meta['status']} {meta['seconds']}s -> {out}")
+    return 3 if meta["status"] == "DROPOUT" else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

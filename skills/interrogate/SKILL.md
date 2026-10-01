@@ -46,7 +46,7 @@ For each reviewer:
 - `model`: the configured `interrogate reviewers` entry, or the table default with no configured line
 - Read-only scope in the agent brief
 
-If an explicitly configured model is unavailable, use an actually supported alternative or inherit the parent and disclose the substitution. If a cross-model comparison was an explicit requirement, report that gap rather than claiming it passed. Report stale configuration; change it only within an authorized configuration task. Do not block the review on the slug issue. If the configured value is `inherit-parent` or `auto`, omit `model` instead. Never treat those aliases as broken slugs or enter this fallback for them.
+If an explicitly configured model is unavailable, use an actually supported alternative or inherit the parent and disclose the substitution. If a cross-model comparison was an explicit requirement, report that gap rather than claiming it passed. Report stale configuration; change it only within an authorized configuration task. Do not block the review on the slug issue. If the configured value is `inherit-parent` or `auto`, omit `model` instead. Never treat those aliases as broken slugs or enter this fallback for them. An `xagent:<agent>` value is dispatched through xagent as the shared runtime describes, never passed as `model`.
 
 Read `references/reviewer-prompt.md` and fill in the template with:
 1. The stated intent
