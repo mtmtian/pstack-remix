@@ -13,7 +13,7 @@ var __exportCjs = (target, getters, setters) => {
 };
 var __require = /* @__PURE__ */ createRequire(import.meta.url);
 
-// ../../../../plugins/pstack-codex/skills/poteto-mode/scripts/node_modules/commander/lib/error.js
+// node_modules/commander/lib/error.js
 var require_error = __commonJS(function(exports) {
   class CommanderError extends Error {
     constructor(exitCode, code, message) {
@@ -37,7 +37,7 @@ var require_error = __commonJS(function(exports) {
   exports.InvalidArgumentError = InvalidArgumentError;
 });
 
-// ../../../../plugins/pstack-codex/skills/poteto-mode/scripts/node_modules/commander/lib/argument.js
+// node_modules/commander/lib/argument.js
 var require_argument = __commonJS(function(exports) {
   var { InvalidArgumentError } = require_error();
 
@@ -116,7 +116,7 @@ var require_argument = __commonJS(function(exports) {
   exports.humanReadableArgName = humanReadableArgName;
 });
 
-// ../../../../plugins/pstack-codex/skills/poteto-mode/scripts/node_modules/commander/lib/help.js
+// node_modules/commander/lib/help.js
 var require_help = __commonJS(function(exports) {
   var { humanReadableArgName } = require_argument();
 
@@ -473,7 +473,7 @@ ${itemIndentStr}`);
   exports.stripColor = stripColor;
 });
 
-// ../../../../plugins/pstack-codex/skills/poteto-mode/scripts/node_modules/commander/lib/option.js
+// node_modules/commander/lib/option.js
 var require_option = __commonJS(function(exports) {
   var { InvalidArgumentError } = require_error();
 
@@ -656,7 +656,7 @@ var require_option = __commonJS(function(exports) {
   exports.DualOptions = DualOptions;
 });
 
-// ../../../../plugins/pstack-codex/skills/poteto-mode/scripts/node_modules/commander/lib/suggestSimilar.js
+// node_modules/commander/lib/suggestSimilar.js
 var require_suggestSimilar = __commonJS(function(exports) {
   var maxDistance = 3;
   function editDistance(a, b) {
@@ -729,7 +729,7 @@ var require_suggestSimilar = __commonJS(function(exports) {
   exports.suggestSimilar = suggestSimilar;
 });
 
-// ../../../../plugins/pstack-codex/skills/poteto-mode/scripts/node_modules/commander/lib/command.js
+// node_modules/commander/lib/command.js
 var require_command = __commonJS(function(exports) {
   var EventEmitter = __require("node:events").EventEmitter;
   var childProcess = __require("node:child_process");
@@ -2086,10 +2086,10 @@ Expecting one of '${allowedValues.join("', '")}'`);
   exports.useColor = useColor;
 });
 
-// ../../../../../../private/var/folders/my/mrwplh2d04lfj4ypd6tv70dc0000gn/T/pstack-runtime-build-lm05h93i/source/watch-pr/cli.ts
+// watch-pr/cli.ts
 import { setTimeout as delay } from "node:timers/promises";
 
-// ../../../../plugins/pstack-codex/skills/poteto-mode/scripts/node_modules/commander/index.js
+// node_modules/commander/index.js
 var exports_commander = {};
 __exportCjs(exports_commander, {
   program: () => $program,
@@ -2133,7 +2133,7 @@ var $CommanderError = CommanderError;
 var $InvalidArgumentError = InvalidArgumentError;
 var $InvalidOptionArgumentError = InvalidArgumentError;
 
-// ../../../../plugins/pstack-codex/skills/poteto-mode/scripts/node_modules/commander/esm.mjs
+// node_modules/commander/esm.mjs
 var {
   program,
   createCommand,
@@ -2148,10 +2148,10 @@ var {
   Help: Help2
 } = exports_commander;
 
-// ../../../../../../private/var/folders/my/mrwplh2d04lfj4ypd6tv70dc0000gn/T/pstack-runtime-build-lm05h93i/source/watch-pr/github.ts
+// watch-pr/github.ts
 import { spawn } from "node:child_process";
 
-// ../../../../../../private/var/folders/my/mrwplh2d04lfj4ypd6tv70dc0000gn/T/pstack-runtime-build-lm05h93i/source/watch-pr/types.ts
+// watch-pr/types.ts
 function nonEmpty(items) {
   return items.length === 0 ? null : [items[0], ...items.slice(1)];
 }
@@ -2161,7 +2161,7 @@ function parsePrNumber(value, label = "PR number") {
   return value;
 }
 
-// ../../../../../../private/var/folders/my/mrwplh2d04lfj4ypd6tv70dc0000gn/T/pstack-runtime-build-lm05h93i/source/watch-pr/github.ts
+// watch-pr/github.ts
 var REVIEW_THREADS_QUERY = `
 query ReviewThreads($owner: String!, $repo: String!, $pr: Int!) {
   repository(owner: $owner, name: $repo) {
@@ -2763,7 +2763,7 @@ async function discoverStack(reader, context) {
   return orderStack(context, await reader.openPullRequests(context));
 }
 
-// ../../../../../../private/var/folders/my/mrwplh2d04lfj4ypd6tv70dc0000gn/T/pstack-runtime-build-lm05h93i/source/watch-pr/policy.ts
+// watch-pr/policy.ts
 function assessGitHubMerge(args) {
   if (args.mergeStateStatus === "BLOCKED") {
     if (args.headRollupState === "ERROR" || args.headRollupState === "FAILURE")
@@ -3318,7 +3318,7 @@ async function runQueued(args) {
   });
 }
 
-// ../../../../../../private/var/folders/my/mrwplh2d04lfj4ypd6tv70dc0000gn/T/pstack-runtime-build-lm05h93i/source/watch-pr/render.ts
+// watch-pr/render.ts
 var renderJson = (verdict) => `${JSON.stringify(verdict)}
 `;
 function ciCell(row) {
@@ -3483,7 +3483,7 @@ note=draft allowed (--allow-draft); leave draft — do not mark ready` : ""}` : 
   }
 }
 
-// ../../../../../../private/var/folders/my/mrwplh2d04lfj4ypd6tv70dc0000gn/T/pstack-runtime-build-lm05h93i/source/watch-pr/cli.ts
+// watch-pr/cli.ts
 function positiveNumber(value) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0)
@@ -3595,5 +3595,5 @@ async function main(argv, runtime = realRuntime()) {
   return verdict.exitCode;
 }
 
-// ../../../../../../private/var/folders/my/mrwplh2d04lfj4ypd6tv70dc0000gn/T/pstack-runtime-build-lm05h93i/source/watch-pr-entry.ts
+// watch-pr-entry.ts
 process.exitCode = await main(process.argv.slice(2));
