@@ -192,6 +192,8 @@ pstack 本身不安装定时器；长任务流程也不保证会话退出或主�
 | `xagent:gemini` | `agy` |
 | `xagent:pi` | `pi` |
 
+xagent 不传模型参数，各 Agent 使用自身 CLI 配置的默认模型和推理强度；要换模型，请改对应 CLI 的配置。
+
 统一调用形式：
 
 ```text
