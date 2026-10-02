@@ -14,6 +14,7 @@ This directory is the maintained source for verifying the user-facing behavior o
 ## Driving conventions
 
 - Start every recipe from the baseline state unless its preconditions say otherwise.
+- Run a feature's replay before driving it by hand. A replay is a script, not a screen recording. It lives under `replay/` in the skill root, is named after its feature file, and exits `0` when every check matched. When its last stdout line is `stale: <reason> at <step>`, keep that output as evidence and drive the feature by hand to learn whether the app changed or the replay is out of date.
 - Prefer ARIA roles and accessible names over CSS selectors or DOM position.
 - Treat every command as literal. Keep quoted names and flags unchanged.
 - Run browser actions through `control-notes browser`.
@@ -27,6 +28,7 @@ This directory is the maintained source for verifying the user-facing behavior o
 - CLI proof includes the command, stdout, stderr, and exit code.
 - Mutation proof includes a read-only second view of the stored value.
 - Record the feature ID and entry point used with every artifact.
+- Write proof artifacts under `.verify/notes/$RUN_ID/`, which the repository git-ignores. Cleanup keeps them.
 - Report an unreachable path with the attempted command and the unmet precondition.
 - Do not report a skipped entry point as verified through a different path.
 
@@ -36,7 +38,7 @@ Each feature file starts with an H1 title and one paragraph describing the user-
 
 1. `Sub-features` lists short IDs with one line for each behavior.
 2. `How to get to it (user POV)` lists every user entry point.
-3. `Driving it with <harness>` starts with `Preconditions:` and uses labeled bullets that pair each user action with an exact command and observable result.
+3. `Driving it with <harness>` starts with `Preconditions:` and uses labeled bullets that pair each user action with an exact command and observable result. When the feature has a replay, a final `**Replay.**` bullet names the script, its parameters if any, the entry points it covers, and those it leaves to a manual drive.
 4. `Gotchas` lists traps that can waste or invalidate a verification run.
 
 Keep implementation details out of the map. Name only user paths, stable handles, required state, commands, and observable proof.

@@ -29,11 +29,12 @@ Preconditions:
 - **Confirm persistence.** Return to the note list and reopen the note. Run `control-notes browser click --role link --name "All notes"` and `control-notes browser click --role link --name "Release checklist"`. The editor shows both saved values.
 - **Cancel draft.** Open a new note, enter `Discard me`, and choose `Cancel`. Run `control-notes browser click --role button --name "New note"`, `control-notes browser fill --role textbox --name "Title" --value "Discard me"`, and `control-notes browser click --role button --name "Cancel"`. The note list returns and has no `Discard me` link.
 - **CLI entry.** Create a second note. Run `control-notes cli -- notes create --title "CLI note" --body "Created from terminal" --format json`. Exit code `0` and stdout contain the new note ID and title.
-- **Proof.** Reopen both saved notes from `All notes`. Run `control-notes browser snapshot --aria --path artifacts/create-note/list.aria.txt` and `control-notes browser screenshot --path artifacts/create-note/list.png`. The artifacts show `Release checklist` and `CLI note`.
+- **Proof.** Reopen both saved notes from `All notes`. Run `control-notes browser snapshot --aria --path .verify/notes/$RUN_ID/create-note/list.aria.txt` and `control-notes browser screenshot --path .verify/notes/$RUN_ID/create-note/list.png`. The artifacts show `Release checklist` and `CLI note`.
+- **Replay.** Re-prove creation without re-deriving the steps. Run `replay/create-note.sh --title "Release checklist $RUN_ID" --cli-title "CLI note $RUN_ID"`. It repeats Open editor, Enter content, Save note, Confirm persistence, and CLI entry, checks the rendered heading, both reopened values, and the CLI JSON title, and exits `0` only when all of them match. Drive the `n` shortcut and Cancel draft by hand; the replay does not cover them.
 
 ## Gotchas
 
 - Pressing `n` while a textbox has focus types the character instead of opening a new editor.
 - Titles are trimmed on save. Assert the rendered title, not the draft input value.
 - A save status alone is insufficient proof. Reopen the note from the list.
-- Remove `Release checklist` and `CLI note` during fixture cleanup, but retain their proof artifacts.
+- Remove `Release checklist` and `CLI note` during fixture cleanup, but retain their proof artifacts. A replay creates titles ending in `$RUN_ID`; remove those too.
