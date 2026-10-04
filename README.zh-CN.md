@@ -4,9 +4,9 @@
 
 一份源码、一份配置，分别接入 Codex 和 Claude Code 的原生能力。你描述任务和验收条件，pstack 选择相应流程，组织调查、设计、实现、评审与验证。
 
-这是一个独立维护的本地适配版本，基于 Lauren Tan 以 MIT 协议发布的上游 pstack 0.15.5，跟踪提交 [`12d587df`](https://github.com/cursor/plugins/tree/12d587dfb20741cafc376c42c696c5f6e2a64487/pstack)。本项目不由 Lauren Tan、Cursor、OpenAI 或 Anthropic 维护。
+这是一个独立维护的本地适配版本，基于 Lauren Tan 以 MIT 协议发布的上游 pstack 0.15.9，跟踪提交 [`e43c7ee2`](https://github.com/cursor/plugins/tree/e43c7ee26e0038c6c1fa8380dd34ce86ff94cb2a/pstack)。本项目不由 Lauren Tan、Cursor、OpenAI 或 Anthropic 维护。
 
-两种主控共用 **48 个技能、23 个流程模板**、工程原则、Agent 提示词和 Node 工具。插件清单和少量运行时适配负责处理主控差异。仓库名为 `pstack-remix`；为兼容已有安装，Codex 插件名仍为 `pstack-codex`，Claude Code 插件名为 `pstack`。
+两种主控共用 **51 个技能、23 个流程模板**、工程原则、Agent 提示词和 Node 工具。插件清单和少量运行时适配负责处理主控差异。仓库名为 `pstack-remix`；为兼容已有安装，Codex 插件名仍为 `pstack-codex`，Claude Code 插件名为 `pstack`。
 
 ## 安装与快速开始
 
@@ -143,7 +143,7 @@ pstack 本身不安装定时器；长任务流程也不保证会话退出或主�
 
 ## 技能一览
 
-`poteto-mode` 会在合适的步骤调用这些技能，也可以直接使用。48 个技能中，25 个是下面的工作流技能，另有 23 个工程原则技能。
+`poteto-mode` 会在合适的步骤调用这些技能，也可以直接使用。51 个技能中，27 个是下面的工作流技能，另有 24 个工程原则技能。
 
 <details>
 <summary>查看全部工作流技能</summary>
@@ -164,8 +164,10 @@ pstack 本身不安装定时器；长任务流程也不保证会话退出或主�
 | [`make-bot-ui`](./skills/make-bot-ui/SKILL.md) | 按需配置 webhook UI 工作流；凭据、发送方校验和网络暴露取决于主控，默认不开启。 |
 | [`setup-pstack`](./skills/setup-pstack/SKILL.md) | 查看和修改角色、模型、评审组及推理偏好。 |
 | [`reflect`](./skills/reflect/SKILL.md) | 在任务结束后，把可复用经验整理为技能改进。 |
+| [`correct`](./skills/correct/SKILL.md) | 反复纠正 Agent 同类错误时，从历史中归纳错误类别，优先用架构、类型、lint/CI、测试消除，文档放最后，并维护规则与强制手段的对照表。 |
 | [`teach`](./skills/teach/SKILL.md) | 结合 how 与 why，用解释和图示帮助理解改动或子系统。 |
 | [`tdd`](./skills/tdd/SKILL.md) | 有合适的本地测试路径时，先写失败测试，再修复问题。 |
+| [`benchmark-checklist`](./skills/benchmark-checklist/SKILL.md) | 在报告或依据性能数字行动前，核查瓶颈、调优、错误、重复运行和端到端相关性。 |
 | [`no-comments`](./skills/no-comments/SKILL.md) | 通过 Comment Sicko 评审注释，把可接受的约束尽量落实到结构中。 |
 | [`typescript-best-practices`](./skills/typescript-best-practices/SKILL.md) | 阅读或修改 TypeScript 时，应用具体的类型系统约束。 |
 | [`figure-it-out`](./skills/figure-it-out/SKILL.md) | 没有现成模板适用时，为当前任务设计可审计的执行流程。 |
@@ -221,10 +223,10 @@ Comment Sicko 在 Claude Code 中仅有只读工具，在 Codex 中也需要匹�
 
 ## 工程原则
 
-23 个原则各有一个短技能。`poteto-mode` 在任务开始时读取原则索引，并在需要时引用具体规则。
+24 个原则各有一个短技能。`poteto-mode` 在任务开始时读取原则索引，并在需要时引用具体规则。
 
 <details>
-<summary>查看全部 23 个工程原则</summary>
+<summary>查看全部 24 个工程原则</summary>
 
 | 原则 | 类别 | 要点 |
 |---|---|---|
@@ -248,6 +250,7 @@ Comment Sicko 在 Claude Code 中仅有只读工具，在 Codex 中也需要匹�
 | [fix-root-causes](./skills/principle-fix-root-causes/SKILL.md) | 验证 | 先复现并追踪根因，避免仅添加保护条件掩盖问题。 |
 | [sequence-verifiable-units](./skills/principle-sequence-verifiable-units/SKILL.md) | 验证 | 把工作拆成有顺序、可独立验证的单元，每步都留下可核验状态。 |
 | [test-behavior-not-implementation](./skills/principle-test-behavior-not-implementation/SKILL.md) | 验证 | 按用户使用方式测试真实行为，不用镜像实现的断言自证正确。 |
+| [explain-the-number](./skills/principle-explain-the-number/SKILL.md) | 验证 | 在相信、报告或依据测得的数字行动前，找出限制它的因素，并排除它测的其实是别的东西。 |
 | [guard-the-context-window](./skills/principle-guard-the-context-window/SKILL.md) | 委派 | 适合独立处理的大量内容交给子 Agent，主会话保留结论和必要依据。 |
 | [never-block-on-the-human](./skills/principle-never-block-on-the-human/SKILL.md) | 委派 | 在已有授权内推进可逆工作，同时保留不可逆动作和明确要求的批准门槛。 |
 | [encode-lessons-in-structure](./skills/principle-encode-lessons-in-structure/SKILL.md) | 维护 | 尽量把经验落实为 lint、元数据、检查或脚本，减少反复增加文字规则。 |

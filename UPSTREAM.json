@@ -1,8 +1,8 @@
 {
   "repository": "https://github.com/cursor/plugins",
   "path": "pstack",
-  "commit": "12d587dfb20741cafc376c42c696c5f6e2a64487",
-  "version": "0.15.5",
+  "commit": "e43c7ee26e0038c6c1fa8380dd34ce86ff94cb2a",
+  "version": "0.15.9",
   "license": "MIT",
   "adapted_for": "Codex and Claude Code; one shared skill tree and configuration"
 }
