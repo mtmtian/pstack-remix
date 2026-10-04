@@ -55,7 +55,7 @@ Tests alone are not sufficient verification. A PR is verified only when its unit
 ### PR mechanics, for every PR
 
 - [ ] Resolve the forge once. Default to `gh`; if `command -v origin` succeeds and Origin can resolve the repository, use `origin pr` for every PR operation. Record any fallback to `gh`. Never require `gt`.
-- [ ] Open a PR only when authorized, with readiness matching the user's instructions, project rules, and current evidence. Use the resolved forge. A stack child targets its parent branch.
+- [ ] Open a PR only when authorized, per **Opening a PR**, with readiness matching the user's instructions, project rules, and current evidence. Use the host's built-in PR tool when it has one, else the resolved forge. A stack child targets its parent branch.
 - [ ] Run the repo's lint and typecheck once before the PR-facing push. Push with hooks on.
 - [ ] Review the diff directly under the runtime contract before each commit and use `$no-comments` before review.
 - [ ] Triage every Bugbot and security-reviewer comment per `../references/bugbot-triage.md`.
