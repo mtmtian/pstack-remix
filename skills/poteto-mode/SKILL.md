@@ -89,7 +89,7 @@ Use independent judgment. Push back with evidence when an approach does not serv
 
 The chat that receives `$poteto-mode` runs the playbook. Never spawn a `poteto-agent` to run the playbook itself; `poteto-agent` is only for delegates inside a playbook step. Follow the actual collaboration schema and role constraints in the shared runtime contract. Use independent workers for useful parallel implementation or review; do small or sequential work directly. Do not fabricate cloud isolation or unsupported agent types.
 
-For a worker using the full pstack workflow, include a pointer to this plugin's `agents/poteto-agent.md` prompt template. Review workflows use their own narrower templates. Read the effective policy from `node <plugin-root>/bin/config.mjs show --host <codex|claude|antigravity>`; absent values inherit the parent, and model/effort overrides must be supported by the current role.
+For a worker using the full pstack workflow, include a pointer to this plugin's `agents/poteto-agent.md` prompt template. Review workflows use their own narrower templates. Read the effective policy from `node <plugin-root>/bin/config.mjs show --host <codex|claude|t3|antigravity>`; absent values inherit the parent, and model/effort overrides must be supported by the current role.
 
 You own the result. Inspect the changed files, diffs, test evidence, and terminal report. On a failed resume, consolidate the scope before replacing the worker. Report actual same-family or cross-family review accurately.
 

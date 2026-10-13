@@ -48,6 +48,7 @@ describe("parseArgs", () => {
         timeout: 0,
         maxQueryErrors: 5,
         allowDraft: false,
+        once: false,
       },
     });
   });
@@ -79,6 +80,7 @@ describe("parseArgs", () => {
       timeout: 0,
       maxQueryErrors: 3,
       allowDraft: true,
+      once: false,
     });
     expect(parsed.pretty).toBe(true);
   });

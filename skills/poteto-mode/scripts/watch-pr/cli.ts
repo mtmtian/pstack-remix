@@ -76,6 +76,7 @@ interface RawOptions {
   readonly timeout: number;
   readonly maxQueryErrors: number;
   readonly statusOnly: boolean;
+  readonly once: boolean;
   readonly allowDraft: boolean;
   readonly pretty: boolean;
 }
@@ -127,6 +128,11 @@ export function parseArgs(
       5
     )
     .option("--status-only", "print one status table and exit 0", false)
+    .option(
+      "--once",
+      "classify once and exit, ignoring --timeout; a wait exits as TIMEOUT",
+      false
+    )
     .option("--allow-draft", "do not treat a draft as a merge gate", false)
     .option("--pretty", "render human text instead of JSON", false);
   program.parse(argv, { from: "user" });
@@ -147,6 +153,7 @@ export function parseArgs(
       timeout: raw.timeout,
       maxQueryErrors: raw.maxQueryErrors,
       allowDraft: raw.allowDraft,
+      once: raw.once,
     },
   };
 }

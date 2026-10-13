@@ -23,7 +23,7 @@ Open a todolist with one entry per phase before launching anything.
 1. State the done predicate and the artifact or report the swarm must return.
 2. Choose the shape. Partition into slices, race N workers on identical briefs, or mix both. For a race or mixed shape, declare `first pass`, `rank all`, or `best-of` before spawning.
 3. Set N from the user or derive it from the shape. N is total workers, not the cloud concurrency limit.
-4. Pick the worker model from `swarm workers` in the effective policy from `node <plugin-root>/bin/config.mjs show --host <codex|claude>` when present. Otherwise use `inherit-parent`. For a model race, name each arm's model up front.
+4. Pick the worker model from `swarm workers` in the effective policy from `node <plugin-root>/bin/config.mjs show --host <codex|claude|t3>` when present. Otherwise use `inherit-parent`. For a model race, name each arm's model up front.
 5. Give each worker its own writable output when it writes. When workers verify or measure commits, name the exact SHAs in each brief. Measurement briefs also name the sample count, what constitutes a sample, and execution order. Require the worker to record those SHAs and the method in its result.
 
 ## Phase B: Fan out

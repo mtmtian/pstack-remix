@@ -15,7 +15,7 @@ Every candidate gets the same prompt, so the prompt is the contract.
 
 1. State the artifact each candidate is producing.
 2. Derive the rubric, 3-6 concrete gradeable criteria for what success looks like on *this* task. It is the picker's tool in Phase D. Candidates only see the task.
-3. Pick the runners. Use `arena runners` from the effective policy from `node <plugin-root>/bin/config.mjs show --host <codex|claude>` when present. Otherwise use that output's `defaultPanel`, two inherited attempts plus any required panel members. Spawn more runners when the arena covers multiple design directions. Use the same model N times when the work is generation-bound rather than judgment-sensitive.
+3. Pick the runners. Use `arena runners` from the effective policy from `node <plugin-root>/bin/config.mjs show --host <codex|claude|t3>` when present. Otherwise use that output's `defaultPanel`, two inherited attempts plus any required panel members. Spawn more runners when the arena covers multiple design directions. Use the same model N times when the work is generation-bound rather than judgment-sensitive.
 4. Give each candidate its own output location (a git worktree where possible, otherwise `/tmp/arena-<slug>/candidate-<n>/`), per the **separate-before-serializing-shared-state** principle skill.
 
 ## Phase B: Fan out
@@ -26,7 +26,7 @@ If a candidate produces no output, proceed with N-1 and note the dropout. An `xa
 
 ## Phase C: Cross-judge
 
-After all Phase B candidates complete, choose one model from the `arena cross-judge pool` in the effective policy from `node <plugin-root>/bin/config.mjs show --host <codex|claude>` when present. Otherwise use one independent judge on an available model, inheriting the parent when no alternative is configured. Prefer a different available model family (or explicitly labeled same-family independent review) from the parent's. Spawn one readonly judge subagent on that model. It sees the rubric and the candidates by path label, scores each criterion, and recommends a base with rationale. It runs in parallel with the parent's reading in Phase D. Don't spawn it while candidates are still writing.
+After all Phase B candidates complete, choose one model from the `arena cross-judge pool` in the effective policy from `node <plugin-root>/bin/config.mjs show --host <codex|claude|t3>` when present. Otherwise use one independent judge on an available model, inheriting the parent when no alternative is configured. Prefer a different available model family (or explicitly labeled same-family independent review) from the parent's. Spawn one readonly judge subagent on that model. It sees the rubric and the candidates by path label, scores each criterion, and recommends a base with rationale. It runs in parallel with the parent's reading in Phase D. Don't spawn it while candidates are still writing.
 
 ## Phase D: Pick a base
 

@@ -410,4 +410,6 @@ export interface PollingOptions {
   readonly timeout: number;
   readonly maxQueryErrors: number;
   readonly allowDraft: boolean;
+  /** Classify once and exit: a wait ends as TIMEOUT and query errors are not retried. */
+  readonly once: boolean;
 }

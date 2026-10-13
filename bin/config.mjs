@@ -7,10 +7,15 @@ import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 const HOSTS = ["codex", "claude"];
-const SHOW_HOSTS = [...HOSTS, "antigravity"];
+// T3 Code orchestrates over a Codex or Claude host; its section is optional so existing files stay valid.
+const T3 = "t3";
+const UPDATE_HOSTS = [...HOSTS, T3];
+const SHOW_HOSTS = [...UPDATE_HOSTS, "antigravity"];
 const COMMON_MODEL_VALUES = new Set(["inherit-parent", "auto"]);
 // External agents run through the xagent CLI identically from every host, so they may be shared policy.
 const XAGENT_VALUE = /^xagent:[a-z][a-z0-9-]*$/;
+// <providerInstanceId>/<modelId> from T3's orchestrator_capabilities; model IDs may contain slashes.
+const T3_TARGET = /^[A-Za-z][A-Za-z0-9_-]*\/[^\s/]\S*$/;
 const REASONING_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
 const DEFAULT_PANEL = ["inherit-parent", "inherit-parent"];
 // External agents that must join every panel, so a per-panel or per-host list cannot leave them out.
@@ -47,14 +52,27 @@ function isCommonModelValue(value) {
   return COMMON_MODEL_VALUES.has(value) || XAGENT_VALUE.test(value);
 }
 
+// Throws when a nonempty string is not allowed in this scope; Codex and Claude host values stay free-form.
+function checkModelValue(value, scope, field) {
+  if (scope === "common" && !isCommonModelValue(value)) {
+    throw new Error(`${field} must be inherit-parent, auto or xagent:<agent> in common policy`);
+  }
+  if (scope === T3 && !isCommonModelValue(value) && !T3_TARGET.test(value)) {
+    throw new Error(`${field} must be inherit-parent, auto, xagent:<agent> or <providerInstanceId>/<modelId> for T3`);
+  }
+}
+
+function scopeOf(host) {
+  if (host === undefined) return "common";
+  return host === T3 ? T3 : "host";
+}
+
 function validateRoles(roles, scope, label) {
   requireObject(roles, `${label}.roles`);
   for (const [name, value] of Object.entries(roles)) {
     if (!name.trim()) throw new Error(`${label}.roles keys must not be empty`);
     if (typeof value !== "string" || !value.trim()) throw new Error(`${label}.roles.${name} must be a nonempty string`);
-    if (scope === "common" && !isCommonModelValue(value)) {
-      throw new Error(`${label}.roles.${name} must be inherit-parent, auto or xagent:<agent> in common policy`);
-    }
+    checkModelValue(value, scope, `${label}.roles.${name}`);
   }
 }
 
@@ -65,9 +83,7 @@ function validatePanels(panels, scope, label) {
     if (!Array.isArray(values) || values.length === 0) throw new Error(`${label}.panels.${name} must be a nonempty array`);
     for (const value of values) {
       if (typeof value !== "string" || !value.trim()) throw new Error(`${label}.panels.${name} entries must be nonempty strings`);
-      if (scope === "common" && !isCommonModelValue(value)) {
-        throw new Error(`${label}.panels.${name} entries must be inherit-parent, auto or xagent:<agent> in common policy`);
-      }
+      checkModelValue(value, scope, `${label}.panels.${name} entries`);
     }
   }
 }
@@ -109,6 +125,7 @@ function validateConfig(config) {
   validatePolicy(config, "common", "config");
   requireObject(config.hosts, "config.hosts");
   for (const host of HOSTS) validatePolicy(config.hosts[host], "host", `config.hosts.${host}`);
+  if (Object.hasOwn(config.hosts, T3)) validatePolicy(config.hosts[T3], T3, `config.hosts.${T3}`);
   return config;
 }
 
@@ -124,9 +141,7 @@ function validatePatch(patch, scope, label) {
       if (!name.trim()) throw new Error(`${label}.roles keys must not be empty`);
       if (value === null) continue;
       if (typeof value !== "string" || !value.trim()) throw new Error(`${label}.roles.${name} must be a nonempty string or null`);
-      if (scope === "common" && !isCommonModelValue(value)) {
-        throw new Error(`${label}.roles.${name} must be inherit-parent, auto or xagent:<agent> in common policy`);
-      }
+      checkModelValue(value, scope, `${label}.roles.${name}`);
     }
   }
   if (Object.hasOwn(patch, "panels")) {
@@ -137,9 +152,7 @@ function validatePatch(patch, scope, label) {
       if (!Array.isArray(values) || values.length === 0) throw new Error(`${label}.panels.${name} must be a nonempty array or null`);
       for (const value of values) {
         if (typeof value !== "string" || !value.trim()) throw new Error(`${label}.panels.${name} entries must be nonempty strings`);
-        if (scope === "common" && !isCommonModelValue(value)) {
-          throw new Error(`${label}.panels.${name} entries must be inherit-parent, auto or xagent:<agent> in common policy`);
-        }
+        checkModelValue(value, scope, `${label}.panels.${name} entries`);
       }
     }
   }
@@ -259,12 +272,12 @@ function applyPatch(policy, patch) {
 
 export function updateConfig({ configPath = getDefaultConfigPath(), host, patch } = {}) {
   configPath = path.resolve(configPath);
-  if (host !== undefined && !HOSTS.includes(host)) throw new Error(`host must be one of ${HOSTS.join(" or ")}`);
-  const scope = host ? "host" : "common";
-  validatePatch(patch, scope, "input");
+  if (host !== undefined && !UPDATE_HOSTS.includes(host)) throw new Error(`host must be one of ${UPDATE_HOSTS.join(" or ")}`);
+  validatePatch(patch, scopeOf(host), "input");
 
   return withLock(configPath, () => {
     const config = readConfig(configPath) ?? defaultConfig();
+    if (host === T3) config.hosts[T3] ??= { roles: {}, panels: {} };
     applyPatch(host ? config.hosts[host] : config, patch);
     validateConfig(config);
     atomicWrite(configPath, config);
@@ -276,8 +289,9 @@ export function showConfig({ configPath = getDefaultConfigPath(), host } = {}) {
   configPath = path.resolve(configPath);
   if (!SHOW_HOSTS.includes(host)) throw new Error(`host must be one of ${SHOW_HOSTS.join(" or ")}`);
   const config = readConfig(configPath) ?? defaultConfig();
-  // Antigravity gets a read-only view of shared policy; host overrides remain Codex/Claude-only.
-  const hostPolicy = host === "antigravity" ? { roles: {}, panels: {} } : config.hosts[host];
+  // Antigravity gets a read-only view of shared policy. T3 layers only its own section over common policy,
+  // never the Codex or Claude overrides of the host it runs on.
+  const hostPolicy = host === "antigravity" ? { roles: {}, panels: {} } : config.hosts[host] ?? { roles: {}, panels: {} };
   const required = config[REQUIRED_MEMBERS] ?? [];
   const withRequired = (panel) => [...panel, ...required.filter((member) => !panel.includes(member))];
   const panels = { ...config.panels, ...hostPolicy.panels };
@@ -341,7 +355,7 @@ function runCli(args) {
     printJson(updateConfig({ host: options.host, patch, configPath: options.config ?? getDefaultConfigPath() }));
     return;
   }
-  throw new Error("Usage: config.mjs show --host codex|claude|antigravity [--config path] | init [--config path] | update [--host codex|claude] --input JSON-file [--config path]");
+  throw new Error("Usage: config.mjs show --host codex|claude|t3|antigravity [--config path] | init [--config path] | update [--host codex|claude|t3] --input JSON-file [--config path]");
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

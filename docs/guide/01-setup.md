@@ -50,7 +50,10 @@ Read the effective choices without changing them:
 ```sh
 node bin/config.mjs show --host codex
 node bin/config.mjs show --host claude
+node bin/config.mjs show --host t3
 ```
+
+Inside T3 Code, run setup from the T3 thread to fill the separate `hosts.t3` section with T3 targets such as `claudeAgent/claude-opus-5-5`. It never changes the Codex or Claude overrides. See [the T3 overlay](../../references/t3-runtime.md).
 
 A missing role inherits its parent. Shared panel lists set the number of independent attempts. Concrete model IDs are stored only under that host's overrides and must be available in its running session. Removing an override restores the next layer's value. Rerunning setup preserves choices unless you ask to change them. Configuration changes apply to the next pstack task; already-running workers keep their parent's policy snapshot.
 

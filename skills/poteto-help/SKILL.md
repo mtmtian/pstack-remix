@@ -8,7 +8,7 @@ disable-model-invocation: true
 
 Use this skill when the user asks how pstack works, where to start, or which skill fits. Answer from the linked files, give a prompt they can send, and link the source file. A help question asks for guidance; do not start the underlying work. A request that asks you to do the work, such as "use pstack to fix this bug," is a task: read [`poteto-mode`](../poteto-mode/SKILL.md) and continue under its workflow.
 
-First identify the actual host. Codex entry points use `$pstack-codex:<skill>`; Claude Code entry points use `/pstack:<skill>`. In Antigravity, use the skill entry exposed by its native plugin UI or CLI and read [antigravity-runtime.md](../../references/antigravity-runtime.md); do not borrow another host's command syntax. Read the [shared runtime](../../references/runtime.md) and its selected adapter if the answer depends on host behavior.
+First identify the actual host. Codex entry points use `$pstack-codex:<skill>`; Claude Code entry points use `/pstack:<skill>`. In Antigravity, use the skill entry exposed by its native plugin UI or CLI and read [antigravity-runtime.md](../../references/antigravity-runtime.md); do not borrow another host's command syntax. A T3 Code session keeps its Codex or Claude entry points and adds [t3-runtime.md](../../references/t3-runtime.md). Read the [shared runtime](../../references/runtime.md) and its selected adapter if the answer depends on host behavior.
 
 The skill and guide files own the details. Read the destination before quoting or recommending it. Give the user the relevant installed file link and a short prompt adapted to the current host.
 
@@ -24,7 +24,7 @@ Infer the need from the question and conversation. A named situation, such as "w
 
 Check only state that changes the answer:
 
-- When model or cost setup matters, read the active host's effective policy with `node <plugin-root>/bin/config.mjs show --host codex`, `--host claude`, or the read-only common-policy view `--host antigravity`. The shared file is `~/.config/pstack/config.json`. If it is absent, missing roles inherit the main conversation and setup remains optional. This command is read-only; do not initialize or change preferences from a help request.
+- When model or cost setup matters, read the active host's effective policy with `node <plugin-root>/bin/config.mjs show --host codex`, `--host claude`, `--host t3` in a T3 Code session, or the read-only common-policy view `--host antigravity`. The shared file is `~/.config/pstack/config.json`. If it is absent, missing roles inherit the main conversation and setup remains optional. This command is read-only; do not initialize or change preferences from a help request.
 - If the project has no `verify-*` skill or application harness, mention [`create-verification-skill`](../create-verification-skill/SKILL.md) when the question is about proving behavior.
 
 When setup is relevant and the user has not chosen a policy, offer to point them to the current host's `setup-pstack` entry now or answer first and leave setup for later. Do not run setup or write preferences as part of help.
