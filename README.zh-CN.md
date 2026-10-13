@@ -4,9 +4,9 @@
 
 一份源码、一份配置，分别接入 Codex 和 Claude Code 的原生能力。你描述任务和验收条件，pstack 选择相应流程，组织调查、设计、实现、评审与验证。
 
-这是一个独立维护的本地适配版本，基于 Lauren Tan 以 MIT 协议发布的上游 pstack 0.15.9，跟踪提交 [`e43c7ee2`](https://github.com/cursor/plugins/tree/e43c7ee26e0038c6c1fa8380dd34ce86ff94cb2a/pstack)。本项目不由 Lauren Tan、Cursor、OpenAI 或 Anthropic 维护。
+这是一个独立维护的本地适配版本，基于 Lauren Tan 以 MIT 协议发布的上游 pstack 0.15.15，跟踪提交 [`df581122`](https://github.com/cursor/plugins/tree/df581122cde17e6e27686b5a448bde23e4ad4318/pstack)。本项目不由 Lauren Tan、Cursor、OpenAI 或 Anthropic 维护。
 
-两种主控共用 **51 个技能、23 个流程模板**、工程原则、Agent 提示词和 Node 工具。插件清单和少量运行时适配负责处理主控差异。仓库名为 `pstack-remix`；为兼容已有安装，Codex 插件名仍为 `pstack-codex`，Claude Code 插件名为 `pstack`。
+两种主控共用 **52 个技能、23 个流程模板**、工程原则、Agent 提示词和 Node 工具。插件清单和少量运行时适配负责处理主控差异。仓库名为 `pstack-remix`；为兼容已有安装，Codex 插件名仍为 `pstack-codex`，Claude Code 插件名为 `pstack`。
 
 ## 安装与快速开始
 
@@ -39,6 +39,7 @@ claude plugin install pstack@pstack-local --scope user
 | 用途 | Codex | Claude Code |
 |---|---|---|
 | 开始任务 | `$pstack-codex:poteto-mode` | `/pstack:poteto-mode` |
+| 获取技能建议 | `$pstack-codex:poteto-help` | `/pstack:poteto-help` |
 | 配置角色与模型 | `$pstack-codex:setup-pstack` | `/pstack:setup-pstack` |
 | 直接发起评审 | `$pstack-codex:interrogate` | `/pstack:interrogate` |
 
@@ -143,7 +144,7 @@ pstack 本身不安装定时器；长任务流程也不保证会话退出或主�
 
 ## 技能一览
 
-`poteto-mode` 会在合适的步骤调用这些技能，也可以直接使用。51 个技能中，27 个是下面的工作流技能，另有 24 个工程原则技能。
+`poteto-mode` 会在合适的步骤调用这些技能，也可以直接使用。52 个技能中，28 个是下面的工作流技能，另有 24 个工程原则技能。
 
 <details>
 <summary>查看全部工作流技能</summary>
@@ -151,6 +152,7 @@ pstack 本身不安装定时器；长任务流程也不保证会话退出或主�
 | 技能 | 适用场景 |
 |---|---|
 | [`poteto-mode`](./skills/poteto-mode/SKILL.md) | 非简单任务的默认入口，选择流程并协调执行。 |
+| [`poteto-help`](./skills/poteto-help/SKILL.md) | 了解 pstack、选择技能或流程，并得到一条可直接发送的提示词；不会因此自动开始底层任务。 |
 | [`how`](./skills/how/SKILL.md) | 梳理子系统的结构、行为和调用关系。 |
 | [`why`](./skills/why/SKILL.md) | 通过实际可用的源码、Issue、文档、讨论和观测工具追溯设计原因。 |
 | [`recall`](./skills/recall/SKILL.md) | 从相关历史会话和共享记录中恢复某个主题的当前上下文。 |

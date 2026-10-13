@@ -9,6 +9,8 @@ Read [the shared runtime contract](../../references/runtime.md) and its selected
 
 Configure only pstack. Do not change global host models, permissions, credentials, or unrelated skills.
 
+In Antigravity, run `node <plugin-root>/bin/config.mjs show --host antigravity` and explain the common-policy view. This integration does not enable Antigravity-specific preference writes. Do not run the setup steps below implicitly; shared changes still require an explicit configuration request through a supported update path.
+
 1. Identify the current host from its actual tools and read the effective configuration with `node <plugin-root>/bin/config.mjs show --host <codex|claude>`. Missing configuration means all roles inherit and panels use two independent attempts; setup is optional.
 2. For a setup request, run `node <plugin-root>/bin/config.mjs init`. It creates `~/.config/pstack/config.json` only when absent and imports any legacy `~/.codex/pstack/models.json` or `~/.claude/pstack/models.json` into that host's overrides. Existing shared configuration is authoritative. Legacy files remain untouched and are no longer runtime sources.
 3. Honor preferences already given. Shared roles and panel entries can use only `inherit-parent`, `auto`, or `xagent:<agent>` (an external agent CLI dispatched through xagent, for example `xagent:grok`). A concrete model goes into the current host's override after checking actual availability and role constraints. Keep reasoning separate. Do not infer IDs from upstream brand names or silently substitute for an unavailable explicit choice. Preserve the other host's choices.

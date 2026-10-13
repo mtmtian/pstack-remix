@@ -37,6 +37,8 @@ $poteto-mode users get two notifications after a retry. repro first, then fix an
 
 That's a Bug fix prompt. "repro first" is a real constraint, not politeness, and the playbook honors it. Watch the todo list fill with the Bug fix steps. A skipped step stays visible with `skip: <reason>`.
 
+A useful prompt can state the goal, a pass/fail done check, the proof to show, what you already know, and any real constraints. Leave out a hand-written skill sequence; the playbook supplies the order. See [`poteto-help` prompt guidance](../../skills/poteto-help/references/prompting.md) for examples. If you are unsure which skill fits, invoke `$pstack-codex:poteto-help` in Codex or `/pstack:poteto-help` in Claude Code.
+
 When the conversation already carries the context, the prompt shrinks to almost nothing. All of these are enough:
 
 ```text

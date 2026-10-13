@@ -2,9 +2,9 @@
 
 English | [简体中文](./README.zh-CN.md)
 
-One source tree, one configuration, two native host entry points. This independent local adaptation tracks Lauren Tan's MIT-licensed upstream pstack 0.15.9 at [`e43c7ee2`](https://github.com/cursor/plugins/tree/e43c7ee26e0038c6c1fa8380dd34ce86ff94cb2a/pstack). It is not maintained by Lauren Tan, Cursor, OpenAI, or Anthropic.
+One source tree, one configuration, two native host entry points. This independent local adaptation tracks Lauren Tan's MIT-licensed upstream pstack 0.15.15 at [`df581122`](https://github.com/cursor/plugins/tree/df581122cde17e6e27686b5a448bde23e4ad4318/pstack). It is not maintained by Lauren Tan, Cursor, OpenAI, or Anthropic.
 
-The 51 skills, 23 playbooks, engineering principles, agent prompts, and Node helpers are shared. Only the plugin manifests and two short runtime adapters differ. Codex retains its installed `pstack-codex` name; Claude Code uses `pstack` from the same directory.
+The 52 skills, 23 playbooks, engineering principles, agent prompts, and Node helpers are shared. Only the plugin manifests and two short runtime adapters differ. Codex retains its installed `pstack-codex` name; Claude Code uses `pstack` from the same directory.
 
 ## Install and use
 
@@ -31,7 +31,7 @@ Examples below use `$skill` as a short reference to the bundled skill; in Claude
 
 ## usage
 
-use [`$poteto-mode`](./skills/poteto-mode/SKILL.md) at the start of a task. it reads your request, picks from a set of playbooks, and runs the other skills as the steps need them.
+use [`$poteto-mode`](./skills/poteto-mode/SKILL.md) at the start of a task. it reads your request, picks from a set of playbooks, and runs the other skills as the steps need them. If you are new to pstack or unsure which skill fits, invoke [`$poteto-help`](./skills/poteto-help/SKILL.md) for guidance and a prompt to send.
 
 ### just use [`$poteto-mode`](./skills/poteto-mode/SKILL.md)
 
@@ -110,6 +110,7 @@ $interrogate review this pr.
 | skill | use it when |
 |---|---|
 | [`$poteto-mode`](./skills/poteto-mode/SKILL.md) | default entry point for any non-trivial task. |
+| [`$poteto-help`](./skills/poteto-help/SKILL.md) | you are new to pstack or unsure which skill or playbook fits; it gives guidance and a prompt without starting the work. |
 | [`$how`](./skills/how/SKILL.md) | you want a walkthrough of how a subsystem works. |
 | [`$why`](./skills/why/SKILL.md) | you want to know why something was built this way. discovers available MCPs at run time and queries each evidence category in parallel (source control, issue tracker, long-form docs, real-time chat, infra observability, error tracking, analytics warehouse). |
 | [`$recall`](./skills/recall/SKILL.md) | you're starting or resuming work and want your recent context on a topic rebuilt from your own chat history and the shared record, handed back as a tight current-state brief. |

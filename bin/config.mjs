@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 const HOSTS = ["codex", "claude"];
+const SHOW_HOSTS = [...HOSTS, "antigravity"];
 const COMMON_MODEL_VALUES = new Set(["inherit-parent", "auto"]);
 // External agents run through the xagent CLI identically from every host, so they may be shared policy.
 const XAGENT_VALUE = /^xagent:[a-z][a-z0-9-]*$/;
@@ -273,9 +274,10 @@ export function updateConfig({ configPath = getDefaultConfigPath(), host, patch 
 
 export function showConfig({ configPath = getDefaultConfigPath(), host } = {}) {
   configPath = path.resolve(configPath);
-  if (!HOSTS.includes(host)) throw new Error(`host must be one of ${HOSTS.join(" or ")}`);
+  if (!SHOW_HOSTS.includes(host)) throw new Error(`host must be one of ${SHOW_HOSTS.join(" or ")}`);
   const config = readConfig(configPath) ?? defaultConfig();
-  const hostPolicy = config.hosts[host];
+  // Antigravity gets a read-only view of shared policy; host overrides remain Codex/Claude-only.
+  const hostPolicy = host === "antigravity" ? { roles: {}, panels: {} } : config.hosts[host];
   const required = config[REQUIRED_MEMBERS] ?? [];
   const withRequired = (panel) => [...panel, ...required.filter((member) => !panel.includes(member))];
   const panels = { ...config.panels, ...hostPolicy.panels };
@@ -310,8 +312,8 @@ function parseOptions(args, allowed) {
   return values;
 }
 
-function requireHost(host) {
-  if (!HOSTS.includes(host)) throw new Error(`--host must be ${HOSTS.join(" or ")}`);
+function requireShowHost(host) {
+  if (!SHOW_HOSTS.includes(host)) throw new Error(`--host must be ${SHOW_HOSTS.join(" or ")}`);
   return host;
 }
 
@@ -323,7 +325,7 @@ function runCli(args) {
   const [command, ...rest] = args;
   if (command === "show") {
     const options = parseOptions(rest, new Set(["host", "config"]));
-    printJson(showConfig({ host: requireHost(options.host), configPath: options.config ?? getDefaultConfigPath() }));
+    printJson(showConfig({ host: requireShowHost(options.host), configPath: options.config ?? getDefaultConfigPath() }));
     return;
   }
   if (command === "init") {
@@ -339,7 +341,7 @@ function runCli(args) {
     printJson(updateConfig({ host: options.host, patch, configPath: options.config ?? getDefaultConfigPath() }));
     return;
   }
-  throw new Error("Usage: config.mjs show --host codex|claude [--config path] | init [--config path] | update [--host codex|claude] --input JSON-file [--config path]");
+  throw new Error("Usage: config.mjs show --host codex|claude|antigravity [--config path] | init [--config path] | update [--host codex|claude] --input JSON-file [--config path]");
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
