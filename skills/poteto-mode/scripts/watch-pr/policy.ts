@@ -378,7 +378,11 @@ async function pollUntilTerminal<V>(args: {
     } catch (error) {
       if (!(error instanceof WatcherQueryError)) throw error;
       failures += 1;
-      if (!error.failure.retryable || failures >= args.options.maxQueryErrors)
+      if (
+        args.options.once ||
+        !error.failure.retryable ||
+        failures >= args.options.maxQueryErrors
+      )
         return statusQueryVerdict(args.stamp, failures, error.failure);
       const retryInSeconds = queryBackoffSeconds(
         args.options.interval,
@@ -407,7 +411,8 @@ async function pollUntilTerminal<V>(args: {
     if (result.kind === "sleep") {
       if (
         result.onDeadline !== undefined &&
-        deadlinePassed(started, args.options, args.dependencies.clock.now())
+        (args.options.once ||
+          deadlinePassed(started, args.options, args.dependencies.clock.now()))
       )
         return result.onDeadline();
       await args.dependencies.clock.sleep(result.seconds);
@@ -820,7 +825,21 @@ export async function runQueued(args: {
               reason: evaluation.reason,
             })
           );
-        return { kind: "sleep", seconds: args.options.interval };
+        return {
+          kind: "sleep",
+          seconds: args.options.interval,
+          onDeadline: () =>
+            stamp({
+              kind: "TIMEOUT",
+              terminal: true,
+              exitCode: 5,
+              reason: {
+                kind: "queued-stack",
+                frontier: evaluation.frontier,
+                unmergedCount: activeRows(state).length,
+              },
+            }),
+        };
       default: {
         const exhaustive: never = evaluation;
         return exhaustive;

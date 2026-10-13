@@ -3030,7 +3030,7 @@ async function pollUntilTerminal(args) {
       if (!(error instanceof WatcherQueryError))
         throw error;
       failures += 1;
-      if (!error.failure.retryable || failures >= args.options.maxQueryErrors)
+      if (args.options.once || !error.failure.retryable || failures >= args.options.maxQueryErrors)
         return statusQueryVerdict(args.stamp, failures, error.failure);
       const retryInSeconds = queryBackoffSeconds(args.options.interval, failures);
       args.dependencies.emit(args.stamp({
@@ -3053,7 +3053,7 @@ async function pollUntilTerminal(args) {
     if (result.kind === "terminal")
       return result.verdict;
     if (result.kind === "sleep") {
-      if (result.onDeadline !== undefined && deadlinePassed(started, args.options, args.dependencies.clock.now()))
+      if (result.onDeadline !== undefined && (args.options.once || deadlinePassed(started, args.options, args.dependencies.clock.now())))
         return result.onDeadline();
       await args.dependencies.clock.sleep(result.seconds);
     }
@@ -3328,7 +3328,20 @@ async function runQueued(args) {
             frontier: evaluation.frontier,
             reason: evaluation.reason
           }));
-        return { kind: "sleep", seconds: args.options.interval };
+        return {
+          kind: "sleep",
+          seconds: args.options.interval,
+          onDeadline: () => stamp({
+            kind: "TIMEOUT",
+            terminal: true,
+            exitCode: 5,
+            reason: {
+              kind: "queued-stack",
+              frontier: evaluation.frontier,
+              unmergedCount: activeRows(state).length
+            }
+          })
+        };
       default: {
         const exhaustive = evaluation;
         return exhaustive;
@@ -3545,7 +3558,7 @@ function stackPrList(value) {
 }
 function parseArgs(argv, io) {
   const program = new Command2("watch-pr").description(`Watch one pull request, a connected stack, or an immutable queued stack.
-JSON (NDJSON while polling) is the default; --pretty renders human text.`).configureOutput({ writeOut: io.stdout, writeErr: io.stderr }).exitOverride().option("--owner <owner>", "GitHub repository owner").option("--repo <repo>", "GitHub repository name").option("--pr <number>", "pull request number", prNumber).addOption(new Option2("--stack", "watch the connected open stack").default(false).conflicts("queuedStack")).option("--queued-stack", "watch the captured stack until all PRs merge", false).option("--stack-prs <n,...>", "frozen bottom-to-top queue (queued mode only)", stackPrList).option("--interval <seconds>", "poll interval", positiveNumber, 60).option("--sweep-interval <seconds>", "whole-stack sweep interval", positiveNumber, 300).option("--timeout <seconds>", "deadline; 0 disables it", nonNegativeNumber, 0).option("--max-query-errors <count>", "consecutive query-error budget", positiveInteger, 5).option("--status-only", "print one status table and exit 0", false).option("--allow-draft", "do not treat a draft as a merge gate", false).option("--pretty", "render human text instead of JSON", false);
+JSON (NDJSON while polling) is the default; --pretty renders human text.`).configureOutput({ writeOut: io.stdout, writeErr: io.stderr }).exitOverride().option("--owner <owner>", "GitHub repository owner").option("--repo <repo>", "GitHub repository name").option("--pr <number>", "pull request number", prNumber).addOption(new Option2("--stack", "watch the connected open stack").default(false).conflicts("queuedStack")).option("--queued-stack", "watch the captured stack until all PRs merge", false).option("--stack-prs <n,...>", "frozen bottom-to-top queue (queued mode only)", stackPrList).option("--interval <seconds>", "poll interval", positiveNumber, 60).option("--sweep-interval <seconds>", "whole-stack sweep interval", positiveNumber, 300).option("--timeout <seconds>", "deadline; 0 disables it", nonNegativeNumber, 0).option("--max-query-errors <count>", "consecutive query-error budget", positiveInteger, 5).option("--status-only", "print one status table and exit 0", false).option("--once", "classify once and exit; a wait exits as TIMEOUT", false).option("--allow-draft", "do not treat a draft as a merge gate", false).option("--pretty", "render human text instead of JSON", false);
   program.parse(argv, { from: "user" });
   const raw = program.opts();
   if (raw.stackPrs !== undefined && !raw.queuedStack)
@@ -3563,7 +3576,8 @@ JSON (NDJSON while polling) is the default; --pretty renders human text.`).confi
       sweepInterval: raw.sweepInterval,
       timeout: raw.timeout,
       maxQueryErrors: raw.maxQueryErrors,
-      allowDraft: raw.allowDraft
+      allowDraft: raw.allowDraft,
+      once: raw.once
     }
   };
 }
