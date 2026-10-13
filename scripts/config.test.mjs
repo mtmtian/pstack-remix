@@ -446,3 +446,88 @@ test("Given an empty panel list or unsupported effort, When update runs, Then va
     assert.equal(readFileSync(configPath, "utf8"), original);
   }
 });
+
+test("Given an existing config without a T3 section, When T3 runs show, Then it sees common policy and required members but no Codex or Claude override", (t) => {
+  const dir = tempDir();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const configPath = path.join(dir, "config.json");
+  const config = validConfig();
+  config.roles["swarm workers"] = "xagent:pi";
+  config.reasoning_effort = "medium";
+  config.required_panel_members = ["xagent:gemini"];
+  config.hosts.codex.panels["interrogate reviewers"] = ["xagent:claude"];
+  config.hosts.claude.panels["interrogate reviewers"] = ["xagent:codex"];
+  config.hosts.claude.reasoning_effort = "max";
+  writeJson(configPath, config);
+  const original = readFileSync(configPath, "utf8");
+
+  const result = runCli(["show", "--host", "t3", "--config", configPath]);
+  assert.equal(result.status, 0, result.stderr);
+  const shown = JSON.parse(result.stdout);
+  assert.equal(shown.host, "t3");
+  assert.deepEqual(shown.effective.roles, { "swarm workers": "xagent:pi" });
+  assert.deepEqual(shown.effective.panels, {});
+  assert.equal(shown.effective.reasoning_effort, "medium");
+  assert.deepEqual(shown.effective.defaultPanel, ["inherit-parent", "inherit-parent", "xagent:gemini"]);
+  assert.equal(readFileSync(configPath, "utf8"), original);
+});
+
+test("Given T3 targets, When T3 is updated, Then only T3 resolves them and Codex and Claude views stay unchanged", (t) => {
+  const dir = tempDir();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const configPath = path.join(dir, "config.json");
+  const inputPath = path.join(dir, "patch.json");
+  const config = validConfig();
+  config.required_panel_members = ["xagent:gemini"];
+  config.hosts.claude.panels["interrogate reviewers"] = ["xagent:codex"];
+  writeJson(configPath, config);
+  const before = Object.fromEntries(["codex", "claude"].map((host) => [host, runCli(["show", "--host", host, "--config", configPath]).stdout]));
+  writeJson(inputPath, {
+    roles: { "bug-fix": "claudeAgent/claude-fable-5-1" },
+    panels: { "interrogate reviewers": ["claudeAgent/claude-opus-5-5", "codex/gpt-6.1-sol", "grok/magpie/group/auto-gpt-6-luna"] },
+    reasoning_effort: "high",
+  });
+
+  const update = runCli(["update", "--host", "t3", "--input", inputPath, "--config", configPath]);
+  assert.equal(update.status, 0, update.stderr);
+  const shown = JSON.parse(runCli(["show", "--host", "t3", "--config", configPath]).stdout).effective;
+  assert.equal(shown.roles["bug-fix"], "claudeAgent/claude-fable-5-1");
+  assert.deepEqual(shown.panels["interrogate reviewers"], ["claudeAgent/claude-opus-5-5", "codex/gpt-6.1-sol", "grok/magpie/group/auto-gpt-6-luna", "xagent:gemini"]);
+  assert.equal(shown.reasoning_effort, "high");
+  for (const host of ["codex", "claude"]) {
+    assert.equal(runCli(["show", "--host", host, "--config", configPath]).stdout, before[host]);
+  }
+  const saved = JSON.parse(readFileSync(configPath, "utf8"));
+  assert.deepEqual(saved.roles, {});
+  assert.deepEqual(saved.panels, {});
+});
+
+test("Given a value that is not a T3 target, When T3 is updated, Then it is rejected without writing", (t) => {
+  const dir = tempDir();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const configPath = path.join(dir, "config.json");
+  const inputPath = path.join(dir, "patch.json");
+  writeJson(configPath, validConfig());
+  const original = readFileSync(configPath, "utf8");
+
+  for (const patch of [
+    { roles: { feature: "opus" } },
+    { roles: { feature: "claudeAgent/" } },
+    { roles: { feature: "/claude-opus-5-5" } },
+    { panels: { review: ["codex/gpt 6"] } },
+    { required_panel_members: ["xagent:grok"] },
+  ]) {
+    writeJson(inputPath, patch);
+    const result = runCli(["update", "--host", "t3", "--input", inputPath, "--config", configPath]);
+    assert.notEqual(result.status, 0, JSON.stringify(patch));
+    assert.match(result.stderr, /^input\./, JSON.stringify(patch));
+    assert.equal(readFileSync(configPath, "utf8"), original);
+  }
+
+  const handWritten = validConfig();
+  handWritten.hosts.t3 = { roles: { feature: "opus" }, panels: {} };
+  writeJson(configPath, handWritten);
+  const shown = runCli(["show", "--host", "t3", "--config", configPath]);
+  assert.notEqual(shown.status, 0);
+  assert.match(shown.stderr, /hosts\.t3/);
+});

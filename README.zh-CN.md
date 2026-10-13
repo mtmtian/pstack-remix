@@ -68,9 +68,10 @@ $pstack-codex:poteto-mode 这个 PR 中的列表在静止时每隔 750ms 就会�
 ```sh
 node bin/config.mjs show --host codex
 node bin/config.mjs show --host claude
+node bin/config.mjs show --host t3
 ```
 
-共享配置可以指定角色、评审组和推理强度。具体模型 ID 放在对应主控的配置中，由该主控的可用能力决定能否使用；`hosts.codex` 或 `hosts.claude` 的设置优先于共享设置。这样可以共用策略，又不把一家厂商的模型 ID 传给另一家。
+共享配置可以指定角色、评审组和推理强度。具体模型 ID 放在对应主控的配置中，由该主控的可用能力决定能否使用；`hosts.codex` 或 `hosts.claude` 的设置优先于共享设置。这样可以共用策略，又不把一家厂商的模型 ID 传给另一家。T3 Code 会话只读共享设置和可选的 `hosts.t3`，不读 `hosts.codex` 或 `hosts.claude`；`hosts.t3` 里可以写 T3 目标 `<providerInstanceId>/<modelId>`，例如 `codex/gpt-6.1-sol`。改 T3 的配置不影响原生 Claude、Codex 会话，反过来也一样。
 
 需要修改偏好时调用 `setup-pstack`。已有选择会保留，除非你要求调整。源码仓库不包含个人配置、凭据、会话日志或插件缓存。详见[共享运行时约定](./references/runtime.md)。
 
@@ -262,7 +263,7 @@ Comment Sicko 在 Claude Code 中仅有只读工具，在 Codex 中也需要匹�
 
 ## 主控适配与执行边界
 
-[共享运行时](./references/runtime.md) 负责配置、范围、证据和技能发现。[Codex 适配器](./references/codex-runtime.md) 与 [Claude Code 适配器](./references/claude-runtime.md) 分别说明各自的委派、目标和调度接口，不应把一方的工具名直接套给另一方。
+[共享运行时](./references/runtime.md) 负责配置、范围、证据和技能发现。[Codex 适配器](./references/codex-runtime.md) 与 [Claude Code 适配器](./references/claude-runtime.md) 分别说明各自的委派、目标和调度接口，不应把一方的工具名直接套给另一方。在 T3 Code 里，[T3 叠加层](./references/t3-runtime.md) 叠在这两个主控之上：只有会话里真的有 T3 的 `orchestrator_capabilities` 和 `delegate_task` 工具时才启用，子任务、定时任务和 PR 等待改走 T3 编排工具，xagent 和其他规则照旧。
 
 主控必须亲自读取最终产物和进程终态，按原任务约定处理评审反例。空邮箱、闲置状态、超时或子 Agent 的 `PASS` 都不能单独证明任务完成。仍有范围内缺陷或必要检查缺口时，必须继续修复或明确报告未完成。
 

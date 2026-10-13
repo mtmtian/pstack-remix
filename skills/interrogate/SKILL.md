@@ -25,7 +25,7 @@ Before spawning reviewers, state the intent in one clear paragraph from the user
 
 ## Step 3, Spawn Reviewers
 
-Launch all reviewers in a single message using the host collaboration tools. Use the `interrogate reviewers` list from the effective policy from `node <plugin-root>/bin/config.mjs show --host <codex|claude>` when present, one reviewer per entry, extending or shrinking the Reviewer A/B/C/D labels below to the configured entry count. Otherwise use that output's `defaultPanel`: the two table defaults plus any required panel members. Disclose that inherited-model attempts are independent runs, not distinct model families.
+Launch all reviewers in a single message using the host collaboration tools. Use the `interrogate reviewers` list from the effective policy from `node <plugin-root>/bin/config.mjs show --host <codex|claude|t3>` when present, one reviewer per entry, extending or shrinking the Reviewer A/B/C/D labels below to the configured entry count. Otherwise use that output's `defaultPanel`: the two table defaults plus any required panel members. Disclose that inherited-model attempts are independent runs, not distinct model families.
 
 | Subagent | Default model |
 |----------|---------------|

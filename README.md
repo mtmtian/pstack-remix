@@ -230,7 +230,7 @@ twenty-four short skills, one principle each. `poteto-mode` indexes them inline 
 
 ## Host adapters
 
-[Shared runtime](./references/runtime.md) owns configuration, scope, evidence, and shared skill discovery. [Codex](./references/codex-runtime.md) and [Claude Code](./references/claude-runtime.md) define their native delegation, goal, and scheduling interfaces. Do not turn one host's tool names into instructions for the other.
+[Shared runtime](./references/runtime.md) owns configuration, scope, evidence, and shared skill discovery. [Codex](./references/codex-runtime.md) and [Claude Code](./references/claude-runtime.md) define their native delegation, goal, and scheduling interfaces. Do not turn one host's tool names into instructions for the other. Inside T3 Code, [the T3 overlay](./references/t3-runtime.md) sits on top of either host and dispatches workers, schedules, and PR watches through T3's orchestration tools, with its own `hosts.t3` model section.
 
 Upstream Cursor control helpers are replaced by available project harnesses and host tools. External writes retain the user's authorization boundaries. Installing this package does not create a goal, timer, bot, or webhook.
 
