@@ -20,7 +20,7 @@ Call `orchestrator_capabilities` once before the first dispatch of a task and ch
 | `<providerInstanceId>/<modelId>` | `{"providerInstanceId": "<id>", "model": "<model>"}` |
 | `xagent:<agent>` | Not a T3 target. Run it with `bin/xagent` as the shared runtime specifies |
 
-Map the effective `reasoning_effort` to the target model's own option: the listed select option with id `effort` or `reasoningEffort`, only when the value is one of its choices. Pass it as `target.options`, for example `{"effort": "high"}` for `claudeAgent` or `{"reasoningEffort": "high"}` for `codex` and `grok`; an inherited entry passes only `options`. Otherwise omit it and disclose that the model ran at its default. A target with no effort option otherwise runs at the provider default, which can be low, so set `reasoning_effort` in `hosts.t3` for review panels. Do not set other options, such as service tier or fast mode, unless the user asked.
+Map the effective `reasoning_effort` to the target model's own option: the listed select option with id `effort`, `reasoningEffort`, or `thinking`, only when the value is one of its choices. Pass it as `target.options`, for example `{"effort": "high"}` for `claudeAgent`, `{"reasoningEffort": "high"}` for `codex` and `grok`, or `{"thinking": "high"}` for `pi`; an inherited entry passes only `options`. Otherwise omit it and disclose that the model ran at its default. A target with no effort option otherwise runs at the provider default, which can be low, so set `reasoning_effort` in `hosts.t3` for review panels. Do not set other options, such as service tier or fast mode, unless the user asked.
 
 ## Delegate
 
@@ -37,7 +37,7 @@ In a T3 session every pstack worker goes through `delegate_task`, including `inh
 
 Every brief is standalone, because the child gets no parent history. It carries the shared runtime's fields: host, plugin root, configuration path, the resolved T3 policy snapshot, scope, and verification predicate.
 
-A T3 child works in the parent's workspace unless told otherwise. For a read-only child, say so in the brief, ask it to run code only in ways that write nothing (for example `python3 -B`), and record `git status --porcelain --ignored` and `HEAD` before launch. Any change after it returns, including a stray `__pycache__`, is a read-only violation, whatever the child reports. Give each writer its own worktree at the intended base SHA, created by the parent with `git worktree add`, and pass the absolute path. Two writers never share a checkout.
+A T3 child works in the parent's workspace unless told otherwise, and `role: review` does not make it read-only. So the parent gives every child its own fresh worktree at the intended SHA, created with `git worktree add` (`--detach` for a read-only child), passes the absolute path, and tells the child to work only there. A read-only child's brief also says to run code only in ways that write nothing, for example `python3 -B`. A fresh worktree starts with an empty `git status --porcelain --ignored`, so after a read-only child returns, any output from that command or a moved `HEAD`, including a stray `__pycache__`, is a read-only violation, whatever the child reports. Two writers never share a checkout.
 
 ## Mixed panels
 
@@ -46,5 +46,5 @@ A T3 child works in the parent's workspace unless told otherwise. For a read-onl
 ## Schedules and PRs
 
 - Recurrence the user asked for uses `schedule_task` bound to this thread instead of the host's `/loop` or Cron tools. Report the returned cadence and `nextRunAt`, and delete it with `delete_scheduled_task` when the loop ends.
-- To wait on a PR between babysit rounds, call `watch_pull_request` after handling existing comments, then end the turn. `bin/watch-pr.mjs` still decides readiness. Call `unwatch_pull_request` before handing the PR back. Only the parent thread can watch. Register PRs this work creates or updates with `link_pull_request`.
+- Babysit never runs the polling form of `bin/watch-pr.mjs` here, in any mode. Each round runs it once with `--status-only` for the readiness verdict. To wait for the next change, call `watch_pull_request` after handling existing comments, then end the turn. Call `unwatch_pull_request` before handing the PR back. Only the parent thread can watch. Register PRs this work creates or updates with `link_pull_request`.
 - `t3_thread_launch` and `create_threads` create top-level threads. Use them only when the user asks for separate threads, never for pstack workers.
