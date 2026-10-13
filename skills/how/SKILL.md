@@ -9,45 +9,29 @@ Read [the shared runtime contract](../../references/runtime.md) before this work
 
 Explore the codebase to answer "how does X work?" questions. Produce architectural explanations at the level of a senior engineer onboarding onto a subsystem, enough to build a working mental model, not so much that it reads like annotated source code.
 
-## Step 1. Assess Complexity
+Every spawn is a supported subagent with a role chosen using the host adapter, and read-only scope in the agent brief. Explorers use your configured how-explorer model and the explainer uses your configured how-explainer model (default `inherit-parent` for both).
+
+## 1. Assess complexity
 
 If the scope is ambiguous, state your interpretation and explore. The user can redirect.
 
-- **Simple** (a single module, a small utility, a narrow question such as "how does function X work"): no delegation. The parent explores and explains in a single pass. Go to Step 2b.
-- **Complex** (a subsystem spanning multiple files or services, a cross-cutting feature, a full architectural overview): spawn parallel explorers first, then hand off to the explainer. Go to Step 2a.
+- **Simple** (a single module, a small utility, a narrow question such as "how does function X work"): no explorers. The parent explores and explains directly in one pass, using `references/explainer-prompt.md` as the output guide without the explorer-findings section. A separate explainer is optional only if there is independent work to do while it runs, built from the same prompt. Go to step 4.
+- **Complex** (a subsystem spanning multiple files or services, a cross-cutting feature, a full architectural overview): go to step 2.
 
 When in doubt, take the simple path.
 
-## Step 2a. Explore (complex questions only)
+## 2. Explore (complex only)
 
-Decompose the question into 2 to 4 exploration angles, each a distinct slice of the subsystem. Spawn all explorers in a single message:
+Decompose the question into 2 to 4 angles, each a distinct slice of the subsystem. Spawn all explorers in a single message, each with `references/explorer-prompt.md` and its angle filled in.
 
-- Agent role: a supported role chosen using the host adapter
-- `model`: your configured how-explorer model (default `inherit-parent`)
-- Read-only scope in the agent brief
+## 3. Synthesize (complex only)
 
-Each explorer gets the prompt in `references/explorer-prompt.md` with its angle filled in. Then go to Step 3.
+Once all explorers have returned, spawn one explainer with `references/explainer-prompt.md` and every explorer's findings filled in.
 
-## Step 2b. Direct Explain (simple questions)
+## 4. Present
 
-The parent explores and explains directly. A separate explainer is optional only if there is independent work to do while it runs.
+Present the explanation (the explainer's output, or the parent's own for simple questions). Light edits for clarity or context from the conversation are fine. Do not substantially rewrite it.
 
-Build its prompt from `references/explainer-prompt.md` without the explorer-findings section. Go to Step 4.
-
-## Step 3. Synthesize (complex questions only)
-
-Once all explorers have returned, spawn one supported subagent to synthesize their findings into one explanation:
-
-- Agent role: a supported role chosen using the host adapter
-- `model`: your configured how-explainer model (default `inherit-parent`)
-- Read-only scope in the agent brief
-
-Build its prompt from `references/explainer-prompt.md` with every explorer's findings filled in.
-
-## Step 4. Present
-
-Present the explainer's output to the user. Light edits for clarity or context from the conversation are fine. Do not substantially rewrite it.
-
-## Output Format
+## Output format
 
 The explanation uses the sections defined in `references/explainer-prompt.md`, dropping any that do not apply: Overview, Key Concepts, How It Works, Where Things Live, Gotchas.

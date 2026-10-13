@@ -56,6 +56,7 @@ The default for non-trivial work is `poteto-mode`, which routes to other skills 
 | Trace why code is shaped this way or why a number changed | [`why`](../why/SKILL.md) |
 | Understand a change in plain language | [`teach`](../teach/SKILL.md) |
 | Recover context from recent work | [`recall`](../recall/SKILL.md) |
+| Catch up on this chat since your last message, with enough context to decide each action item | [`ketchup`](../ketchup/SKILL.md) |
 | Check what a small diff might break elsewhere | [`blast-radius`](../blast-radius/SKILL.md) |
 | Settle types and module boundaries before implementation | [`architect`](../architect/SKILL.md) |
 | Compare several attempts at one brief | [`arena`](../arena/SKILL.md) |
@@ -88,7 +89,7 @@ Close calls:
 - `arena` gives each worker the same brief and compares attempts; `swarm` assigns slices or a race and aggregates evidence.
 - `architect` settles a design and normally continues into implementation; add a review checkpoint if the user wants to approve the design first.
 - `interrogate` reviews the diff; `blast-radius` investigates possible breakage outside it and proves a key safety fact.
-- `recall` rebuilds context across recent chats; resuming one specific task or branch uses the Session pickup playbook.
+- `recall` rebuilds context across recent chats; `ketchup` covers only this chat since the user's last message; resuming one specific task or branch uses the Session pickup playbook.
 - `figure-it-out` designs one rigorous run; the Orchestrate playbook handles a program spanning multiple phases or PRs.
 
 ## Playbooks and principles

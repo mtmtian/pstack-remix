@@ -5,25 +5,48 @@
 # Emits a table sorted by size with a suggested bucket. Never deletes anything;
 # deletion stays a human-gated step in the playbook.
 #
-# Usage: worktree-audit.sh [repo-path]   (defaults to the current repo)
+# Usage: worktree-audit.sh [-b|--base <ref>] [repo-path]
+#   repo-path defaults to the current repo.
+#   -b sets the local ref the MERGED column checks against (e.g. origin/integration).
+#   Without it the base is WORKTREE_AUDIT_BASE, then origin/HEAD, origin/main,
+#   origin/master, whichever exists locally first. The audit never fetches.
+#   origin/HEAD is the remote's default branch, not necessarily the branch PRs
+#   merge into; pass -b when they differ.
 set -u
+
+base=""
+while [ $# -gt 0 ]; do
+	case "$1" in
+	-b|--base) [ $# -ge 2 ] || { echo "error: $1 needs a ref" >&2; exit 2; }; base="$2"; shift 2 ;;
+	-h|--help) sed -n '2,/^set -u/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
+	-*) echo "error: unknown option: $1" >&2; exit 2 ;;
+	*) break ;;
+	esac
+done
 
 repo="${1:-$(git rev-parse --show-toplevel 2>/dev/null)}"
 [ -z "$repo" ] && { echo "not in a git repo; pass a repo path" >&2; exit 1; }
 cd "$repo" || exit 1
+git rev-parse --git-dir >/dev/null 2>&1 || { echo "error: not a git repo: $repo" >&2; exit 1; }
 
 # Main worktree is the first entry; everything else is a candidate.
 main_wt=$(git worktree list --porcelain | sed -n 's/^worktree //p' | head -1)
 
-# Use an explicit base when supplied, otherwise an already configured origin
-# HEAD. Fetching would mutate the checkout, which violates this audit's
-# read-only contract.
-base_ref="${WORKTREE_AUDIT_BASE:-}"
-if [ -z "$base_ref" ]; then
-	base_ref=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || echo "")
-fi
-if [ -z "$base_ref" ]; then
-	echo "warn: no local base ref is available; merged column is unknown" >&2
+# Use the -b base, then WORKTREE_AUDIT_BASE, then the first local ref of
+# origin/HEAD, origin/main and origin/master. Fetching would mutate the
+# checkout, which violates this audit's read-only contract.
+base_ref="${base:-${WORKTREE_AUDIT_BASE:-}}"
+if [ -n "$base_ref" ]; then
+	git rev-parse --verify --quiet "$base_ref^{commit}" >/dev/null 2>&1 || { echo "error: base ref not found locally: $base_ref" >&2; exit 1; }
+else
+	for cand in "$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null)" origin/main origin/master; do
+		[ -n "$cand" ] && git rev-parse --verify --quiet "$cand^{commit}" >/dev/null 2>&1 && { base_ref="$cand"; break; }
+	done
+	if [ -n "$base_ref" ]; then
+		echo "warn: no -b given; MERGED checks against $base_ref" >&2
+	else
+		echo "warn: no local base ref is available; merged column is unknown" >&2
+	fi
 fi
 
 # PR state by branch, queried once. An unavailable forge is unknown, never an
@@ -50,6 +73,7 @@ fi
 
 now=$(date +%s)
 
+echo "# base: ${base_ref:-unknown}"
 printf "SIZE\tAGE\tMERGED\tDIRTY\tREMOTE\tPR\tLAST_CHAT\tBUCKET\tWORKTREE\n"
 
 git worktree list --porcelain | sed -n 's/^worktree //p' | while IFS= read -r wt; do
@@ -60,7 +84,7 @@ git worktree list --porcelain | sed -n 's/^worktree //p' | while IFS= read -r wt
 	head_ts=$(git -C "$wt" log -1 --format='%ct' HEAD 2>/dev/null || echo 0)
 	age=$([ "$head_ts" -gt 0 ] 2>/dev/null && echo "$(( (now - head_ts) / 86400 ))d" || echo "?")
 
-	# Squash-merged branches are not ancestors of main, so PR state is the
+	# Squash-merged branches are not ancestors of the base, so PR state is the
 	# real signal; merge-base only catches fast-forward/rebase merges.
 	if [ -n "$base_ref" ]; then
 		if git merge-base --is-ancestor "$head" "$base_ref" 2>/dev/null; then

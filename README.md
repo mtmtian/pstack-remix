@@ -2,9 +2,9 @@
 
 English | [简体中文](./README.zh-CN.md)
 
-One source tree, one configuration, two native host entry points. This independent local adaptation tracks Lauren Tan's MIT-licensed upstream pstack 0.15.15 at [`df581122`](https://github.com/cursor/plugins/tree/df581122cde17e6e27686b5a448bde23e4ad4318/pstack). It is not maintained by Lauren Tan, Cursor, OpenAI, or Anthropic.
+One source tree, one configuration, two native host entry points. This independent local adaptation tracks Lauren Tan's MIT-licensed upstream pstack 0.15.21 at [`997ffc7f`](https://github.com/cursor/plugins/tree/997ffc7fe26bdaa6478a14e7f5b8d5f9ed747102/pstack). It is not maintained by Lauren Tan, Cursor, OpenAI, or Anthropic.
 
-The 52 skills, 23 playbooks, engineering principles, agent prompts, and Node helpers are shared. Only the plugin manifests and two short runtime adapters differ. Codex retains its installed `pstack-codex` name; Claude Code uses `pstack` from the same directory.
+The 53 skills, 23 playbooks, engineering principles, agent prompts, and Node helpers are shared. Only the plugin manifests and two short runtime adapters differ. Codex retains its installed `pstack-codex` name; Claude Code uses `pstack` from the same directory.
 
 ## Install and use
 
@@ -114,6 +114,7 @@ $interrogate review this pr.
 | [`$how`](./skills/how/SKILL.md) | you want a walkthrough of how a subsystem works. |
 | [`$why`](./skills/why/SKILL.md) | you want to know why something was built this way. discovers available MCPs at run time and queries each evidence category in parallel (source control, issue tracker, long-form docs, real-time chat, infra observability, error tracking, analytics warehouse). |
 | [`$recall`](./skills/recall/SKILL.md) | you're starting or resuming work and want your recent context on a topic rebuilt from your own chat history and the shared record, handed back as a tight current-state brief. |
+| [`$ketchup`](./skills/ketchup/SKILL.md) | you want everything in this chat since your last message, in plain words, with an executive summary for each action item so you can make the call. |
 | [`$blast-radius`](./skills/blast-radius/SKILL.md) | you have a small-looking change and want to know what else it could break, with the one fact it's safe because of proven by running code, not asserted. |
 | [`$architect`](./skills/architect/SKILL.md) | you're about to write code that crosses a function boundary and want the caller's usage, types, and module shape settled first. |
 | [`$arena`](./skills/arena/SKILL.md) | you want N parallel attempts at the same thing, then to grab the best parts of each. |
@@ -189,7 +190,7 @@ automate-me:       $automate-me
 
 ## Shared agent prompts
 
-The shared [poteto-agent](./agents/poteto-agent.md) and [comment-sicko](./agents/comment-sicko.md) files are native Claude Code agent definitions. Codex passes their bodies to supported collaboration roles instead of inventing custom agent types. Both read the same runtime and skills. Comment Sicko has read-only tools in Claude and requires a matching read-only role/scope in Codex.
+The shared [poteto-agent](./agents/poteto-agent.md) and [comment-sicko](./agents/comment-sicko.md) files are native Claude Code agent definitions. Codex passes their bodies to supported collaboration roles instead of inventing custom agent types. Both read the same runtime and skills. The chat that receives `$poteto-mode` runs the playbook; `poteto-agent` wraps the delegates it spawns and never runs the playbook itself. Comment Sicko has read-only tools in Claude and requires a matching read-only role/scope in Codex.
 
 ## principles
 
