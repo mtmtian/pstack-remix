@@ -1,0 +1,4 @@
+{
+  "name": "pstack",
+  "description": "Shared pstack skills and runtime helpers from the same maintained source used by Codex and Claude Code."
+}

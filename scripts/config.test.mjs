@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -71,6 +71,87 @@ test("Given one common policy, When both hosts run show, Then both see the same 
     assert.deepEqual(effective.panels.review, ["inherit-parent", "auto"]);
     assert.equal(effective.reasoning_effort, "high");
   }
+});
+
+test("Given different Codex and Claude overrides, When Antigravity runs show, Then it sees only common read-only policy and required members", (t) => {
+  const dir = tempDir();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const configPath = path.join(dir, "config.json");
+  const config = validConfig();
+  config.roles.feature = "auto";
+  config.panels.review = ["inherit-parent", "auto"];
+  config.reasoning_effort = "high";
+  config.required_panel_members = ["xagent:gemini"];
+  config.hosts.codex.roles.feature = "codex-model-x";
+  config.hosts.codex.panels.review = ["codex-panel-model"];
+  config.hosts.codex.reasoning_effort = "low";
+  config.hosts.claude.roles.feature = "claude-model-y";
+  config.hosts.claude.panels.review = ["claude-panel-model"];
+  config.hosts.claude.reasoning_effort = "max";
+  writeJson(configPath, config);
+  const original = readFileSync(configPath, "utf8");
+
+  const result = runCli(["show", "--host", "antigravity", "--config", configPath]);
+  assert.equal(result.status, 0, result.stderr);
+  const shown = JSON.parse(result.stdout);
+  assert.equal(shown.host, "antigravity");
+  assert.deepEqual(shown.effective.roles, { feature: "auto" });
+  assert.deepEqual(shown.effective.panels.review, ["inherit-parent", "auto", "xagent:gemini"]);
+  assert.deepEqual(shown.effective.required_panel_members, ["xagent:gemini"]);
+  assert.deepEqual(shown.effective.defaultPanel, ["inherit-parent", "inherit-parent", "xagent:gemini"]);
+  assert.equal(shown.effective.reasoning_effort, "high");
+  assert.equal(JSON.stringify(shown).includes("codex-model-x"), false);
+  assert.equal(JSON.stringify(shown).includes("claude-model-y"), false);
+  assert.equal(JSON.stringify(shown).includes("codex-panel-model"), false);
+  assert.equal(JSON.stringify(shown).includes("claude-panel-model"), false);
+  assert.equal(readFileSync(configPath, "utf8"), original);
+});
+
+test("Given no shared config, When Antigravity runs show, Then inherited defaults are returned without creating a file", (t) => {
+  const dir = tempDir();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const configPath = path.join(dir, "missing", "config.json");
+
+  const result = runCli(["show", "--host", "antigravity", "--config", configPath]);
+  assert.equal(result.status, 0, result.stderr);
+  const shown = JSON.parse(result.stdout);
+  assert.equal(shown.exists, false);
+  assert.equal(shown.host, "antigravity");
+  assert.deepEqual(shown.effective.roles, {});
+  assert.deepEqual(shown.effective.panels, {});
+  assert.equal(shown.effective.reasoning_effort, null);
+  assert.deepEqual(shown.effective.required_panel_members, []);
+  assert.deepEqual(shown.effective.defaultPanel, ["inherit-parent", "inherit-parent"]);
+  assert.equal(existsSync(configPath), false);
+  assert.equal(existsSync(path.dirname(configPath)), false);
+});
+
+test("Given malformed shared config, When Antigravity runs show, Then it rejects the file without changing it", (t) => {
+  const dir = tempDir();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const configPath = path.join(dir, "config.json");
+  const malformed = "{ invalid json\\n";
+  writeFileSync(configPath, malformed);
+
+  const result = runCli(["show", "--host", "antigravity", "--config", configPath]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /not valid JSON/);
+  assert.equal(readFileSync(configPath, "utf8"), malformed);
+});
+
+test("Given a valid shared config, When Antigravity attempts update, Then it is rejected without changing preferences", (t) => {
+  const dir = tempDir();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const configPath = path.join(dir, "config.json");
+  const inputPath = path.join(dir, "patch.json");
+  writeJson(configPath, validConfig());
+  writeJson(inputPath, { roles: { feature: "auto" } });
+  const original = readFileSync(configPath, "utf8");
+
+  const result = runCli(["update", "--host", "antigravity", "--input", inputPath, "--config", configPath]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /host must be one of codex or claude/);
+  assert.equal(readFileSync(configPath, "utf8"), original);
 });
 
 test("Given a host-specific model, When Codex is updated, Then Claude and common policy never receive that model", (t) => {

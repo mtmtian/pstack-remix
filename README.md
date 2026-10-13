@@ -2,9 +2,9 @@
 
 English | [简体中文](./README.zh-CN.md)
 
-One source tree, one configuration, two native host entry points. This independent local adaptation tracks Lauren Tan's MIT-licensed upstream pstack 0.15.9 at [`e43c7ee2`](https://github.com/cursor/plugins/tree/e43c7ee26e0038c6c1fa8380dd34ce86ff94cb2a/pstack). It is not maintained by Lauren Tan, Cursor, OpenAI, or Anthropic.
+One source tree, one configuration, two native host entry points. This independent local adaptation tracks Lauren Tan's MIT-licensed upstream pstack 0.15.21 at [`997ffc7f`](https://github.com/cursor/plugins/tree/997ffc7fe26bdaa6478a14e7f5b8d5f9ed747102/pstack). It is not maintained by Lauren Tan, Cursor, OpenAI, or Anthropic.
 
-The 51 skills, 23 playbooks, engineering principles, agent prompts, and Node helpers are shared. Only the plugin manifests and two short runtime adapters differ. Codex retains its installed `pstack-codex` name; Claude Code uses `pstack` from the same directory.
+The 53 skills, 23 playbooks, engineering principles, agent prompts, and Node helpers are shared. Only the plugin manifests and two short runtime adapters differ. Codex retains its installed `pstack-codex` name; Claude Code uses `pstack` from the same directory.
 
 ## Install and use
 
@@ -31,7 +31,7 @@ Examples below use `$skill` as a short reference to the bundled skill; in Claude
 
 ## usage
 
-use [`$poteto-mode`](./skills/poteto-mode/SKILL.md) at the start of a task. it reads your request, picks from a set of playbooks, and runs the other skills as the steps need them.
+use [`$poteto-mode`](./skills/poteto-mode/SKILL.md) at the start of a task. it reads your request, picks from a set of playbooks, and runs the other skills as the steps need them. If you are new to pstack or unsure which skill fits, invoke [`$poteto-help`](./skills/poteto-help/SKILL.md) for guidance and a prompt to send.
 
 ### just use [`$poteto-mode`](./skills/poteto-mode/SKILL.md)
 
@@ -110,9 +110,11 @@ $interrogate review this pr.
 | skill | use it when |
 |---|---|
 | [`$poteto-mode`](./skills/poteto-mode/SKILL.md) | default entry point for any non-trivial task. |
+| [`$poteto-help`](./skills/poteto-help/SKILL.md) | you are new to pstack or unsure which skill or playbook fits; it gives guidance and a prompt without starting the work. |
 | [`$how`](./skills/how/SKILL.md) | you want a walkthrough of how a subsystem works. |
 | [`$why`](./skills/why/SKILL.md) | you want to know why something was built this way. discovers available MCPs at run time and queries each evidence category in parallel (source control, issue tracker, long-form docs, real-time chat, infra observability, error tracking, analytics warehouse). |
 | [`$recall`](./skills/recall/SKILL.md) | you're starting or resuming work and want your recent context on a topic rebuilt from your own chat history and the shared record, handed back as a tight current-state brief. |
+| [`$ketchup`](./skills/ketchup/SKILL.md) | you want everything in this chat since your last message, in plain words, with an executive summary for each action item so you can make the call. |
 | [`$blast-radius`](./skills/blast-radius/SKILL.md) | you have a small-looking change and want to know what else it could break, with the one fact it's safe because of proven by running code, not asserted. |
 | [`$architect`](./skills/architect/SKILL.md) | you're about to write code that crosses a function boundary and want the caller's usage, types, and module shape settled first. |
 | [`$arena`](./skills/arena/SKILL.md) | you want N parallel attempts at the same thing, then to grab the best parts of each. |
@@ -188,7 +190,7 @@ automate-me:       $automate-me
 
 ## Shared agent prompts
 
-The shared [poteto-agent](./agents/poteto-agent.md) and [comment-sicko](./agents/comment-sicko.md) files are native Claude Code agent definitions. Codex passes their bodies to supported collaboration roles instead of inventing custom agent types. Both read the same runtime and skills. Comment Sicko has read-only tools in Claude and requires a matching read-only role/scope in Codex.
+The shared [poteto-agent](./agents/poteto-agent.md) and [comment-sicko](./agents/comment-sicko.md) files are native Claude Code agent definitions. Codex passes their bodies to supported collaboration roles instead of inventing custom agent types. Both read the same runtime and skills. The chat that receives `$poteto-mode` runs the playbook; `poteto-agent` wraps the delegates it spawns and never runs the playbook itself. Comment Sicko has read-only tools in Claude and requires a matching read-only role/scope in Codex.
 
 ## principles
 
