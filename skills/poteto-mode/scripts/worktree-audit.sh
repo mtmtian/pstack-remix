@@ -8,8 +8,8 @@
 # Usage: worktree-audit.sh [-b|--base <ref>] [repo-path]
 #   repo-path defaults to the current repo.
 #   -b sets the local ref the MERGED column checks against (e.g. origin/integration).
-#   Without it the base is WORKTREE_AUDIT_BASE, then origin/HEAD, origin/main,
-#   origin/master, whichever exists locally first. The audit never fetches.
+#   Without it the base is the first local ref of origin/HEAD, origin/main and
+#   origin/master. The audit never fetches.
 #   origin/HEAD is the remote's default branch, not necessarily the branch PRs
 #   merge into; pass -b when they differ.
 set -u
@@ -32,10 +32,10 @@ git rev-parse --git-dir >/dev/null 2>&1 || { echo "error: not a git repo: $repo"
 # Main worktree is the first entry; everything else is a candidate.
 main_wt=$(git worktree list --porcelain | sed -n 's/^worktree //p' | head -1)
 
-# Use the -b base, then WORKTREE_AUDIT_BASE, then the first local ref of
-# origin/HEAD, origin/main and origin/master. Fetching would mutate the
-# checkout, which violates this audit's read-only contract.
-base_ref="${base:-${WORKTREE_AUDIT_BASE:-}}"
+# Use the -b base, otherwise the first local ref of origin/HEAD, origin/main and
+# origin/master. Fetching would mutate the checkout, which violates this
+# audit's read-only contract.
+base_ref="$base"
 if [ -n "$base_ref" ]; then
 	git rev-parse --verify --quiet "$base_ref^{commit}" >/dev/null 2>&1 || { echo "error: base ref not found locally: $base_ref" >&2; exit 1; }
 else
