@@ -3017,7 +3017,7 @@ function statusQueryVerdict(stamp, failures, failure) {
     blocker: { kind: "status-query", failures, failure }
   });
 }
-var deadlinePassed = (started, options, now) => options.timeout > 0 && now - started >= options.timeout;
+var deadlinePassed = (started, options, now) => !options.once && options.timeout > 0 && now - started >= options.timeout;
 async function pollUntilTerminal(args) {
   let failures = 0;
   const started = args.dependencies.clock.now();
@@ -3328,6 +3328,8 @@ async function runQueued(args) {
             frontier: evaluation.frontier,
             reason: evaluation.reason
           }));
+        if (!args.options.once)
+          return { kind: "sleep", seconds: args.options.interval };
         return {
           kind: "sleep",
           seconds: args.options.interval,
@@ -3558,7 +3560,7 @@ function stackPrList(value) {
 }
 function parseArgs(argv, io) {
   const program = new Command2("watch-pr").description(`Watch one pull request, a connected stack, or an immutable queued stack.
-JSON (NDJSON while polling) is the default; --pretty renders human text.`).configureOutput({ writeOut: io.stdout, writeErr: io.stderr }).exitOverride().option("--owner <owner>", "GitHub repository owner").option("--repo <repo>", "GitHub repository name").option("--pr <number>", "pull request number", prNumber).addOption(new Option2("--stack", "watch the connected open stack").default(false).conflicts("queuedStack")).option("--queued-stack", "watch the captured stack until all PRs merge", false).option("--stack-prs <n,...>", "frozen bottom-to-top queue (queued mode only)", stackPrList).option("--interval <seconds>", "poll interval", positiveNumber, 60).option("--sweep-interval <seconds>", "whole-stack sweep interval", positiveNumber, 300).option("--timeout <seconds>", "deadline; 0 disables it", nonNegativeNumber, 0).option("--max-query-errors <count>", "consecutive query-error budget", positiveInteger, 5).option("--status-only", "print one status table and exit 0", false).option("--once", "classify once and exit; a wait exits as TIMEOUT", false).option("--allow-draft", "do not treat a draft as a merge gate", false).option("--pretty", "render human text instead of JSON", false);
+JSON (NDJSON while polling) is the default; --pretty renders human text.`).configureOutput({ writeOut: io.stdout, writeErr: io.stderr }).exitOverride().option("--owner <owner>", "GitHub repository owner").option("--repo <repo>", "GitHub repository name").option("--pr <number>", "pull request number", prNumber).addOption(new Option2("--stack", "watch the connected open stack").default(false).conflicts("queuedStack")).option("--queued-stack", "watch the captured stack until all PRs merge", false).option("--stack-prs <n,...>", "frozen bottom-to-top queue (queued mode only)", stackPrList).option("--interval <seconds>", "poll interval", positiveNumber, 60).option("--sweep-interval <seconds>", "whole-stack sweep interval", positiveNumber, 300).option("--timeout <seconds>", "deadline; 0 disables it", nonNegativeNumber, 0).option("--max-query-errors <count>", "consecutive query-error budget", positiveInteger, 5).option("--status-only", "print one status table and exit 0", false).option("--once", "classify once and exit, ignoring --timeout; a wait exits as TIMEOUT", false).option("--allow-draft", "do not treat a draft as a merge gate", false).option("--pretty", "render human text instead of JSON", false);
   program.parse(argv, { from: "user" });
   const raw = program.opts();
   if (raw.stackPrs !== undefined && !raw.queuedStack)

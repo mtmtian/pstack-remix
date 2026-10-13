@@ -136,3 +136,66 @@ describe("--once", () => {
     });
   });
 });
+
+describe("--once and deadlines", () => {
+  function slowReader(advance: () => void): GitHubReader {
+    const base = fakeReader();
+    return {
+      ...base,
+      async pullRequest(pr: PrContext) {
+        advance();
+        return base.pullRequest(pr);
+      },
+    };
+  }
+
+  it("ignores --timeout, so a slow queued sweep still reports its current wait", async () => {
+    let now = 0;
+    const timeline: string[] = [];
+    const verdict = await runQueued({
+      dependencies: {
+        reader: slowReader(() => (now += 2)),
+        clock: {
+          now: () => now,
+          observedAt: () => "2026-10-13T00:00:00.000Z",
+          async sleep(seconds) {
+            throw new Error(`--once slept for ${seconds}s`);
+          },
+        },
+        emit(verdict) {
+          timeline.push(`emit:${verdict.kind}`);
+        },
+      },
+      contexts: [context(20), context(21)],
+      options: { ...once, timeout: 1 },
+    });
+    expect(timeline).toEqual(["emit:QUEUE", "emit:STATUS", "emit:WAITING"]);
+    expect(verdict).toMatchObject({ kind: "TIMEOUT", exitCode: 5 });
+  });
+
+  it("leaves a native queued run sleeping when the deadline passes after its wait", async () => {
+    let now = 0;
+    const timeline: string[] = [];
+    const running = runQueued({
+      dependencies: {
+        reader: fakeReader(),
+        clock: {
+          now: () => now,
+          observedAt: () => "2026-10-13T00:00:00.000Z",
+          async sleep(seconds) {
+            timeline.push(`sleep:${seconds}`);
+            throw new Error("native run slept");
+          },
+        },
+        emit(verdict) {
+          timeline.push(`emit:${verdict.kind}`);
+          if (verdict.kind === "WAITING") now += 100;
+        },
+      },
+      contexts: [context(20)],
+      options: { ...once, once: false, timeout: 5 },
+    });
+    await expect(running).rejects.toThrow("native run slept");
+    expect(timeline.slice(-2)).toEqual(["emit:WAITING", "sleep:60"]);
+  });
+});

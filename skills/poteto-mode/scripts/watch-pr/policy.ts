@@ -353,7 +353,9 @@ const deadlinePassed = (
   started: number,
   options: T.PollingOptions,
   now: number
-): boolean => options.timeout > 0 && now - started >= options.timeout;
+): boolean =>
+  // A --once run classifies the current state and has no deadline to reach.
+  !options.once && options.timeout > 0 && now - started >= options.timeout;
 type StepResult<V> =
   | { readonly kind: "terminal"; readonly verdict: V }
   | {
@@ -825,6 +827,9 @@ export async function runQueued(args: {
               reason: evaluation.reason,
             })
           );
+        // Native queued runs reach their deadline in evaluateQueue; only --once ends at this wait.
+        if (!args.options.once)
+          return { kind: "sleep", seconds: args.options.interval };
         return {
           kind: "sleep",
           seconds: args.options.interval,

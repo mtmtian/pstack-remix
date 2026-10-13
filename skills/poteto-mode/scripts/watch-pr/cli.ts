@@ -130,7 +130,7 @@ export function parseArgs(
     .option("--status-only", "print one status table and exit 0", false)
     .option(
       "--once",
-      "classify once and exit; a wait exits as TIMEOUT",
+      "classify once and exit, ignoring --timeout; a wait exits as TIMEOUT",
       false
     )
     .option("--allow-draft", "do not treat a draft as a merge gate", false)
