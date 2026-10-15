@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Verify current source with a fresh Python cache, deadline and process-group cleanup."""
 import argparse
-from contextlib import suppress
 import math
 import os
 from pathlib import Path
@@ -9,6 +8,28 @@ import signal
 import subprocess
 import sys
 import tempfile
+
+
+def signal_group(pgid, signum):
+    try:
+        os.killpg(pgid, signum)
+    except ProcessLookupError:
+        pass
+    except PermissionError:
+        # macOS reports EPERM, not ESRCH, for a group whose members have all
+        # exited but are not yet reaped. Only a running member can refuse.
+        if group_has_running_member(pgid):
+            raise
+
+
+def group_has_running_member(pgid):
+    listing = subprocess.run(["ps", "-A", "-o", "pgid=,stat="], capture_output=True, text=True, check=True).stdout
+    for line in listing.splitlines():
+        fields = line.split()
+        # A leading Z or X is dead; macOS adds E to a process that is still exiting.
+        if len(fields) == 2 and fields[0] == str(pgid) and fields[1][0] not in "ZX" and "E" not in fields[1]:
+            return True
+    return False
 
 
 def run_check(command, cwd, timeout=30, env=None):
@@ -27,10 +48,9 @@ def run_check(command, cwd, timeout=30, env=None):
         except OSError as error:
             return subprocess.CompletedProcess(command, 127, "", f"{error}\n")
 
-        def signal_group(signum):
+        def stop(signum):
             process.poll()
-            with suppress(ProcessLookupError):
-                os.killpg(process.pid, signum)
+            signal_group(process.pid, signum)
 
         timed_out = False
         try:
@@ -38,11 +58,11 @@ def run_check(command, cwd, timeout=30, env=None):
                 stdout, stderr = process.communicate(timeout=timeout)
             except subprocess.TimeoutExpired:
                 timed_out = True
-                signal_group(signal.SIGTERM)
+                stop(signal.SIGTERM)
                 try:
                     stdout, stderr = process.communicate(timeout=1)
                 except subprocess.TimeoutExpired:
-                    signal_group(signal.SIGKILL)
+                    stop(signal.SIGKILL)
                     try:
                         stdout, stderr = process.communicate(timeout=1)
                     except subprocess.TimeoutExpired as error:
@@ -52,7 +72,7 @@ def run_check(command, cwd, timeout=30, env=None):
                         process.stdout.close()
                         process.stderr.close()
         finally:
-            signal_group(signal.SIGKILL)
+            stop(signal.SIGKILL)
             process.wait()
         if timed_out:
             stderr += f"\nVerification timed out after {timeout:g} seconds.\n"

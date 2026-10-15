@@ -1,3 +1,4 @@
+import errno
 import json
 import os
 from pathlib import Path
@@ -9,10 +10,13 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
-run_check = runpy.run_path(str(ROOT / "scripts/e2e-process.py"))["run_check"]
+helpers = runpy.run_path(str(ROOT / "scripts/e2e-process.py"))
+run_check = helpers["run_check"]
+signal_group = helpers["signal_group"]
 
 
 class BoundedVerificationTest(unittest.TestCase):
@@ -167,6 +171,42 @@ else:
                 if process.poll() is None:
                     os.killpg(process.pid, signal.SIGKILL)
                 process.communicate(timeout=5)
+
+    @unittest.skipUnless(hasattr(os, "waitid"), "needs os.waitid to hold an unreaped child")
+    def test_given_group_whose_only_member_exited_unreaped_when_signalled_then_it_is_already_stopped(self):
+        # The holder leaves its child exited but unreaped in a group of its own.
+        # macOS killpg reports EPERM for that group, not ESRCH.
+        holder = subprocess.Popen([sys.executable, "-c", '''import os, signal
+child = os.fork()
+if child == 0:
+    os.setpgid(0, 0)
+    os._exit(0)
+os.waitid(os.P_PID, child, os.WEXITED | os.WNOWAIT)
+print(child, flush=True)
+signal.pause()
+'''], stdout=subprocess.PIPE, text=True)
+        try:
+            child = int(holder.stdout.readline())
+            state = subprocess.run(["ps", "-o", "pgid=,stat=", "-p", str(child)], capture_output=True, text=True).stdout.split()
+            self.assertEqual(state[0], str(child))
+            self.assertTrue(state[1].startswith("Z"), state)
+
+            signal_group(child, signal.SIGKILL)
+        finally:
+            holder.kill()
+            holder.communicate(timeout=5)
+
+    def test_given_running_member_refuses_the_signal_then_the_permission_error_is_raised(self):
+        # A live member owned by another user is the real EPERM case. Creating
+        # one needs root, so the refusal is faked at killpg for a live group.
+        member = subprocess.Popen([sys.executable, "-c", "import signal; signal.pause()"], start_new_session=True)
+        try:
+            refused = PermissionError(errno.EPERM, "Operation not permitted")
+            with mock.patch("os.killpg", side_effect=refused), self.assertRaises(PermissionError):
+                signal_group(member.pid, signal.SIGTERM)
+        finally:
+            member.kill()
+            member.wait(timeout=5)
 
 
 if __name__ == "__main__":

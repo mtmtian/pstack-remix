@@ -13,6 +13,7 @@ if [[ "$suite" != build ]]; then
   printf '\nRunning offline runtime checks\n'
   node --version
   python3 --version
+  node scripts/check-fork.mjs
   if ! command -v timeout >/dev/null; then
     printf 'GNU timeout is required for the host regression tests. See docs/ci.md for macOS setup.\n' >&2
     exit 1
