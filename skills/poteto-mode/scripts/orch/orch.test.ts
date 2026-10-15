@@ -117,27 +117,35 @@ async function makeGitStack(directory: string): Promise<{
 
 type FixtureState = "open" | "draft" | "merged" | "closed";
 
+interface FixturePr {
+  readonly number: number;
+  readonly state: FixtureState;
+  readonly head: string;
+  readonly base: string;
+  readonly repository?: string;
+}
+
 const FORGE_FIXTURES: Readonly<
   Record<
     Forge,
     {
       readonly fields: string;
-      readonly row: (pr: {
-        number: number;
-        state: FixtureState;
-        head: string;
-        base: string;
-      }) => Record<string, unknown>;
+      readonly row: (pr: FixturePr) => Record<string, unknown>;
     }
   >
 > = {
   gh: {
-    fields: "number,state,headRefName,baseRefName",
-    row: ({ number, state, head, base }) => ({
+    fields: "number,state,headRefName,baseRefName,headRepository",
+    row: ({ number, state, head, base, repository }) => ({
       number,
       state: state === "draft" ? "OPEN" : state.toUpperCase(),
       headRefName: head,
       baseRefName: base,
+      headRepository: {
+        id: "R_fixture",
+        name: "fixture",
+        nameWithOwner: repository ?? "acme/fixture",
+      },
     }),
   },
   origin: {
@@ -151,15 +159,7 @@ const FORGE_FIXTURES: Readonly<
   },
 };
 
-function forgeRows(
-  forge: Forge,
-  prs: readonly {
-    number: number;
-    state: FixtureState;
-    head: string;
-    base: string;
-  }[]
-): string {
+function forgeRows(forge: Forge, prs: readonly FixturePr[]): string {
   return JSON.stringify(prs.map((pr) => FORGE_FIXTURES[forge].row(pr)));
 }
 
@@ -192,8 +192,9 @@ async function withFakeForge<T>({
     }\n`
   );
   const { fields } = FORGE_FIXTURES[forge];
+  const repoFlag = forge === "gh" ? "--repo acme/fixture " : "";
   const list = (filter: string, branch: string): string =>
-    `pr list ${filter} ${branch} --state all --json ${fields}`;
+    `pr list ${repoFlag}${filter} ${branch} --state all --limit 1000 --json ${fields}`;
   const fake = join(bin, forge);
   await writeFile(
     fake,
@@ -649,6 +650,110 @@ describe("Store", () => {
     await expect(
       store.frontier.set({ repo: stack.repo, forge: "origin", prs: [11] })
     ).rejects.toThrow("--prs reads GitHub with gh pr view; omit --forge");
+  });
+
+  it("ignores another fork's pull request for a same-named branch", async () => {
+    const { directory, store } = await initializedStore();
+    const stack = await makeGitStack(directory);
+
+    await withFakeForge({
+      directory,
+      forge: "gh",
+      currentRows: forgeRows("gh", [
+        {
+          number: 99,
+          state: "open",
+          head: "stack/open",
+          base: "main",
+          repository: "someone/fixture",
+        },
+        {
+          number: 11,
+          state: "open",
+          head: "stack/open",
+          base: "stack/closed",
+        },
+      ]),
+      operation: async () => {
+        expect(
+          (await store.frontier.set({ repo: stack.repo })).prs.map(
+            (row) => row.pr
+          )
+        ).toEqual([10, 13, 11, 14]);
+      },
+    });
+  });
+
+  it("treats a branch whose only pull request comes from another fork as having none", async () => {
+    const { directory, store } = await initializedStore();
+    const stack = await makeGitStack(directory);
+
+    await withFakeForge({
+      directory,
+      forge: "gh",
+      currentRows: forgeRows("gh", [
+        {
+          number: 99,
+          state: "open",
+          head: "stack/open",
+          base: "main",
+          repository: "someone/fixture",
+        },
+      ]),
+      operation: async () => {
+        await expect(store.frontier.set({ repo: stack.repo })).rejects.toThrow(
+          "branch stack/open has no pull request"
+        );
+      },
+    });
+  });
+
+  it("rejects a pull request list that may be truncated", async () => {
+    const { directory, store } = await initializedStore();
+    const stack = await makeGitStack(directory);
+
+    await withFakeForge({
+      directory,
+      forge: "gh",
+      currentRows: forgeRows(
+        "gh",
+        Array.from({ length: 1000 }, (_, index) => ({
+          number: 1000 + index,
+          state: "closed" as const,
+          head: "stack/open",
+          base: "stack/closed",
+        }))
+      ),
+      operation: async () => {
+        await expect(store.frontier.set({ repo: stack.repo })).rejects.toThrow(
+          "gh pr list --head stack/open returned 1000 pull requests and may be truncated; set the frontier with --prs"
+        );
+      },
+    });
+  });
+
+  it("resolves a master trunk without origin/HEAD and without asking the forge", async () => {
+    const { directory, store } = await initializedStore();
+    const repo = join(directory, "repo");
+    await mkdir(repo);
+    git({ repo, args: ["init", "--initial-branch=master"] });
+    git({ repo, args: ["config", "user.name", "Orch Test"] });
+    git({ repo, args: ["config", "user.email", "orch@example.com"] });
+    await writeFile(join(repo, "master.txt"), "master\n");
+    git({ repo, args: ["add", "."] });
+    git({ repo, args: ["commit", "-m", "master"] });
+    git({ repo, args: ["update-ref", "refs/remotes/origin/master", "HEAD"] });
+
+    await withFakeGh({
+      directory,
+      operation: async () => {
+        expect(await store.frontier.set({ repo })).toEqual({
+          generation: 1,
+          prs: [],
+          lowestUnmerged: null,
+        });
+      },
+    });
   });
 
   it("names the missing pull request when a chain branch has none", async () => {

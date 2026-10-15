@@ -2757,11 +2757,13 @@ function countLine(value) {
   const entries = Object.entries(value);
   return entries.length === 0 ? "none" : entries.map(([name, count]) => `${name}=${count}`).join(", ");
 }
+var PULL_REQUEST_LIST_LIMIT = 1000;
 var FORGE_PULL_REQUEST_QUERIES = {
   gh: {
     stateField: "state",
     headField: "headRefName",
     baseField: "baseRefName",
+    headRepositoryField: "headRepository",
     states: new Map([
       ["OPEN", "OPEN"],
       ["MERGED", "MERGED"],
@@ -2772,6 +2774,7 @@ var FORGE_PULL_REQUEST_QUERIES = {
     stateField: "status",
     headField: "headRef",
     baseField: "baseRef",
+    headRepositoryField: null,
     states: new Map([
       ["open", "OPEN"],
       ["draft", "OPEN"],
@@ -2805,22 +2808,32 @@ function runTool({
 function listPullRequests({
   filter,
   branch,
-  forge,
-  repo
+  target
 }) {
+  const { forge, repo, repository } = target;
   const query = FORGE_PULL_REQUEST_QUERIES[forge];
   const command = `${forge} pr list ${filter} ${branch}`;
+  const fields = [
+    "number",
+    query.stateField,
+    query.headField,
+    query.baseField,
+    ...query.headRepositoryField === null ? [] : [query.headRepositoryField]
+  ];
   const raw = runTool({
     command: forge,
     args: [
       "pr",
       "list",
+      ...repository === null ? [] : ["--repo", repository],
       filter,
       branch,
       "--state",
       "all",
+      "--limit",
+      String(PULL_REQUEST_LIST_LIMIT),
       "--json",
-      ["number", query.stateField, query.headField, query.baseField].join(",")
+      fields.join(",")
     ],
     repo
   });
@@ -2833,7 +2846,10 @@ function listPullRequests({
   if (!isUnknownArray(value)) {
     throw new UserError(`${command} output is not a JSON array`);
   }
-  return value.map((row) => {
+  if (value.length >= PULL_REQUEST_LIST_LIMIT) {
+    throw new UserError(`${command} returned ${PULL_REQUEST_LIST_LIMIT} pull requests and may be truncated; set the frontier with --prs`);
+  }
+  return value.flatMap((row) => {
     const status = isRecord(row) ? row[query.stateField] : undefined;
     const state = typeof status === "string" ? query.states.get(status) ?? null : null;
     const head = isRecord(row) ? row[query.headField] : undefined;
@@ -2841,30 +2857,35 @@ function listPullRequests({
     if (!isRecord(row) || typeof row.number !== "number" || !Number.isSafeInteger(row.number) || row.number < 1 || state === null || typeof head !== "string" || head.length === 0 || typeof base !== "string" || base.length === 0) {
       throw new UserError(`${command} output has an invalid PR row`);
     }
-    return { pr: row.number, state, branch: head, base };
+    if (query.headRepositoryField !== null) {
+      const headRepository = row[query.headRepositoryField];
+      const owner = isRecord(headRepository) ? headRepository.nameWithOwner : undefined;
+      if (typeof owner !== "string" || owner.toLowerCase() !== repository?.toLowerCase()) {
+        return [];
+      }
+    }
+    return [{ pr: row.number, state, branch: head, base }];
   });
 }
 function branchPullRequest({
   branch,
-  forge,
-  repo
+  target
 }) {
-  const rows = listPullRequests({ filter: "--head", branch, forge, repo });
+  const rows = listPullRequests({ filter: "--head", branch, target });
   const row = rows[0];
   if (row === undefined) {
-    throw new UserError(`branch ${branch} has no pull request; open one with ${forge} pr create, or resolve the frontier from a branch whose chain is fully submitted`);
+    throw new UserError(`branch ${branch} has no pull request; open one with ${target.forge} pr create, or resolve the frontier from a branch whose chain is fully submitted`);
   }
   if (rows.length > 1) {
-    throw new UserError(`branch ${branch} has multiple pull requests (${rows.map((item) => `#${item.pr}`).join(", ")}); close the stale ones first`);
+    throw new UserError(`branch ${branch} has multiple pull requests (${rows.map((item) => `#${item.pr}`).join(", ")}); set the frontier with --prs`);
   }
   return row;
 }
 function openChildren({
   branch,
-  forge,
-  repo
+  target
 }) {
-  return listPullRequests({ filter: "--base", branch, forge, repo }).filter((row) => row.state === "OPEN");
+  return listPullRequests({ filter: "--base", branch, target }).filter((row) => row.state === "OPEN");
 }
 function runGit({
   args,
@@ -2885,15 +2906,32 @@ function branchSha({
 function currentBranch(repo) {
   return runGit({ args: ["symbolic-ref", "--short", "HEAD"], repo });
 }
+function refExists(ref, repo) {
+  try {
+    runGit({ args: ["rev-parse", "--verify", "--quiet", ref], repo });
+    return true;
+  } catch {
+    return false;
+  }
+}
 function trunkBranch(repo) {
   try {
     return runGit({
       args: ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
       repo
     }).replace(/^origin\//, "");
-  } catch {
-    return "main";
+  } catch {}
+  for (const ref of [
+    "refs/remotes/origin/main",
+    "refs/remotes/origin/master",
+    "refs/heads/main",
+    "refs/heads/master"
+  ]) {
+    if (refExists(ref, repo)) {
+      return ref.slice(ref.lastIndexOf("/") + 1);
+    }
   }
+  throw new UserError("cannot resolve trunk without origin/HEAD, main, or master; run git remote set-head origin --auto, or set the frontier with --prs");
 }
 function resolveFrontier(repo, forge) {
   const trunk = trunkBranch(repo);
@@ -2901,20 +2939,25 @@ function resolveFrontier(repo, forge) {
   if (current === trunk) {
     return [];
   }
+  const target = {
+    forge,
+    repo,
+    repository: forge === "gh" ? githubRepository(repo) : null
+  };
   const seen = new Set([current]);
-  let bottom = branchPullRequest({ branch: current, forge, repo });
+  let bottom = branchPullRequest({ branch: current, target });
   const chain = [bottom];
   while (bottom.base !== trunk) {
     if (seen.has(bottom.base)) {
       throw new UserError(`pull request base chain loops at branch ${bottom.base}`);
     }
     seen.add(bottom.base);
-    bottom = branchPullRequest({ branch: bottom.base, forge, repo });
+    bottom = branchPullRequest({ branch: bottom.base, target });
     chain.unshift(bottom);
   }
   let tip = current;
   for (;; ) {
-    const children = openChildren({ branch: tip, forge, repo });
+    const children = openChildren({ branch: tip, target });
     const child = children[0];
     if (child === undefined) {
       break;
@@ -2948,7 +2991,7 @@ function githubRepository(repo) {
       stdio: ["ignore", "pipe", "pipe"]
     }).trim();
   } catch (error) {
-    throw new UserError(`git config remote.origin.url failed; --prs requires a GitHub origin: ${errorMessage(error)}`);
+    throw new UserError(`git config remote.origin.url failed; gh frontier resolution requires a GitHub origin: ${errorMessage(error)}`);
   }
   const scp = /^git@github\.com:([^/]+\/[^/]+?)(?:\.git)?$/.exec(remote);
   if (scp?.[1] !== undefined)
@@ -2961,7 +3004,7 @@ function githubRepository(repo) {
     }
     return parts.join("/");
   } catch (error) {
-    throw new UserError(`origin remote is not a supported GitHub repository URL; --prs requires GitHub (${errorMessage(error)})`);
+    throw new UserError(`origin remote is not a supported GitHub repository URL; gh frontier resolution requires GitHub (${errorMessage(error)})`);
   }
 }
 function parseGhFrontierPullRequest(value, expected) {

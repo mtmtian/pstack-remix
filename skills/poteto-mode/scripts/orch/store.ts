@@ -974,8 +974,11 @@ interface ForgePullRequestQuery {
   readonly stateField: string;
   readonly headField: string;
   readonly baseField: string;
+  readonly headRepositoryField: string | null;
   readonly states: ReadonlyMap<string, FrontierPrState>;
 }
+
+const PULL_REQUEST_LIST_LIMIT = 1000;
 
 const FORGE_PULL_REQUEST_QUERIES: Readonly<
   Record<Forge, ForgePullRequestQuery>
@@ -984,6 +987,7 @@ const FORGE_PULL_REQUEST_QUERIES: Readonly<
     stateField: "state",
     headField: "headRefName",
     baseField: "baseRefName",
+    headRepositoryField: "headRepository",
     states: new Map<string, FrontierPrState>([
       ["OPEN", "OPEN"],
       ["MERGED", "MERGED"],
@@ -994,6 +998,7 @@ const FORGE_PULL_REQUEST_QUERIES: Readonly<
     stateField: "status",
     headField: "headRef",
     baseField: "baseRef",
+    headRepositoryField: null,
     states: new Map<string, FrontierPrState>([
       ["open", "OPEN"],
       ["draft", "OPEN"],
@@ -1040,19 +1045,31 @@ function runTool({
   }
 }
 
+interface ForgeTarget {
+  readonly forge: Forge;
+  readonly repo: string;
+  readonly repository: string | null;
+}
+
 function listPullRequests({
   filter,
   branch,
-  forge,
-  repo,
+  target,
 }: {
   filter: "--head" | "--base";
   branch: string;
-  forge: Forge;
-  repo: string;
+  target: ForgeTarget;
 }): readonly ForgePullRequest[] {
+  const { forge, repo, repository } = target;
   const query = FORGE_PULL_REQUEST_QUERIES[forge];
   const command = `${forge} pr list ${filter} ${branch}`;
+  const fields = [
+    "number",
+    query.stateField,
+    query.headField,
+    query.baseField,
+    ...(query.headRepositoryField === null ? [] : [query.headRepositoryField]),
+  ];
   // Every state is fetched because a merged or closed PR still anchors the
   // chain, and a draft counts as OPEN.
   const raw = runTool({
@@ -1060,14 +1077,15 @@ function listPullRequests({
     args: [
       "pr",
       "list",
+      ...(repository === null ? [] : ["--repo", repository]),
       filter,
       branch,
       "--state",
       "all",
+      "--limit",
+      String(PULL_REQUEST_LIST_LIMIT),
       "--json",
-      ["number", query.stateField, query.headField, query.baseField].join(
-        ","
-      ),
+      fields.join(","),
     ],
     repo,
   });
@@ -1080,7 +1098,12 @@ function listPullRequests({
   if (!isUnknownArray(value)) {
     throw new UserError(`${command} output is not a JSON array`);
   }
-  return value.map((row) => {
+  if (value.length >= PULL_REQUEST_LIST_LIMIT) {
+    throw new UserError(
+      `${command} returned ${PULL_REQUEST_LIST_LIMIT} pull requests and may be truncated; set the frontier with --prs`
+    );
+  }
+  return value.flatMap((row) => {
     const status = isRecord(row) ? row[query.stateField] : undefined;
     const state =
       typeof status === "string" ? (query.states.get(status) ?? null) : null;
@@ -1099,29 +1122,41 @@ function listPullRequests({
     ) {
       throw new UserError(`${command} output has an invalid PR row`);
     }
-    return { pr: row.number, state, branch: head, base };
+    if (query.headRepositoryField !== null) {
+      // A PR from another fork can reuse this branch name, and its head is
+      // not the local ref whose SHA the frontier records.
+      const headRepository = row[query.headRepositoryField];
+      const owner = isRecord(headRepository)
+        ? headRepository.nameWithOwner
+        : undefined;
+      if (
+        typeof owner !== "string" ||
+        owner.toLowerCase() !== repository?.toLowerCase()
+      ) {
+        return [];
+      }
+    }
+    return [{ pr: row.number, state, branch: head, base }];
   });
 }
 
 function branchPullRequest({
   branch,
-  forge,
-  repo,
+  target,
 }: {
   branch: string;
-  forge: Forge;
-  repo: string;
+  target: ForgeTarget;
 }): ForgePullRequest {
-  const rows = listPullRequests({ filter: "--head", branch, forge, repo });
+  const rows = listPullRequests({ filter: "--head", branch, target });
   const row = rows[0];
   if (row === undefined) {
     throw new UserError(
-      `branch ${branch} has no pull request; open one with ${forge} pr create, or resolve the frontier from a branch whose chain is fully submitted`
+      `branch ${branch} has no pull request; open one with ${target.forge} pr create, or resolve the frontier from a branch whose chain is fully submitted`
     );
   }
   if (rows.length > 1) {
     throw new UserError(
-      `branch ${branch} has multiple pull requests (${rows.map((item) => `#${item.pr}`).join(", ")}); close the stale ones first`
+      `branch ${branch} has multiple pull requests (${rows.map((item) => `#${item.pr}`).join(", ")}); set the frontier with --prs`
     );
   }
   return row;
@@ -1129,14 +1164,12 @@ function branchPullRequest({
 
 function openChildren({
   branch,
-  forge,
-  repo,
+  target,
 }: {
   branch: string;
-  forge: Forge;
-  repo: string;
+  target: ForgeTarget;
 }): readonly ForgePullRequest[] {
-  return listPullRequests({ filter: "--base", branch, forge, repo }).filter(
+  return listPullRequests({ filter: "--base", branch, target }).filter(
     (row) => row.state === "OPEN"
   );
 }
@@ -1169,6 +1202,15 @@ function currentBranch(repo: string): string {
   return runGit({ args: ["symbolic-ref", "--short", "HEAD"], repo });
 }
 
+function refExists(ref: string, repo: string): boolean {
+  try {
+    runGit({ args: ["rev-parse", "--verify", "--quiet", ref], repo });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function trunkBranch(repo: string): string {
   try {
     return runGit({
@@ -1177,8 +1219,20 @@ function trunkBranch(repo: string): string {
     }).replace(/^origin\//, "");
   } catch {
     // Init-plus-fetch checkouts and local fixtures lack origin/HEAD.
-    return "main";
   }
+  for (const ref of [
+    "refs/remotes/origin/main",
+    "refs/remotes/origin/master",
+    "refs/heads/main",
+    "refs/heads/master",
+  ]) {
+    if (refExists(ref, repo)) {
+      return ref.slice(ref.lastIndexOf("/") + 1);
+    }
+  }
+  throw new UserError(
+    "cannot resolve trunk without origin/HEAD, main, or master; run git remote set-head origin --auto, or set the frontier with --prs"
+  );
 }
 
 function resolveFrontier(repo: string, forge: Forge): readonly FrontierPr[] {
@@ -1187,8 +1241,13 @@ function resolveFrontier(repo: string, forge: Forge): readonly FrontierPr[] {
   if (current === trunk) {
     return [];
   }
+  const target: ForgeTarget = {
+    forge,
+    repo,
+    repository: forge === "gh" ? githubRepository(repo) : null,
+  };
   const seen = new Set([current]);
-  let bottom = branchPullRequest({ branch: current, forge, repo });
+  let bottom = branchPullRequest({ branch: current, target });
   const chain = [bottom];
   while (bottom.base !== trunk) {
     if (seen.has(bottom.base)) {
@@ -1197,12 +1256,12 @@ function resolveFrontier(repo: string, forge: Forge): readonly FrontierPr[] {
       );
     }
     seen.add(bottom.base);
-    bottom = branchPullRequest({ branch: bottom.base, forge, repo });
+    bottom = branchPullRequest({ branch: bottom.base, target });
     chain.unshift(bottom);
   }
   let tip = current;
   for (;;) {
-    const children = openChildren({ branch: tip, forge, repo });
+    const children = openChildren({ branch: tip, target });
     const child = children[0];
     if (child === undefined) {
       break;
@@ -1251,7 +1310,7 @@ function githubRepository(repo: string): string {
     }).trim();
   } catch (error) {
     throw new UserError(
-      `git config remote.origin.url failed; --prs requires a GitHub origin: ${errorMessage(error)}`
+      `git config remote.origin.url failed; gh frontier resolution requires a GitHub origin: ${errorMessage(error)}`
     );
   }
   const scp = /^git@github\.com:([^/]+\/[^/]+?)(?:\.git)?$/.exec(remote);
@@ -1274,7 +1333,7 @@ function githubRepository(repo: string): string {
     return parts.join("/");
   } catch (error) {
     throw new UserError(
-      `origin remote is not a supported GitHub repository URL; --prs requires GitHub (${errorMessage(error)})`
+      `origin remote is not a supported GitHub repository URL; gh frontier resolution requires GitHub (${errorMessage(error)})`
     );
   }
 }
