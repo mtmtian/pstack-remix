@@ -16,8 +16,8 @@
 
 ```sh
 mkdir -p "$HOME/plugins"
-git clone https://github.com/mtmtian/pstack-remix.git "$HOME/plugins/pstack-codex"
-cd "$HOME/plugins/pstack-codex"
+git clone https://github.com/mtmtian/pstack-remix.git "$HOME/plugins/pstack-remix"
+cd "$HOME/plugins/pstack-remix"
 ```
 
 安装 Codex 插件：

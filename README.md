@@ -11,8 +11,8 @@ The 55 skills, 23 playbooks, engineering principles, agent prompts, and Node hel
 Clone the repository once per machine, then register that same checkout with each host. See [setup and updates](./docs/guide/01-setup.md) for prerequisites and existing installations.
 
 ```sh
-git clone https://github.com/mtmtian/pstack-remix.git "$HOME/plugins/pstack-codex"
-cd "$HOME/plugins/pstack-codex"
+git clone https://github.com/mtmtian/pstack-remix.git "$HOME/plugins/pstack-remix"
+cd "$HOME/plugins/pstack-remix"
 codex plugin marketplace add "$PWD"
 codex plugin add pstack-codex@pstack-local
 claude plugin marketplace add "$PWD"
