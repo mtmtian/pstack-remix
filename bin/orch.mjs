@@ -2805,6 +2805,9 @@ function runTool({
     throw new UserError(`${command} ${args.join(" ")} failed: ${errorMessage(error)}`);
   }
 }
+function recoveryHint(forge) {
+  return forge === "gh" ? "set the frontier with --prs" : "close or retarget the extra pull requests, since --prs reads GitHub only";
+}
 function listPullRequests({
   filter,
   branch,
@@ -2847,7 +2850,7 @@ function listPullRequests({
     throw new UserError(`${command} output is not a JSON array`);
   }
   if (value.length >= PULL_REQUEST_LIST_LIMIT) {
-    throw new UserError(`${command} returned ${PULL_REQUEST_LIST_LIMIT} pull requests and may be truncated; set the frontier with --prs`);
+    throw new UserError(`${command} returned ${PULL_REQUEST_LIST_LIMIT} pull requests and may be truncated; ${recoveryHint(forge)}`);
   }
   return value.flatMap((row) => {
     const status = isRecord(row) ? row[query.stateField] : undefined;
@@ -2877,7 +2880,7 @@ function branchPullRequest({
     throw new UserError(`branch ${branch} has no pull request; open one with ${target.forge} pr create, or resolve the frontier from a branch whose chain is fully submitted`);
   }
   if (rows.length > 1) {
-    throw new UserError(`branch ${branch} has multiple pull requests (${rows.map((item) => `#${item.pr}`).join(", ")}); set the frontier with --prs`);
+    throw new UserError(`branch ${branch} has multiple pull requests (${rows.map((item) => `#${item.pr}`).join(", ")}); ${recoveryHint(target.forge)}`);
   }
   return row;
 }
@@ -2921,14 +2924,13 @@ function trunkBranch(repo) {
       repo
     }).replace(/^origin\//, "");
   } catch {}
-  for (const ref of [
-    "refs/remotes/origin/main",
-    "refs/remotes/origin/master",
-    "refs/heads/main",
-    "refs/heads/master"
-  ]) {
-    if (refExists(ref, repo)) {
-      return ref.slice(ref.lastIndexOf("/") + 1);
+  for (const prefix of ["refs/remotes/origin/", "refs/heads/"]) {
+    const found = ["main", "master"].filter((name) => refExists(`${prefix}${name}`, repo));
+    if (found.length > 1) {
+      throw new UserError("cannot tell whether main or master is trunk without origin/HEAD; run git remote set-head origin --auto, or set the frontier with --prs");
+    }
+    if (found[0] !== undefined) {
+      return found[0];
     }
   }
   throw new UserError("cannot resolve trunk without origin/HEAD, main, or master; run git remote set-head origin --auto, or set the frontier with --prs");
@@ -2999,7 +3001,8 @@ function githubRepository(repo) {
   try {
     const url = new URL(remote);
     const parts = url.pathname.replace(/\.git$/, "").split("/").filter(Boolean);
-    if (url.protocol !== "https:" || url.hostname !== "github.com" || url.port || url.username || url.password || url.search || url.hash || parts.length !== 2) {
+    const ssh = url.protocol === "ssh:" && url.username === "git";
+    if (url.protocol !== "https:" && !ssh || url.hostname !== "github.com" || url.port || url.username && !ssh || url.password || url.search || url.hash || parts.length !== 2) {
       throw new Error("origin is not a canonical GitHub URL");
     }
     return parts.join("/");

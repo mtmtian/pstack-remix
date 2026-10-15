@@ -732,6 +732,43 @@ describe("Store", () => {
     });
   });
 
+  it("refuses to guess trunk when origin/main and origin/master both exist", async () => {
+    const { directory, store } = await initializedStore();
+    const stack = await makeGitStack(directory);
+    git({ repo: stack.repo, args: ["update-ref", "refs/remotes/origin/main", "main"] });
+    git({ repo: stack.repo, args: ["update-ref", "refs/remotes/origin/master", "main"] });
+
+    await withFakeGh({
+      directory,
+      operation: async () => {
+        await expect(store.frontier.set({ repo: stack.repo })).rejects.toThrow(
+          "cannot tell whether main or master is trunk without origin/HEAD"
+        );
+      },
+    });
+  });
+
+  it("resolves the base chain for an ssh:// GitHub origin", async () => {
+    const { directory, store } = await initializedStore();
+    const stack = await makeGitStack(directory);
+    git({
+      repo: stack.repo,
+      args: ["remote", "set-url", "origin", "ssh://git@github.com/acme/fixture.git"],
+    });
+
+    await withFakeForge({
+      directory,
+      forge: "gh",
+      operation: async () => {
+        expect(
+          (await store.frontier.set({ repo: stack.repo })).prs.map(
+            (row) => row.pr
+          )
+        ).toEqual([10, 13, 11, 14]);
+      },
+    });
+  });
+
   it("resolves a master trunk without origin/HEAD and without asking the forge", async () => {
     const { directory, store } = await initializedStore();
     const repo = join(directory, "repo");

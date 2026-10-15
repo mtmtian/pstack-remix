@@ -59,6 +59,7 @@ repo_slug=""
 case "$origin_url" in
     https://github.com/*) repo_slug="${origin_url#https://github.com/}" ;;
     git@github.com:*) repo_slug="${origin_url#git@github.com:}" ;;
+    ssh://git@github.com/*) repo_slug="${origin_url#ssh://git@github.com/}" ;;
     *) gh_ok=no ;;
 esac
 repo_slug="${repo_slug%.git}"

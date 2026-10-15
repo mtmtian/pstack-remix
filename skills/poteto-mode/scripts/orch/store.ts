@@ -1051,6 +1051,12 @@ interface ForgeTarget {
   readonly repository: string | null;
 }
 
+function recoveryHint(forge: Forge): string {
+  return forge === "gh"
+    ? "set the frontier with --prs"
+    : "close or retarget the extra pull requests, since --prs reads GitHub only";
+}
+
 function listPullRequests({
   filter,
   branch,
@@ -1100,7 +1106,7 @@ function listPullRequests({
   }
   if (value.length >= PULL_REQUEST_LIST_LIMIT) {
     throw new UserError(
-      `${command} returned ${PULL_REQUEST_LIST_LIMIT} pull requests and may be truncated; set the frontier with --prs`
+      `${command} returned ${PULL_REQUEST_LIST_LIMIT} pull requests and may be truncated; ${recoveryHint(forge)}`
     );
   }
   return value.flatMap((row) => {
@@ -1156,7 +1162,7 @@ function branchPullRequest({
   }
   if (rows.length > 1) {
     throw new UserError(
-      `branch ${branch} has multiple pull requests (${rows.map((item) => `#${item.pr}`).join(", ")}); set the frontier with --prs`
+      `branch ${branch} has multiple pull requests (${rows.map((item) => `#${item.pr}`).join(", ")}); ${recoveryHint(target.forge)}`
     );
   }
   return row;
@@ -1220,14 +1226,17 @@ function trunkBranch(repo: string): string {
   } catch {
     // Init-plus-fetch checkouts and local fixtures lack origin/HEAD.
   }
-  for (const ref of [
-    "refs/remotes/origin/main",
-    "refs/remotes/origin/master",
-    "refs/heads/main",
-    "refs/heads/master",
-  ]) {
-    if (refExists(ref, repo)) {
-      return ref.slice(ref.lastIndexOf("/") + 1);
+  for (const prefix of ["refs/remotes/origin/", "refs/heads/"]) {
+    const found = ["main", "master"].filter((name) =>
+      refExists(`${prefix}${name}`, repo)
+    );
+    if (found.length > 1) {
+      throw new UserError(
+        "cannot tell whether main or master is trunk without origin/HEAD; run git remote set-head origin --auto, or set the frontier with --prs"
+      );
+    }
+    if (found[0] !== undefined) {
+      return found[0];
     }
   }
   throw new UserError(
@@ -1318,11 +1327,12 @@ function githubRepository(repo: string): string {
   try {
     const url = new URL(remote);
     const parts = url.pathname.replace(/\.git$/, "").split("/").filter(Boolean);
+    const ssh = url.protocol === "ssh:" && url.username === "git";
     if (
-      url.protocol !== "https:" ||
+      (url.protocol !== "https:" && !ssh) ||
       url.hostname !== "github.com" ||
       url.port ||
-      url.username ||
+      (url.username && !ssh) ||
       url.password ||
       url.search ||
       url.hash ||
