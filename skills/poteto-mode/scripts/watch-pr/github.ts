@@ -5,6 +5,8 @@ export const REVIEW_THREADS_QUERY =
   "\nquery ReviewThreads($owner: String!, $repo: String!, $pr: Int!, $after: String) {\n  repository(owner: $owner, name: $repo) {\n    pullRequest(number: $pr) {\n      reviewThreads(first: 100, after: $after) {\n        pageInfo {\n          hasNextPage\n          endCursor\n        }\n        nodes {\n          id\n          isResolved\n          comments(first: 10) {\n            nodes {\n              body\n              createdAt\n              path\n              line\n              author { login }\n            }\n          }\n        }\n      }\n    }\n  }\n}\n";
 export const PR_COMMIT_STATUS_QUERY =
   "\nquery PrCommitStatuses($owner: String!, $repo: String!, $pr: Int!) {\n  repository(owner: $owner, name: $repo) {\n    pullRequest(number: $pr) {\n      commits(last: 50) {\n        nodes {\n          commit {\n            oid\n            statusCheckRollup {\n              state\n            }\n          }\n        }\n      }\n    }\n  }\n}\n";
+export const PR_FACTS_QUERY =
+  "\nquery PullRequestFacts($owner: String!, $repo: String!, $pr: Int!) {\n  repository(owner: $owner, name: $repo) {\n    pullRequest(number: $pr) {\n      mergeable\n      mergeStateStatus\n      reviewDecision\n      headRefOid\n      headRefName\n      baseRefName\n      baseRef { target { oid } }\n      state\n      mergedAt\n      isDraft\n    }\n  }\n}\n";
 export const PR_CHECK_ROLLUP_QUERY =
   "\nquery PrCheckRollup($owner: String!, $repo: String!, $pr: Int!, $after: String) {\n  repository(owner: $owner, name: $repo) {\n    pullRequest(number: $pr) {\n      commits(last: 1) {\n        nodes {\n          commit {\n            statusCheckRollup {\n              contexts(first: 100, after: $after) {\n                pageInfo {\n                  hasNextPage\n                  endCursor\n                }\n                nodes {\n                  __typename\n                  ... on CheckRun {\n                    name\n                    status\n                    conclusion\n                    detailsUrl\n                  }\n                  ... on StatusContext {\n                    context\n                    state\n                    targetUrl\n                  }\n                }\n              }\n            }\n          }\n        }\n      }\n    }\n  }\n}\n";
 
@@ -152,15 +154,18 @@ const REVIEW_DECISIONS = [
   "CHANGES_REQUESTED",
   "REVIEW_REQUIRED",
 ] as const;
-// `gh pr view` reports no review decision as "", not null. Only this field does
-// it, so the normalization stays here rather than in nullableEnum, where it
-// would stop a genuinely unexpected rollup state from failing closed.
-const reviewDecision = (value: unknown): T.ReviewDecision =>
-  nullableEnum(
-    value === "" ? null : value,
-    REVIEW_DECISIONS,
-    "pull request.reviewDecision"
-  );
+// The PR records the base commit it was opened against in `baseRefOid`, which
+// does not always follow the branch, so read the branch's own target.
+function baseRefOid(value: unknown): string | null {
+  if (value === null) return null;
+  const target = record(value, "pull request.baseRef").target;
+  return target === null
+    ? null
+    : string(
+        record(target, "pull request.baseRef.target").oid,
+        "pull request.baseRef.target.oid"
+      );
+}
 function parseRemote(value: string): T.Repository | null {
   let normalized = value.trim();
   if (normalized.startsWith("git@github.com:"))
@@ -423,10 +428,15 @@ export function parsePullRequest(
       MERGE_STATES,
       "pull request.mergeStateStatus"
     ),
-    reviewDecision: reviewDecision(object.reviewDecision),
+    reviewDecision: nullableEnum(
+      object.reviewDecision,
+      REVIEW_DECISIONS,
+      "pull request.reviewDecision"
+    ),
     headRefOid: optionalString(object.headRefOid, "pull request.headRefOid"),
     headRefName: string(object.headRefName, "pull request.headRefName"),
     baseRefName: string(object.baseRefName, "pull request.baseRefName"),
+    baseRefOid: baseRefOid(object.baseRef),
     state: enumValue(
       object.state,
       ["OPEN", "CLOSED", "MERGED"] as const,
@@ -472,17 +482,9 @@ export class GhGitHubReader implements T.GitHubReader {
     };
   }
   async pullRequest(context: T.PrContext): Promise<T.PullRequestFacts> {
+    const value = await runJson(graphqlArgs(PR_FACTS_QUERY, context));
     return parsePullRequest(
-      await runJson([
-        "gh",
-        "pr",
-        "view",
-        String(context.number),
-        "--repo",
-        `${context.owner}/${context.repo}`,
-        "--json",
-        "mergeable,mergeStateStatus,reviewDecision,headRefOid,headRefName,baseRefName,state,mergedAt,isDraft",
-      ]),
+      at(value, ["data", "repository", "pullRequest"]),
       context
     );
   }

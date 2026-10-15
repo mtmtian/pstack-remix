@@ -180,6 +180,7 @@ describe("closed enum parsing", () => {
     headRefOid: "head",
     headRefName: "feature",
     baseRefName: "main",
+    baseRef: { target: { oid: "base" } },
     state: "OPEN",
     mergedAt: null,
     isDraft: false,
@@ -194,9 +195,9 @@ describe("closed enum parsing", () => {
     ).toBe("CONFLICTING");
   });
 
-  it("reads gh's empty reviewDecision as no decision rather than a parse failure", () => {
+  it("reads GraphQL's null reviewDecision as no decision", () => {
     expect(
-      parsePullRequest({ ...rawPullRequest, reviewDecision: "" }, context)
+      parsePullRequest({ ...rawPullRequest, reviewDecision: null }, context)
         .reviewDecision
     ).toBeNull();
   });

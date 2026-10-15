@@ -56,19 +56,72 @@ const AUTOMATION_TOKENS = [
   "pr review automation",
   "review automation",
 ] as const;
+// Every fact a verdict reads. The Record type makes a new fact join the re-read check.
+const VERDICT_FACTS: Record<
+  Exclude<keyof T.PullRequestFacts, "context">,
+  true
+> = {
+  state: true,
+  mergedAt: true,
+  isDraft: true,
+  mergeable: true,
+  mergeStateStatus: true,
+  reviewDecision: true,
+  headRefOid: true,
+  headRefName: true,
+  baseRefName: true,
+  baseRefOid: true,
+};
+const mergeabilityUnknown = (facts: T.PullRequestFacts): boolean =>
+  facts.mergeable === "UNKNOWN" || facts.mergeStateStatus === "UNKNOWN";
+// GitHub computes these on the first read that asks, so an unknown first read
+// settling by the re-read is the answer arriving, not the PR changing.
+const COMPUTED_ON_DEMAND: ReadonlySet<string> = new Set([
+  "mergeable",
+  "mergeStateStatus",
+]);
+const changedFacts = (
+  before: T.PullRequestFacts,
+  after: T.PullRequestFacts
+): string[] =>
+  (Object.keys(VERDICT_FACTS) as (keyof typeof VERDICT_FACTS)[])
+    .filter((key) => before[key] !== after[key])
+    .filter(
+      (key) => !(mergeabilityUnknown(before) && COMPUTED_ON_DEMAND.has(key))
+    )
+    .map((key) => `${key} ${before[key]} -> ${after[key]}`);
+function openRevision(facts: T.PullRequestFacts): T.Revision {
+  const { headRefOid, baseRefName, baseRefOid } = facts;
+  if (headRefOid === null || baseRefOid === null)
+    throw new WatcherQueryError({
+      kind: "missing-key",
+      retryable: true,
+      detail: `open PR #${facts.context.number} has no ${headRefOid === null ? "head" : `${baseRefName} branch`} commit`,
+    });
+  return { headRefOid, baseRefName, baseRefOid };
+}
 export async function readSnapshot(args: {
   readonly reader: T.GitHubReader;
   readonly context: T.PrContext;
   readonly pendingHistory: "include" | "omit";
   readonly allowDraft: boolean;
 }): Promise<T.PrSnapshot> {
-  const facts = await args.reader.pullRequest(args.context);
-  if (facts.state === "MERGED" || facts.mergedAt !== null)
-    return { kind: "merged", context: args.context, facts };
-  if (facts.state === "CLOSED")
-    return { kind: "closed", context: args.context, facts };
+  const first = await args.reader.pullRequest(args.context);
+  if (first.state === "MERGED" || first.mergedAt !== null)
+    return { kind: "merged", context: args.context, facts: first };
+  if (first.state === "CLOSED")
+    return { kind: "closed", context: args.context, facts: first };
+  const revision = openRevision(first);
   const threads = await resolveReviewThreads(args.reader, args.context);
   const checks = await resolveChecks(args.reader, args.context);
+  const facts = await args.reader.pullRequest(args.context);
+  const changed = changedFacts(first, facts);
+  if (changed.length > 0)
+    throw new WatcherQueryError({
+      kind: "snapshot-changed",
+      retryable: true,
+      detail: `PR #${args.context.number} changed while its status was read: ${changed.join(", ")}`,
+    });
   const failed = nonEmpty(
     checks.checks.filter(
       (check): check is T.FailedCheck => check.kind === "failed"
@@ -127,6 +180,7 @@ export async function readSnapshot(args: {
     kind: "open",
     context: args.context,
     facts,
+    revision,
     threads,
     ci,
     reviewAutomationRunning: checks.checks.some(
@@ -164,19 +218,36 @@ function gateReason(
   if (row.kind === "merged") return null;
   if (row.kind === "closed") return "closed-without-merge";
   if (row.facts.isDraft && !allowDraft) return "draft-pr";
-  return row.facts.reviewDecision === "CHANGES_REQUESTED"
-    ? "changes-requested"
+  if (row.facts.reviewDecision === "CHANGES_REQUESTED")
+    return "changes-requested";
+  // Updating a branch that is behind restarts its checks and can dismiss an
+  // approval, so this outranks a required review and does not wait on checks.
+  if (row.facts.mergeStateStatus === "BEHIND") return "behind-base";
+  if (row.facts.reviewDecision === "REVIEW_REQUIRED") return "review-required";
+  // BLOCKED beside a passing rollup is another protection rule, such as signed
+  // commits or a required check that never reported.
+  return row.facts.mergeStateStatus === "BLOCKED" ? "merge-blocked" : null;
+}
+function waitReason(row: T.PrSnapshot): T.WaitReason | null {
+  if (row.kind !== "open") return null;
+  if (row.ci.kind === "ci-pending")
+    return { kind: "pending-checks", pending: row.ci.pending };
+  return mergeabilityUnknown(row.facts)
+    ? { kind: "mergeability-unknown" }
     : null;
 }
+const DEFERRED_WHILE_WAITING: ReadonlySet<T.MergeGateReason> = new Set([
+  "draft-pr",
+  "review-required",
+  "merge-blocked",
+]);
 function gateBlocker(
   row: T.PrSnapshot,
   allowDraft: boolean
 ): T.MergeBlocker | null {
   const reason = gateReason(row, allowDraft);
   return reason === null ||
-    (reason === "draft-pr" &&
-      row.kind === "open" &&
-      row.ci.kind === "ci-pending")
+    (DEFERRED_WHILE_WAITING.has(reason) && waitReason(row) !== null)
     ? null
     : { kind: "merge-gate", pr: row.context, reason };
 }
@@ -195,15 +266,21 @@ function readyContribution(
     row.ci.kind !== "ci-clean" ||
     row.threads.length !== 0 ||
     conflictBlocker(row) !== null ||
-    gateReason(row, allowDraft) !== null
+    gateReason(row, allowDraft) !== null ||
+    waitReason(row) !== null
   )
     return null;
   const reviewDecision = row.facts.reviewDecision;
-  if (reviewDecision === "CHANGES_REQUESTED") return null;
+  if (
+    reviewDecision === "CHANGES_REQUESTED" ||
+    reviewDecision === "REVIEW_REQUIRED"
+  )
+    return null;
   return {
     kind: "ready-pr",
     context: row.context,
     proof: {
+      revision: row.revision,
       mergeability: "clear",
       threads: [],
       ci: row.ci,
@@ -226,8 +303,9 @@ export function classifyPr(
     gateBlocker(row, allowDraft),
   ])
     if (blocker !== null) return { kind: "blocker", blocker };
-  if (row.kind === "open" && row.ci.kind === "ci-pending")
-    return { kind: "waiting", frontier: row.context, pending: row.ci.pending };
+  const wait = waitReason(row);
+  if (wait !== null)
+    return { kind: "waiting", frontier: row.context, reason: wait };
   const ready = readyContribution(row, allowDraft);
   if (ready === null) throw new Error("snapshot has no classified decision");
   return ready.kind === "merged-pr"
@@ -247,13 +325,11 @@ export function selectTierMajorStackDecision(
     const blocker = gateBlocker(row, allowDraft);
     if (blocker !== null) return { kind: "blocker", blocker };
   }
-  for (const row of rows)
-    if (row.kind === "open" && row.ci.kind === "ci-pending")
-      return {
-        kind: "waiting",
-        frontier: row.context,
-        pending: row.ci.pending,
-      };
+  for (const row of rows) {
+    const wait = waitReason(row);
+    if (wait !== null)
+      return { kind: "waiting", frontier: row.context, reason: wait };
+  }
   const prs = nonEmpty(
     rows
       .map((row) => readyContribution(row, allowDraft))
@@ -502,7 +578,7 @@ export async function runSimple(args: {
         kind: "WAITING",
         terminal: false,
         frontier: decision.frontier,
-        reason: { kind: "pending-checks", pending: decision.pending },
+        reason: decision.reason,
       })
     );
     return {
@@ -513,7 +589,7 @@ export async function runSimple(args: {
           kind: "TIMEOUT",
           terminal: true,
           exitCode: 5,
-          reason: { kind: "pending-checks", pending: decision.pending },
+          reason: decision.reason,
         }),
     };
   };
@@ -641,10 +717,7 @@ export type QueueEvaluation =
       readonly state: QueueState;
       readonly frontier: T.PrContext;
       readonly reason:
-        | {
-            readonly kind: "pending-checks";
-            readonly pending: T.NonEmpty<T.PendingCheck>;
-          }
+        | T.WaitReason
         | { readonly kind: "merge-queue"; readonly unmergedCount: number };
       readonly emit: boolean;
     };
@@ -692,17 +765,16 @@ export function evaluateQueue(
       frontier,
       unmergedCount: active.length,
     };
-  const row = rows[0];
-  const pending =
-    row.kind === "open" && row.ci.kind === "ci-pending" ? row.ci.pending : null;
-  const reason =
-    pending === null
-      ? ({ kind: "merge-queue", unmergedCount: active.length } as const)
-      : ({ kind: "pending-checks", pending } as const);
+  const reason = waitReason(rows[0]) ?? {
+    kind: "merge-queue" as const,
+    unmergedCount: active.length,
+  };
   const key =
     reason.kind === "pending-checks"
       ? `pending:${frontier.number}:${reason.pending.length}`
-      : `queue:${frontier.number}:${reason.unmergedCount}`;
+      : reason.kind === "merge-queue"
+        ? `queue:${frontier.number}:${reason.unmergedCount}`
+        : `${reason.kind}:${frontier.number}`;
   return {
     kind: "waiting",
     state: { ...state, frontier, lastWaitKey: key },

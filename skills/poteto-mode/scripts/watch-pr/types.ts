@@ -46,6 +46,8 @@ export interface PullRequestFacts {
   readonly headRefOid: string | null;
   readonly headRefName: string;
   readonly baseRefName: string;
+  /** The base branch's current commit, `baseRef.target.oid`, not the PR's recorded `baseRefOid`. */
+  readonly baseRefOid: string | null;
   readonly state: "OPEN" | "CLOSED" | "MERGED";
   readonly mergedAt: string | null;
   readonly isDraft: boolean;
@@ -142,6 +144,12 @@ export type CiClean = CiBase & {
   readonly github: GitHubMergeAllowed;
 };
 export type CiState = CiFailing | CiGithubRejected | CiPending | CiClean;
+/** The head and base commits one open-PR snapshot observed. */
+export interface Revision {
+  readonly headRefOid: string;
+  readonly baseRefName: string;
+  readonly baseRefOid: string;
+}
 export type PrSnapshot =
   | {
       readonly kind: "merged" | "closed";
@@ -152,6 +160,7 @@ export type PrSnapshot =
       readonly kind: "open";
       readonly context: PrContext;
       readonly facts: PullRequestFacts;
+      readonly revision: Revision;
       readonly threads: readonly ReviewThread[];
       readonly ci: CiState;
       readonly reviewAutomationRunning: boolean;
@@ -160,12 +169,16 @@ export interface ReadyPr {
   readonly kind: "ready-pr";
   readonly context: PrContext;
   readonly proof: {
+    readonly revision: Revision;
     readonly mergeability: "clear";
     readonly threads: readonly [];
     readonly ci: CiClean;
     readonly gate: {
       readonly state: "OPEN";
-      readonly reviewDecision: Exclude<ReviewDecision, "CHANGES_REQUESTED">;
+      readonly reviewDecision: Exclude<
+        ReviewDecision,
+        "CHANGES_REQUESTED" | "REVIEW_REQUIRED"
+      >;
       readonly draft: "not-draft" | "draft-allowed";
     };
   };
@@ -178,7 +191,10 @@ export interface MergedPr {
 export type MergeGateReason =
   | "closed-without-merge"
   | "draft-pr"
-  | "changes-requested";
+  | "changes-requested"
+  | "behind-base"
+  | "review-required"
+  | "merge-blocked";
 export type MergeBlocker =
   | {
       readonly kind: "merge-conflicts";
@@ -224,14 +240,25 @@ export type QueryFailure =
       readonly detail: string;
     }
   | {
+      readonly kind: "snapshot-changed";
+      readonly retryable: true;
+      readonly detail: string;
+    }
+  | {
       readonly kind: "invalid-context-url";
       readonly retryable: false;
       readonly detail: string;
       readonly rawValue: string;
     };
+export type WaitReason =
+  | {
+      readonly kind: "pending-checks";
+      readonly pending: NonEmpty<PendingCheck>;
+    }
+  | { readonly kind: "mergeability-unknown" };
 /**
  * `frontier` names the lowest unmerged PR that is actually waiting, and
- * `pending` is that PR's checks only. Pooling every row's pending under the
+ * `reason` describes that PR only. Pooling every row's pending under the
  * bottom PR's number misattributed upstack waits to the frontier.
  *
  * This decision serves single and `--stack` mode. Queued mode deliberately
@@ -243,7 +270,7 @@ export type QueryFailure =
 export interface WaitingDecision {
   readonly kind: "waiting";
   readonly frontier: PrContext;
-  readonly pending: NonEmpty<PendingCheck>;
+  readonly reason: WaitReason;
 }
 export type PrDecision =
   | { readonly kind: "blocker"; readonly blocker: MergeBlocker }
@@ -285,10 +312,7 @@ export type ProgressVerdict =
   | (Progress<"WAITING"> & {
       readonly frontier: PrContext;
       readonly reason:
-        | {
-            readonly kind: "pending-checks";
-            readonly pending: NonEmpty<PendingCheck>;
-          }
+        | WaitReason
         | { readonly kind: "merge-queue"; readonly unmergedCount: number };
     })
   | (Progress<"ADVANCE", "queued-stack"> & {
@@ -332,10 +356,7 @@ export type BlockerVerdict =
     });
 export type TimeoutVerdict = Terminal<"TIMEOUT", 5> & {
   readonly reason:
-    | {
-        readonly kind: "pending-checks";
-        readonly pending: NonEmpty<PendingCheck>;
-      }
+    | WaitReason
     | { readonly kind: "status-unavailable"; readonly failure: QueryFailure }
     | {
         readonly kind: "queued-stack";
