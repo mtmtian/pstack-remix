@@ -41,6 +41,7 @@ const readyPr = {
   kind: "ready-pr",
   context,
   proof: {
+    revision: { headRefOid: "head", baseRefName: "main", baseRefOid: "base" },
     mergeability: "clear",
     threads: [],
     ci: cleanCi,
@@ -82,6 +83,11 @@ const refusalIsNotClean: CiClean = { ...cleanCi, github: refused };
 // @ts-expect-error READY cannot carry the failing-checks exit code.
 const readyWithBlockerExit: ReadyVerdict = { ...ready, exitCode: 4 };
 
+const awaitingReview = { ...readyPr.proof.gate, reviewDecision: "REVIEW_REQUIRED" } as const;
+
+// @ts-expect-error A PR still waiting for a required review is not READY.
+const readyAwaitingReview: ReadyPr["proof"]["gate"] = awaitingReview;
+
 const unprovenPr = { kind: "ready-pr", context } as const;
 
 // @ts-expect-error An open READY row must carry positive readiness proof.
@@ -91,3 +97,4 @@ void refusalIsNotAllowed;
 void refusalIsNotClean;
 void readyWithBlockerExit;
 void readyWithoutProof;
+void readyAwaitingReview;

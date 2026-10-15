@@ -2162,11 +2162,51 @@ var init_esm = __esm(() => {
 
 // orch/store.ts
 import { execFileSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { randomUUID as randomUUID2 } from "node:crypto";
 import {
   access,
+  mkdir as mkdir2,
+  readFile as readFile2,
+  readdir as readdir2,
+  rename as rename2,
+  rm as rm2,
+  writeFile as writeFile2
+} from "node:fs/promises";
+import { basename, dirname, join as join2, resolve } from "node:path";
+
+// github-remote.ts
+function parseGitHubRemote(value) {
+  let normalized = value.trim();
+  if (normalized.startsWith("git@github.com:"))
+    normalized = `https://github.com/${normalized.slice(15)}`;
+  if (normalized.startsWith("ssh://git@github.com/"))
+    normalized = `https://github.com/${normalized.slice(21)}`;
+  try {
+    const url = new URL(normalized);
+    const parts = url.pathname.replace(/\.git$/, "").split("/").filter(Boolean);
+    if (url.protocol !== "https:" || url.hostname !== "github.com" || url.port || url.username || url.password || url.search || url.hash || parts.length !== 2)
+      return null;
+    return { owner: parts[0], repo: parts[1] };
+  } catch {
+    return null;
+  }
+}
+
+// orch/errors.ts
+class UserError extends Error {
+}
+function errorCode(error) {
+  if (error !== null && typeof error === "object" && "code" in error && typeof error.code === "string") {
+    return error.code;
+  }
+  return null;
+}
+
+// orch/lock.ts
+import { randomUUID } from "node:crypto";
+import {
+  link,
   mkdir,
-  open,
   readFile,
   readdir,
   rename,
@@ -2174,14 +2214,161 @@ import {
   unlink,
   writeFile
 } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
-var UNIT_HEADER = "id\ttrack\tstate\tbranch\tpr\tsha\tbrief";
-var LEDGER_HEADER = "pr\tsha\tverdict\tevidence\tverifier\tts";
+import { join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 var LOCK_FILE = ".orch.lock";
-
-class UserError extends Error {
+var TAKEOVER_DIR = `${LOCK_FILE}.takeover`;
+var PRIVATE_ENTRY = /^\.orch\.lock\.(?:takeover\.)?(\d+)\.[0-9a-f-]{36}$/;
+var NO_HARD_LINKS = new Set(["ENOTSUP", "EOPNOTSUPP", "EPERM", "ENOSYS"]);
+function holderIsDead(holder) {
+  const pid = Number.parseInt(holder, 10);
+  if (!Number.isSafeInteger(pid) || pid <= 0 || String(pid) !== holder) {
+    return false;
+  }
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (error) {
+    return errorCode(error) === "ESRCH";
+  }
+}
+async function sweepDeadEntries(store) {
+  for (const name of await readdir(store).catch(() => [])) {
+    const owner = PRIVATE_ENTRY.exec(name)?.[1];
+    if (owner !== undefined && holderIsDead(owner)) {
+      await rm(join(store, name), { recursive: true, force: true });
+    }
+  }
+}
+async function acquireLock(store, options) {
+  const path = join(store, LOCK_FILE);
+  const takeover = join(store, TAKEOVER_DIR);
+  const pid = String(process.pid);
+  await sweepDeadEntries(store);
+  const readLock = async () => {
+    try {
+      return (await readFile(path, "utf8")).trim();
+    } catch (error) {
+      if (errorCode(error) === "ENOENT") {
+        return null;
+      }
+      throw error;
+    }
+  };
+  const holderOf = (contents) => contents || "unknown";
+  const create = async () => {
+    const pidFile = `${path}.${pid}.${randomUUID()}`;
+    await writeFile(pidFile, `${pid}
+`, { flag: "wx" });
+    try {
+      await link(pidFile, path);
+    } catch (error) {
+      if (!NO_HARD_LINKS.has(errorCode(error) ?? "")) {
+        throw error;
+      }
+      await writeFile(path, `${pid}
+`, { flag: "wx" });
+    } finally {
+      await rm(pidFile, { force: true });
+    }
+  };
+  const claimed = async (body) => {
+    const staged = `${takeover}.${pid}.${randomUUID()}`;
+    await mkdir(staged);
+    try {
+      await writeFile(join(staged, pid), "");
+      for (const claimant of await readdir(takeover).catch(() => [])) {
+        if (holderIsDead(claimant)) {
+          await rm(join(takeover, claimant), { force: true });
+        }
+      }
+      await rename(staged, takeover);
+    } catch (error) {
+      await rm(staged, { recursive: true, force: true });
+      const code = errorCode(error);
+      if (code === "ENOTEMPTY" || code === "EEXIST") {
+        return false;
+      }
+      throw error;
+    }
+    try {
+      await body();
+    } finally {
+      await rename(takeover, staged).catch(() => {});
+      await rm(staged, { recursive: true, force: true });
+    }
+    return true;
+  };
+  const unlinkLock = async () => {
+    try {
+      await unlink(path);
+    } catch (error) {
+      if (errorCode(error) !== "ENOENT") {
+        throw error;
+      }
+    }
+  };
+  const takeOver = async (holder) => {
+    const replaced = await claimed(async () => {
+      const current = await readLock();
+      if (current !== null) {
+        if (holderOf(current) !== holder) {
+          throw new UserError(`store lock held by pid ${holderOf(current)}`);
+        }
+        await unlinkLock();
+      }
+      try {
+        await create();
+      } catch (error) {
+        if (errorCode(error) !== "EEXIST") {
+          throw error;
+        }
+        throw new UserError(`store lock held by pid ${holderOf(await readLock())}`);
+      }
+    });
+    if (!replaced) {
+      throw new UserError(`store lock held by pid ${holder} is being released or replaced; retry`);
+    }
+  };
+  try {
+    await create();
+  } catch (error) {
+    if (errorCode(error) !== "EEXIST") {
+      throw error;
+    }
+    const holder = holderOf(await readLock());
+    if (holderIsDead(holder)) {
+      options.onStaleLock?.(holder);
+      await takeOver(holder);
+    } else if (options.force) {
+      options.onLockStolen?.(holder);
+      await takeOver(holder);
+    } else {
+      throw new UserError(`store lock held by pid ${holder}`);
+    }
+  }
+  return async () => {
+    const removeOwn = async () => {
+      if (await readLock() === pid) {
+        await unlinkLock();
+      }
+    };
+    try {
+      while (!await claimed(removeOwn)) {
+        await sleep(10);
+      }
+    } catch (error) {
+      if (errorCode(error) !== "ENOENT") {
+        throw error;
+      }
+    }
+  };
 }
 
+// orch/store.ts
+var SHA_PATTERN = /^[0-9a-f]{40,64}$/i;
+var UNIT_HEADER = "id\ttrack\tstate\tbranch\tpr\tsha\tbrief";
+var LEDGER_HEADER = "pr\tsha\tverdict\tevidence\tverifier\tts";
 class UsageError extends UserError {
 }
 
@@ -2191,12 +2378,6 @@ class NotFoundError extends UserError {
     super(message);
     this.output = output;
   }
-}
-function errorCode(error) {
-  if (error !== null && typeof error === "object" && "code" in error && typeof error.code === "string") {
-    return error.code;
-  }
-  return null;
 }
 function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
@@ -2272,12 +2453,12 @@ async function exists(path) {
   }
 }
 async function atomicWrite(path, contents) {
-  const temporary = join(dirname(path), `.${basename(path)}.${process.pid}.${randomUUID()}.tmp`);
+  const temporary = join2(dirname(path), `.${basename(path)}.${process.pid}.${randomUUID2()}.tmp`);
   try {
-    await writeFile(temporary, contents, { flag: "wx" });
-    await rename(temporary, path);
+    await writeFile2(temporary, contents, { flag: "wx" });
+    await rename2(temporary, path);
   } finally {
-    await rm(temporary, { force: true });
+    await rm2(temporary, { force: true });
   }
 }
 async function writeIfMissing(path, contents) {
@@ -2287,80 +2468,13 @@ async function writeIfMissing(path, contents) {
 }
 async function requiredFile(path) {
   try {
-    return await readFile(path, "utf8");
+    return await readFile2(path, "utf8");
   } catch (error) {
     if (errorCode(error) === "ENOENT") {
       throw new UserError(`store is not initialized at ${dirname(path)}; run orch init`);
     }
     throw error;
   }
-}
-function holderIsDead(holder) {
-  const pid = Number.parseInt(holder, 10);
-  if (!Number.isSafeInteger(pid) || pid <= 0 || String(pid) !== holder) {
-    return false;
-  }
-  try {
-    process.kill(pid, 0);
-    return false;
-  } catch (error) {
-    return errorCode(error) === "ESRCH";
-  }
-}
-async function acquireLock(store, options) {
-  const path = join(store, LOCK_FILE);
-  const pid = String(process.pid);
-  const create = async () => {
-    const handle = await open(path, "wx");
-    await handle.writeFile(`${pid}
-`);
-    await handle.close();
-  };
-  const takeOver = async () => {
-    await unlink(path);
-    try {
-      await create();
-    } catch (retryError) {
-      if (errorCode(retryError) === "EEXIST") {
-        const retryHolder = (await readFile(path, "utf8")).trim() || "unknown";
-        throw new UserError(`store lock held by pid ${retryHolder}`);
-      }
-      throw retryError;
-    }
-  };
-  try {
-    await create();
-  } catch (error) {
-    if (errorCode(error) !== "EEXIST") {
-      throw error;
-    }
-    let holder = "unknown";
-    try {
-      holder = (await readFile(path, "utf8")).trim() || "unknown";
-    } catch {
-      holder = "unknown";
-    }
-    if (holderIsDead(holder)) {
-      options.onStaleLock?.(holder);
-      await takeOver();
-    } else if (options.force) {
-      options.onLockStolen?.(holder);
-      await takeOver();
-    } else {
-      throw new UserError(`store lock held by pid ${holder}`);
-    }
-  }
-  return async () => {
-    try {
-      if ((await readFile(path, "utf8")).trim() === pid) {
-        await unlink(path);
-      }
-    } catch (error) {
-      if (errorCode(error) !== "ENOENT") {
-        throw error;
-      }
-    }
-  };
 }
 async function readTsv(path, header, width) {
   const lines = (await requiredFile(path)).replace(/\r/g, "").split(`
@@ -2384,7 +2498,7 @@ ${body}${body.length > 0 ? `
 ` : ""}`);
 }
 async function readUnits(store) {
-  return (await readTsv(join(store, "units.tsv"), UNIT_HEADER, 7)).map((row) => ({
+  return (await readTsv(join2(store, "units.tsv"), UNIT_HEADER, 7)).map((row) => ({
     id: row[0] ?? "",
     track: row[1] ?? "",
     state: row[2] ?? "",
@@ -2406,10 +2520,10 @@ function unitCells(unit) {
   ];
 }
 async function saveUnits(store, rows) {
-  await writeTsv(join(store, "units.tsv"), UNIT_HEADER, rows.map(unitCells));
+  await writeTsv(join2(store, "units.tsv"), UNIT_HEADER, rows.map(unitCells));
 }
 async function readLedger(store) {
-  return (await readTsv(join(store, "ledger.tsv"), LEDGER_HEADER, 6)).map((row) => {
+  return (await readTsv(join2(store, "ledger.tsv"), LEDGER_HEADER, 6)).map((row) => {
     const rawVerdict = row[2] ?? "";
     const verdict = verdictOrNull(rawVerdict);
     if (verdict === null) {
@@ -2436,7 +2550,7 @@ function ledgerCells(row) {
   ];
 }
 async function saveLedger(store, rows) {
-  await writeTsv(join(store, "ledger.tsv"), LEDGER_HEADER, rows.map(ledgerCells));
+  await writeTsv(join2(store, "ledger.tsv"), LEDGER_HEADER, rows.map(ledgerCells));
 }
 function pointerCells(pointer) {
   return [
@@ -2450,7 +2564,7 @@ function pointerCells(pointer) {
 async function readPointers(directory) {
   let entries;
   try {
-    entries = await readdir(directory, { withFileTypes: true });
+    entries = await readdir2(directory, { withFileTypes: true });
   } catch (error) {
     if (errorCode(error) === "ENOENT") {
       throw new UserError(`store is not initialized at ${dirname(directory)}; run orch init`);
@@ -2460,7 +2574,7 @@ async function readPointers(directory) {
   const result = [];
   const files = entries.filter((entry) => entry.isFile() && entry.name.endsWith(".tsv")).sort((left, right) => left.name.localeCompare(right.name));
   for (const entry of files) {
-    const raw = (await readFile(join(directory, entry.name), "utf8")).replace(/\r?\n$/, "");
+    const raw = (await readFile2(join2(directory, entry.name), "utf8")).replace(/\r?\n$/, "");
     const row = raw.split("\t");
     if (/[\r\n]/.test(raw) || row.length !== 5) {
       throw new UserError(`inbox pointer ${entry.name} is malformed`);
@@ -2497,7 +2611,7 @@ ${blocks.join(`
 `;
 }
 async function readGates(store) {
-  const raw = (await requiredFile(join(store, "gates.md"))).replace(/\r/g, "").trim();
+  const raw = (await requiredFile(join2(store, "gates.md"))).replace(/\r/g, "").trim();
   if (raw.length === 0) {
     return [];
   }
@@ -2585,10 +2699,10 @@ function parseFrontier(raw) {
   };
 }
 async function readFrontier(store) {
-  return parseFrontier(await requiredFile(join(store, "frontier.json")));
+  return parseFrontier(await requiredFile(join2(store, "frontier.json")));
 }
 async function readStanding(store) {
-  const raw = (await requiredFile(join(store, "preferences.md"))).replace(/\r/g, "");
+  const raw = (await requiredFile(join2(store, "preferences.md"))).replace(/\r/g, "");
   if (raw.trim().length === 0) {
     return [];
   }
@@ -2757,199 +2871,257 @@ function countLine(value) {
   const entries = Object.entries(value);
   return entries.length === 0 ? "none" : entries.map(([name, count]) => `${name}=${count}`).join(", ");
 }
-var OPEN_GT_PR_STATUSES = new Set([
-  "Trunk branch locked",
-  "Changes requested",
-  "Waiting on PRs in this stack to merge",
-  "Waiting on downstack merge state",
-  "Draft",
-  "Required checks failed",
-  "Undergoing failure detection",
-  "Merge queue failed on current head commit",
-  "Handed off to merge queue...",
-  "Waiting on downstack",
-  "Merge conflicts",
-  "Needs reviewers",
-  "Needs approvals",
-  "Needs restack",
-  "Queued to merge...",
-  "Ready to merge",
-  "Ready to merge as stack",
-  "Rebasing...",
-  "Waiting on CI...",
-  "Stale, needs rebase onto trunk",
-  "Unresolved comments",
-  "Waiting on required CI",
-  "Waiting to merge..."
-]);
-function parseGtPullRequest({
-  branch,
-  detail
-}) {
-  const match = /^(?:\[origin\] )?PR #([1-9]\d*)(?: \(([^)\r\n]+)\))?(?: .+)?$/.exec(detail);
-  const pr = Number(match?.[1] ?? 0);
-  if (match === null || !Number.isSafeInteger(pr)) {
-    throw new UserError(`gt info output has an invalid PR row for branch ${branch}: ${detail}`);
+var PULL_REQUEST_LIST_LIMIT = 1000;
+var FORGE_PULL_REQUEST_QUERIES = {
+  gh: {
+    stateField: "state",
+    headField: "headRefName",
+    baseField: "baseRefName",
+    states: new Map([
+      ["OPEN", "OPEN"],
+      ["MERGED", "MERGED"],
+      ["CLOSED", "CLOSED"]
+    ])
+  },
+  origin: {
+    stateField: "status",
+    headField: "headRef",
+    baseField: "baseRef",
+    states: new Map([
+      ["open", "OPEN"],
+      ["draft", "OPEN"],
+      ["merged", "MERGED"],
+      ["closed", "CLOSED"]
+    ])
   }
-  const status = match[2];
-  if (status === "Merged") {
-    return { pr, state: "MERGED" };
+};
+function parseForge(value) {
+  if (value === "gh" || value === "origin") {
+    return value;
   }
-  if (status === "Closed") {
-    return { pr, state: "CLOSED" };
-  }
-  if (status === undefined || OPEN_GT_PR_STATUSES.has(status)) {
-    return { pr, state: "OPEN" };
-  }
-  throw new UserError(`gt info output has an unknown PR state for branch ${branch}: ${status}`);
+  throw new UserError("forge must be gh or origin");
 }
-function parseGtBranches(raw) {
-  const branches = [];
-  const lines = raw.replace(/\r/g, "").split(`
-`);
-  for (const [index, line] of lines.entries()) {
-    if (line.length === 0) {
-      continue;
-    }
-    const branchMatch = /^(?:│ )*[◯◉] +([^\s]+)((?: \([^()\r\n]*\))*)$/.exec(line);
-    if (branchMatch === null) {
-      throw new UserError(`gt log short output has an unparseable line ${index + 1}: ${JSON.stringify(line)}`);
-    }
-    const branch = branchMatch[1] ?? "";
-    if (branches.includes(branch)) {
-      throw new UserError(`gt log short output contains duplicate branch ${branch}`);
-    }
-    branches.push(branch);
-  }
-  const trunk = branches[0];
-  if (trunk === undefined) {
-    throw new UserError("gt log short output did not contain a stack");
-  }
-  return branches.slice(1);
-}
-function graphitePullRequest({
-  branch,
+function runTool({
+  command,
+  args,
   repo
 }) {
-  let raw;
   try {
-    raw = execFileSync("gt", ["--no-interactive", "info", branch], {
-      cwd: repo,
-      encoding: "utf8",
-      env: { ...process.env, NO_COLOR: "1" },
-      stdio: ["ignore", "pipe", "pipe"]
-    });
-  } catch (error) {
-    throw new UserError(`gt info ${branch} failed: ${errorMessage(error)}`);
-  }
-  const rows = raw.replace(/\r/g, "").split(`
-`).filter((line) => line.startsWith("PR #") || line.startsWith("[origin] PR #"));
-  if (rows.length === 0) {
-    throw new UserError(`gt info output branch ${branch} has no pull request; this clone's gt metadata may predate the submit, so resolve the frontier from the stacker's clone or after gt sync`);
-  }
-  if (rows.length > 1) {
-    throw new UserError(`gt info output contains multiple PRs for branch ${branch}`);
-  }
-  return parseGtPullRequest({ branch, detail: rows[0] ?? "" });
-}
-function graphiteFrontier(repo) {
-  let raw;
-  try {
-    raw = execFileSync("gt", ["--no-interactive", "log", "short", "--stack", "--reverse"], {
-      cwd: repo,
-      encoding: "utf8",
-      env: { ...process.env, NO_COLOR: "1" },
-      stdio: ["ignore", "pipe", "pipe"]
-    });
-  } catch (error) {
-    throw new UserError(`gt log short --stack --reverse failed: ${errorMessage(error)}`);
-  }
-  const result = parseGtBranches(raw).map((branch) => ({
-    branches: branch,
-    ...graphitePullRequest({ branch, repo })
-  }));
-  if (new Set(result.map((row) => row.pr)).size !== result.length) {
-    throw new UserError("gt info output contains duplicate pull requests");
-  }
-  return result;
-}
-function branchSha({
-  branch,
-  repo
-}) {
-  let raw;
-  try {
-    raw = execFileSync("git", ["rev-parse", branch], {
+    return execFileSync(command, args, {
       cwd: repo,
       encoding: "utf8",
       env: process.env,
       stdio: ["ignore", "pipe", "pipe"]
     });
   } catch (error) {
-    throw new UserError(`git rev-parse ${branch} failed: ${errorMessage(error)}`);
+    throw new UserError(`${command} ${args.join(" ")} failed: ${errorMessage(error)}`);
   }
-  const sha = raw.trim();
-  if (!/^[0-9a-f]{40,64}$/i.test(sha)) {
+}
+function listScope(target) {
+  if (target.forge === "origin") {
+    return { args: [], fields: [], owns: () => true };
+  }
+  const name = repositoryName(target.repository);
+  return {
+    args: ["--repo", name],
+    fields: ["headRepository"],
+    owns: (row) => isRecord(row.headRepository) && typeof row.headRepository.nameWithOwner === "string" && row.headRepository.nameWithOwner.toLowerCase() === name.toLowerCase()
+  };
+}
+function parseJson(raw, command) {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw new UserError(`${command} output is not valid JSON`);
+  }
+}
+function recoveryHint(forge) {
+  return forge === "gh" ? "; set the frontier with --prs" : "";
+}
+function listPullRequests({
+  filter,
+  branch,
+  target
+}) {
+  const { forge, repo } = target;
+  const query = FORGE_PULL_REQUEST_QUERIES[forge];
+  const scope = listScope(target);
+  const command = `${forge} pr list ${filter} ${branch}`;
+  const fields = [
+    "number",
+    query.stateField,
+    query.headField,
+    query.baseField,
+    ...scope.fields
+  ];
+  const raw = runTool({
+    command: forge,
+    args: [
+      "pr",
+      "list",
+      ...scope.args,
+      filter,
+      branch,
+      "--state",
+      "all",
+      "--limit",
+      String(PULL_REQUEST_LIST_LIMIT),
+      "--json",
+      fields.join(",")
+    ],
+    repo
+  });
+  const value = parseJson(raw, command);
+  if (!isUnknownArray(value)) {
+    throw new UserError(`${command} output is not a JSON array`);
+  }
+  if (value.length >= PULL_REQUEST_LIST_LIMIT) {
+    throw new UserError(`${command} returned ${PULL_REQUEST_LIST_LIMIT} pull requests and may be truncated${recoveryHint(forge)}`);
+  }
+  return value.flatMap((row) => {
+    const status = isRecord(row) ? row[query.stateField] : undefined;
+    const state = typeof status === "string" ? query.states.get(status) ?? null : null;
+    const head = isRecord(row) ? row[query.headField] : undefined;
+    const base = isRecord(row) ? row[query.baseField] : undefined;
+    if (!isRecord(row) || typeof row.number !== "number" || !Number.isSafeInteger(row.number) || row.number < 1 || state === null || typeof head !== "string" || head.length === 0 || typeof base !== "string" || base.length === 0) {
+      throw new UserError(`${command} output has an invalid PR row`);
+    }
+    return scope.owns(row) ? [{ pr: row.number, state, branch: head, base }] : [];
+  });
+}
+function branchPullRequest({
+  branch,
+  target
+}) {
+  const rows = listPullRequests({ filter: "--head", branch, target });
+  const row = rows[0];
+  if (row === undefined) {
+    throw new UserError(`branch ${branch} has no pull request; open one with ${target.forge} pr create, or resolve the frontier from a branch whose chain is fully submitted`);
+  }
+  if (rows.length > 1) {
+    throw new UserError(`branch ${branch} has multiple pull requests (${rows.map((item) => `#${item.pr}`).join(", ")})${recoveryHint(target.forge)}`);
+  }
+  return row;
+}
+function openChildren({
+  branch,
+  target
+}) {
+  return listPullRequests({ filter: "--base", branch, target }).filter((row) => row.state === "OPEN");
+}
+function runGit({
+  args,
+  repo
+}) {
+  return runTool({ command: "git", args, repo }).trim();
+}
+function branchSha({
+  branch,
+  repo
+}) {
+  const sha = runGit({ args: ["rev-parse", branch], repo });
+  if (!SHA_PATTERN.test(sha)) {
     throw new UserError(`git rev-parse ${branch} returned an invalid SHA`);
   }
   return sha;
 }
-function resolveFrontier(repo) {
-  return graphiteFrontier(repo).map((row) => ({
-    ...row,
-    sha: branchSha({ branch: row.branches, repo })
+function currentBranch(repo) {
+  return runGit({ args: ["symbolic-ref", "--short", "HEAD"], repo });
+}
+function refExists(ref, repo) {
+  try {
+    runGit({ args: ["rev-parse", "--verify", "--quiet", ref], repo });
+    return true;
+  } catch {
+    return false;
+  }
+}
+function trunkBranch(repo) {
+  try {
+    return runGit({
+      args: ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+      repo
+    }).replace(/^origin\//, "");
+  } catch {}
+  for (const prefix of ["refs/remotes/origin/", "refs/heads/"]) {
+    const found = ["main", "master"].filter((name) => refExists(`${prefix}${name}`, repo));
+    if (found.length > 1) {
+      throw new UserError("cannot tell whether main or master is trunk without origin/HEAD; run git remote set-head origin --auto, or on GitHub set the frontier with --prs");
+    }
+    if (found[0] !== undefined) {
+      return found[0];
+    }
+  }
+  throw new UserError("cannot resolve trunk without origin/HEAD, main, or master; run git remote set-head origin --auto, or on GitHub set the frontier with --prs");
+}
+function resolveFrontier(repo, forge) {
+  const trunk = trunkBranch(repo);
+  const current = currentBranch(repo);
+  if (current === trunk) {
+    return [];
+  }
+  const target = forge === "gh" ? { forge, repo, repository: githubRepository(repo) } : { forge, repo };
+  const seen = new Set([current]);
+  let bottom = branchPullRequest({ branch: current, target });
+  const chain = [bottom];
+  while (bottom.base !== trunk) {
+    if (seen.has(bottom.base)) {
+      throw new UserError(`pull request base chain loops at branch ${bottom.base}`);
+    }
+    seen.add(bottom.base);
+    bottom = branchPullRequest({ branch: bottom.base, target });
+    chain.unshift(bottom);
+  }
+  let tip = current;
+  for (;; ) {
+    const children = openChildren({ branch: tip, target });
+    const child = children[0];
+    if (child === undefined) {
+      break;
+    }
+    if (children.length > 1) {
+      throw new UserError(`stack is not linear: branches ${children.map((row) => row.branch).join(", ")} all target ${tip}`);
+    }
+    if (seen.has(child.branch)) {
+      throw new UserError(`pull request base chain loops at branch ${child.branch}`);
+    }
+    seen.add(child.branch);
+    chain.push(child);
+    tip = child.branch;
+  }
+  if (new Set(chain.map((row) => row.pr)).size !== chain.length) {
+    throw new UserError("pull request base chain contains duplicate pull requests");
+  }
+  return chain.map((row) => ({
+    pr: row.pr,
+    branches: row.branch,
+    sha: branchSha({ branch: row.branch, repo }),
+    state: row.state
   }));
+}
+function repositoryName(repository) {
+  return `${repository.owner}/${repository.repo}`;
 }
 function githubRepository(repo) {
   let remote;
   try {
-    remote = execFileSync("git", ["config", "--get", "remote.origin.url"], {
-      cwd: repo,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"]
-    }).trim();
+    remote = runGit({ args: ["config", "--get", "remote.origin.url"], repo });
   } catch (error) {
-    throw new UserError(`git config remote.origin.url failed; --prs requires a GitHub origin: ${errorMessage(error)}`);
+    throw new UserError(`${errorMessage(error)}; gh frontier resolution requires a GitHub origin`);
   }
-  const scp = /^git@github\.com:([^/]+\/[^/]+?)(?:\.git)?$/.exec(remote);
-  if (scp?.[1] !== undefined)
-    return scp[1];
-  try {
-    const url = new URL(remote);
-    const parts = url.pathname.replace(/\.git$/, "").split("/").filter(Boolean);
-    if (url.protocol !== "https:" || url.hostname !== "github.com" || url.port || url.username || url.password || url.search || url.hash || parts.length !== 2) {
-      throw new Error("origin is not a canonical GitHub URL");
-    }
-    return parts.join("/");
-  } catch (error) {
-    throw new UserError(`origin remote is not a supported GitHub repository URL; --prs requires GitHub (${errorMessage(error)})`);
+  const repository = parseGitHubRemote(remote);
+  if (repository === null) {
+    throw new UserError(`origin ${remote} is not a GitHub repository URL; gh frontier resolution requires GitHub`);
   }
-}
-function parseGhFrontierPullRequest(value, expected) {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new UserError(`gh pr view #${expected} returned a non-object`);
-  }
-  const row = value;
-  const number = row.number;
-  const state = row.state;
-  const branch = row.headRefName;
-  const sha = row.headRefOid;
-  if (number !== expected || typeof branch !== "string" || branch.length === 0 || typeof sha !== "string" || !/^[0-9a-f]{40,64}$/i.test(sha) || state !== "OPEN" && state !== "MERGED" && state !== "CLOSED") {
-    throw new UserError(`gh pr view #${expected} returned an invalid PR row`);
-  }
-  return {
-    number,
-    state,
-    branch,
-    sha
-  };
+  return repository;
 }
 function githubFrontier(repo, prs) {
-  const repository = githubRepository(repo);
+  const repository = repositoryName(githubRepository(repo));
   return prs.map((pr) => {
-    let raw;
-    try {
-      raw = execFileSync("gh", [
+    const command = `gh pr view ${pr}`;
+    const row = parseJson(runTool({
+      command: "gh",
+      args: [
         "pr",
         "view",
         String(pr),
@@ -2957,27 +3129,14 @@ function githubFrontier(repo, prs) {
         repository,
         "--json",
         "number,state,headRefName,headRefOid"
-      ], {
-        cwd: repo,
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "pipe"]
-      });
-    } catch (error) {
-      throw new UserError(`gh pr view #${pr} failed: ${errorMessage(error)}`);
+      ],
+      repo
+    }), command);
+    const state = isRecord(row) ? frontierPrStateOrNull(row.state) : null;
+    if (!isRecord(row) || row.number !== pr || state === null || typeof row.headRefName !== "string" || row.headRefName.length === 0 || typeof row.headRefOid !== "string" || !SHA_PATTERN.test(row.headRefOid)) {
+      throw new UserError(`${command} returned an invalid PR row`);
     }
-    let value;
-    try {
-      value = JSON.parse(raw);
-    } catch (error) {
-      throw new UserError(`gh pr view #${pr} returned invalid JSON: ${errorMessage(error)}`);
-    }
-    const row = parseGhFrontierPullRequest(value, pr);
-    return {
-      pr: row.number,
-      branches: row.branch,
-      sha: row.sha,
-      state: row.state
-    };
+    return { pr, branches: row.headRefName, sha: row.headRefOid, state };
   });
 }
 function openStore(directory, options = {}) {
@@ -3126,39 +3285,39 @@ function openStore(directory, options = {}) {
           status: requiredCell(params.status, "status"),
           report: params.report === undefined ? "" : requiredCell(params.report, "report")
         };
-        const inbox = join(store, "inbox");
+        const inbox = join2(store, "inbox");
         if (!await exists(inbox)) {
           throw new UserError(`store is not initialized at ${store}; run orch init`);
         }
         const timestamp = pointer.ts.replace(/[:.]/g, "-");
-        const filename = `${timestamp}-${process.pid}-${randomUUID()}.tsv`;
+        const filename = `${timestamp}-${process.pid}-${randomUUID2()}.tsv`;
         const contents = `${pointerCells(pointer).map(cleanCell).join("\t")}
 `;
-        await atomicWrite(join(inbox, filename), contents);
+        await atomicWrite(join2(inbox, filename), contents);
         return { pointer, filename };
       },
       drain: async () => {
         await beginWrite();
-        const inbox = join(store, "inbox");
+        const inbox = join2(store, "inbox");
         const rows = await readPointers(inbox);
-        const drained = join(store, `.inbox-drain-${process.pid}-${randomUUID()}`);
-        await rename(inbox, drained);
+        const drained = join2(store, `.inbox-drain-${process.pid}-${randomUUID2()}`);
+        await rename2(inbox, drained);
         try {
-          await mkdir(inbox);
+          await mkdir2(inbox);
         } catch (error) {
-          await rename(drained, inbox);
+          await rename2(drained, inbox);
           throw error;
         }
-        await rm(drained, { recursive: true, force: true });
+        await rm2(drained, { recursive: true, force: true });
         return rows;
       },
       peek: async () => {
         ensureOpen();
-        return readPointers(join(store, "inbox"));
+        return readPointers(join2(store, "inbox"));
       },
       count: async () => {
         ensureOpen();
-        return (await readPointers(join(store, "inbox"))).length;
+        return (await readPointers(join2(store, "inbox"))).length;
       }
     },
     gates: {
@@ -3178,7 +3337,7 @@ function openStore(directory, options = {}) {
         } else {
           rows[index] = gate;
         }
-        await atomicWrite(join(store, "gates.md"), renderGates(rows));
+        await atomicWrite(join2(store, "gates.md"), renderGates(rows));
         return gate;
       },
       list: async () => {
@@ -3203,7 +3362,7 @@ function openStore(directory, options = {}) {
           answer: requiredLine(params.answer, "answer")
         };
         rows[index] = gate;
-        await atomicWrite(join(store, "gates.md"), renderGates(rows));
+        await atomicWrite(join2(store, "gates.md"), renderGates(rows));
         return gate;
       }
     },
@@ -3211,18 +3370,22 @@ function openStore(directory, options = {}) {
       set: async (params) => {
         await beginWrite();
         const repo = resolve(requiredLine(params.repo, "repo directory"));
+        const forge = parseForge(params.forge ?? "gh");
         const pin = params.prs === undefined ? undefined : params.prs.map((pr) => positiveInteger(pr, "PR"));
         if (pin !== undefined && new Set(pin).size !== pin.length) {
           throw new UserError("--prs must not contain duplicates");
         }
         const old = await readFrontier(store);
-        const prs = pin === undefined ? resolveFrontier(repo) : githubFrontier(repo, pin);
+        if (pin !== undefined && forge !== "gh") {
+          throw new UserError("--prs reads GitHub with gh pr view; omit --forge");
+        }
+        const prs = pin === undefined ? resolveFrontier(repo, forge) : githubFrontier(repo, pin);
         const value = {
           generation: old.generation + 1,
           prs,
           lowestUnmerged: prs.find((row) => row.state === "OPEN")?.pr ?? null
         };
-        await atomicWrite(join(store, "frontier.json"), `${JSON.stringify(value, null, 2)}
+        await atomicWrite(join2(store, "frontier.json"), `${JSON.stringify(value, null, 2)}
 `);
         return value;
       },
@@ -3244,7 +3407,7 @@ function openStore(directory, options = {}) {
           line: requiredLine(params.line, "standing order")
         };
         rows.push(item);
-        await atomicWrite(join(store, "preferences.md"), `${rows.map((row) => `${row.number}. ${row.line}`).join(`
+        await atomicWrite(join2(store, "preferences.md"), `${rows.map((row) => `${row.number}. ${row.line}`).join(`
 `)}
 `);
         return item;
@@ -3258,8 +3421,8 @@ function openStore(directory, options = {}) {
         const currentFrontier = await readFrontier(store);
         const gateRows = await readGates(store);
         const currentSummary = summarize(unitRows, ledgerRows, currentFrontier, gateRows);
-        const path = join(store, "status.md");
-        const before = await exists(path) ? previousSummary(await readFile(path, "utf8")) : null;
+        const path = join2(store, "status.md");
+        const before = await exists(path) ? previousSummary(await readFile2(path, "utf8")) : null;
         const change = changed(before, currentSummary);
         await atomicWrite(path, statusMarkdown(unitRows, ledgerRows, currentFrontier, gateRows, currentSummary));
         return {
@@ -3274,16 +3437,16 @@ function openStore(directory, options = {}) {
     },
     init: async () => {
       ensureOpen();
-      await mkdir(store, { recursive: true });
+      await mkdir2(store, { recursive: true });
       await ensureLock();
-      await writeIfMissing(join(store, "units.tsv"), `${UNIT_HEADER}
+      await writeIfMissing(join2(store, "units.tsv"), `${UNIT_HEADER}
 `);
-      await writeIfMissing(join(store, "ledger.tsv"), `${LEDGER_HEADER}
+      await writeIfMissing(join2(store, "ledger.tsv"), `${LEDGER_HEADER}
 `);
-      await mkdir(join(store, "inbox"), { recursive: true });
-      await writeIfMissing(join(store, "gates.md"), "");
-      await writeIfMissing(join(store, "preferences.md"), "");
-      await writeIfMissing(join(store, "frontier.json"), `{}
+      await mkdir2(join2(store, "inbox"), { recursive: true });
+      await writeIfMissing(join2(store, "gates.md"), "");
+      await writeIfMissing(join2(store, "preferences.md"), "");
+      await writeIfMissing(join2(store, "frontier.json"), `{}
 `);
       return { store };
     },
@@ -3475,8 +3638,9 @@ function createProgram(io) {
   leaf(gate, "list", "list open decision gates").action(() => runStore(program, io, (store) => store.gates.list(), (rows) => compactRows(rows, gateLine, "(no open gates)")));
   leaf(gate, "resolve <id>", "resolve a decision gate").requiredOption("--answer <answer>", "chosen answer").action((id, options) => runStore(program, io, (store) => store.gates.resolve({ id, answer: options.answer }), (result) => `${result.id}	resolved	${result.answer}`));
   const frontier = program.command("frontier").description("manage the pull-request merge frontier").action(() => requireSubcommand(program));
-  leaf(frontier, "set", "set an explicit GitHub PR frontier; without --prs use optional Graphite discovery").addOption(new Option2("--repo <dir>", "repository directory (or ORCH_REPO)").env("ORCH_REPO")).option("--prs <n,...>", "explicit pull request order; facts are read with gh (recommended)", prList).action((options) => runStore(program, io, (store) => store.frontier.set({
+  leaf(frontier, "set", "set the frontier from --prs, or resolve the pull request base chain").addOption(new Option2("--repo <dir>", "repository directory (or ORCH_REPO)").env("ORCH_REPO")).addOption(new Option2("--forge <forge>", "pull request forge").choices(["gh", "origin"]).default("gh")).option("--prs <n,...>", "explicit pull request order; facts are read with gh pr view", prList).action((options) => runStore(program, io, (store) => store.frontier.set({
     repo: frontierRepo(options),
+    forge: options.forge,
     prs: options.prs
   }), frontierLine));
   leaf(frontier, "show", "show the frontier").action(() => runStore(program, io, (store) => store.frontier.show(), frontierLine));

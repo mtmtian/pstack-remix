@@ -2161,6 +2161,24 @@ function parsePrNumber(value, label = "PR number") {
   return value;
 }
 
+// github-remote.ts
+function parseGitHubRemote(value) {
+  let normalized = value.trim();
+  if (normalized.startsWith("git@github.com:"))
+    normalized = `https://github.com/${normalized.slice(15)}`;
+  if (normalized.startsWith("ssh://git@github.com/"))
+    normalized = `https://github.com/${normalized.slice(21)}`;
+  try {
+    const url = new URL(normalized);
+    const parts = url.pathname.replace(/\.git$/, "").split("/").filter(Boolean);
+    if (url.protocol !== "https:" || url.hostname !== "github.com" || url.port || url.username || url.password || url.search || url.hash || parts.length !== 2)
+      return null;
+    return { owner: parts[0], repo: parts[1] };
+  } catch {
+    return null;
+  }
+}
+
 // watch-pr/github.ts
 var REVIEW_THREADS_QUERY = `
 query ReviewThreads($owner: String!, $repo: String!, $pr: Int!, $after: String) {
@@ -2203,6 +2221,24 @@ query PrCommitStatuses($owner: String!, $repo: String!, $pr: Int!) {
           }
         }
       }
+    }
+  }
+}
+`;
+var PR_FACTS_QUERY = `
+query PullRequestFacts($owner: String!, $repo: String!, $pr: Int!) {
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $pr) {
+      mergeable
+      mergeStateStatus
+      reviewDecision
+      headRefOid
+      headRefName
+      baseRefName
+      baseRef { target { oid } }
+      state
+      mergedAt
+      isDraft
     }
   }
 }
@@ -2377,22 +2413,11 @@ var REVIEW_DECISIONS = [
   "CHANGES_REQUESTED",
   "REVIEW_REQUIRED"
 ];
-var reviewDecision = (value) => nullableEnum(value === "" ? null : value, REVIEW_DECISIONS, "pull request.reviewDecision");
-function parseRemote(value) {
-  let normalized = value.trim();
-  if (normalized.startsWith("git@github.com:"))
-    normalized = `https://github.com/${normalized.slice(15)}`;
-  if (normalized.startsWith("ssh://git@github.com/"))
-    normalized = `https://github.com/${normalized.slice(21)}`;
-  try {
-    const url = new URL(normalized);
-    const parts = url.pathname.replace(/\.git$/, "").split("/").filter(Boolean);
-    if (url.protocol !== "https:" || url.hostname !== "github.com" || url.port || url.username || url.password || url.search || url.hash || parts.length !== 2)
-      return null;
-    return { owner: parts[0], repo: parts[1] };
-  } catch {
+function baseRefOid(value) {
+  if (value === null)
     return null;
-  }
+  const target = record(value, "pull request.baseRef").target;
+  return target === null ? null : string(record(target, "pull request.baseRef.target").oid, "pull request.baseRef.target.oid");
 }
 function parsePrUrl(value) {
   try {
@@ -2427,23 +2452,25 @@ function parseFastCheck(value) {
   const details = checkDetails(object, "name");
   const state = string(object.state, "check.state").toUpperCase();
   const bucket = string(object.bucket, "check.bucket");
-  if (bucket === "fail" || ["FAILURE", "ERROR", "ACTION_REQUIRED"].includes(state))
+  if (state === "ACTION_REQUIRED")
+    return gateOr("failed", details, state);
+  if (bucket === "fail" || ["FAILURE", "ERROR"].includes(state))
     return { ...details, kind: "failed", reportedState: state };
   if (bucket === "pending")
-    return pendingOrGate(details, state);
+    return gateOr("pending", details, state);
   if (bucket === "pass")
     return { ...details, kind: "passed", reportedState: state };
   if (bucket === "skipping")
     return { ...details, kind: "skipped", reportedState: state };
   return { ...details, kind: "failed", reportedState: state };
 }
-function pendingOrGate(details, reportedState) {
+function gateOr(kind, details, reportedState) {
   return details.name === "Code Review Gate" ? {
     ...details,
     kind: "code-review-gate",
     name: "Code Review Gate",
     reportedState
-  } : { ...details, kind: "pending", reportedState };
+  } : { ...details, kind, reportedState };
 }
 function mapRollupNode(value) {
   const object = record(value, "rollup node");
@@ -2456,21 +2483,18 @@ function mapRollupNode(value) {
     const status = typeof object.status === "string" ? object.status.toUpperCase() : "";
     const conclusion = typeof object.conclusion === "string" ? object.conclusion.toUpperCase() : "";
     if (status !== "COMPLETED")
-      return pendingOrGate({ ...details, link }, "PENDING");
+      return gateOr("pending", { ...details, link }, "PENDING");
     if (conclusion === "SUCCESS")
       return { ...details, link, kind: "passed", reportedState: "SUCCESS" };
     if (conclusion === "NEUTRAL" || conclusion === "SKIPPED")
       return { ...details, link, kind: "skipped", reportedState: conclusion };
-    return {
-      ...details,
-      link,
-      kind: "failed",
-      reportedState: conclusion === "ACTION_REQUIRED" ? conclusion : "FAILURE"
-    };
+    if (conclusion === "ACTION_REQUIRED")
+      return gateOr("failed", { ...details, link }, conclusion);
+    return { ...details, link, kind: "failed", reportedState: "FAILURE" };
   }
   const state = typeof object.state === "string" ? object.state.toUpperCase() : "";
   if (state === "PENDING" || state === "EXPECTED")
-    return pendingOrGate({ ...details, link }, "PENDING");
+    return gateOr("pending", { ...details, link }, "PENDING");
   return state === "SUCCESS" ? { ...details, link, kind: "passed", reportedState: state } : { ...details, link, kind: "failed", reportedState: state || "FAILURE" };
 }
 function parseComment(value) {
@@ -2559,10 +2583,11 @@ function parsePullRequest(value, context) {
     context,
     mergeable: enumValue(object.mergeable, ["MERGEABLE", "CONFLICTING", "UNKNOWN"], "pull request.mergeable"),
     mergeStateStatus: enumValue(object.mergeStateStatus, MERGE_STATES, "pull request.mergeStateStatus"),
-    reviewDecision: reviewDecision(object.reviewDecision),
+    reviewDecision: nullableEnum(object.reviewDecision, REVIEW_DECISIONS, "pull request.reviewDecision"),
     headRefOid: optionalString(object.headRefOid, "pull request.headRefOid"),
     headRefName: string(object.headRefName, "pull request.headRefName"),
     baseRefName: string(object.baseRefName, "pull request.baseRefName"),
+    baseRefOid: baseRefOid(object.baseRef),
     state: enumValue(object.state, ["OPEN", "CLOSED", "MERGED"], "pull request.state"),
     mergedAt: optionalString(object.mergedAt, "pull request.mergedAt"),
     isDraft: object.isDraft
@@ -2587,7 +2612,7 @@ function graphqlArgs(query, context) {
 class GhGitHubReader {
   async originRepo() {
     const result = await run(["git", "remote", "get-url", "origin"]);
-    return result.code === 0 ? parseRemote(result.stdout) : null;
+    return result.code === 0 ? parseGitHubRemote(result.stdout) : null;
   }
   async currentPr(pr) {
     const argv = ["gh", "pr", "view"];
@@ -2602,16 +2627,8 @@ class GhGitHubReader {
     };
   }
   async pullRequest(context) {
-    return parsePullRequest(await runJson([
-      "gh",
-      "pr",
-      "view",
-      String(context.number),
-      "--repo",
-      `${context.owner}/${context.repo}`,
-      "--json",
-      "mergeable,mergeStateStatus,reviewDecision,headRefOid,headRefName,baseRefName,state,mergedAt,isDraft"
-    ]), context);
+    const value = await runJson(graphqlArgs(PR_FACTS_QUERY, context));
+    return parsePullRequest(at(value, ["data", "repository", "pullRequest"]), context);
   }
   async openPullRequests(repository) {
     const value = await runJson([
@@ -2828,14 +2845,51 @@ var AUTOMATION_TOKENS = [
   "pr review automation",
   "review automation"
 ];
+var VERDICT_FACTS = {
+  state: true,
+  mergedAt: true,
+  isDraft: true,
+  mergeable: true,
+  mergeStateStatus: true,
+  reviewDecision: true,
+  headRefOid: true,
+  headRefName: true,
+  baseRefName: true,
+  baseRefOid: true
+};
+var mergeabilityUnknown = (facts) => facts.mergeable === "UNKNOWN" || facts.mergeStateStatus === "UNKNOWN";
+var COMPUTED_ON_DEMAND = new Set([
+  "mergeable",
+  "mergeStateStatus"
+]);
+var changedFacts = (before, after) => Object.keys(VERDICT_FACTS).filter((key) => before[key] !== after[key]).filter((key) => !(mergeabilityUnknown(before) && COMPUTED_ON_DEMAND.has(key))).map((key) => `${key} ${before[key]} -> ${after[key]}`);
+function openRevision(facts) {
+  const { headRefOid, baseRefName, baseRefOid } = facts;
+  if (headRefOid === null || baseRefOid === null)
+    throw new WatcherQueryError({
+      kind: "missing-key",
+      retryable: true,
+      detail: `open PR #${facts.context.number} has no ${headRefOid === null ? "head" : `${baseRefName} branch`} commit`
+    });
+  return { headRefOid, baseRefName, baseRefOid };
+}
 async function readSnapshot(args) {
-  const facts = await args.reader.pullRequest(args.context);
-  if (facts.state === "MERGED" || facts.mergedAt !== null)
-    return { kind: "merged", context: args.context, facts };
-  if (facts.state === "CLOSED")
-    return { kind: "closed", context: args.context, facts };
+  const first = await args.reader.pullRequest(args.context);
+  if (first.state === "MERGED" || first.mergedAt !== null)
+    return { kind: "merged", context: args.context, facts: first };
+  if (first.state === "CLOSED")
+    return { kind: "closed", context: args.context, facts: first };
+  const revision = openRevision(first);
   const threads = await resolveReviewThreads(args.reader, args.context);
   const checks = await resolveChecks(args.reader, args.context);
+  const facts = await args.reader.pullRequest(args.context);
+  const changed = changedFacts(first, facts);
+  if (changed.length > 0)
+    throw new WatcherQueryError({
+      kind: "snapshot-changed",
+      retryable: true,
+      detail: `PR #${args.context.number} changed while its status was read: ${changed.join(", ")}`
+    });
   const failed = nonEmpty(checks.checks.filter((check) => check.kind === "failed"));
   const pending = nonEmpty(checks.checks.filter((check) => check.kind === "pending"));
   let ci;
@@ -2886,6 +2940,7 @@ async function readSnapshot(args) {
     kind: "open",
     context: args.context,
     facts,
+    revision,
     threads,
     ci,
     reviewAutomationRunning: checks.checks.some((check) => check.kind === "pending" && AUTOMATION_TOKENS.some((token) => check.name.toLowerCase().includes(token)))
@@ -2906,11 +2961,29 @@ function gateReason(row, allowDraft) {
     return "closed-without-merge";
   if (row.facts.isDraft && !allowDraft)
     return "draft-pr";
-  return row.facts.reviewDecision === "CHANGES_REQUESTED" ? "changes-requested" : null;
+  if (row.facts.reviewDecision === "CHANGES_REQUESTED")
+    return "changes-requested";
+  if (row.facts.mergeStateStatus === "BEHIND")
+    return "behind-base";
+  if (row.facts.reviewDecision === "REVIEW_REQUIRED")
+    return "review-required";
+  return row.facts.mergeStateStatus === "BLOCKED" ? "merge-blocked" : null;
 }
+function waitReason(row) {
+  if (row.kind !== "open")
+    return null;
+  if (row.ci.kind === "ci-pending")
+    return { kind: "pending-checks", pending: row.ci.pending };
+  return mergeabilityUnknown(row.facts) ? { kind: "mergeability-unknown" } : null;
+}
+var DEFERRED_WHILE_WAITING = new Set([
+  "draft-pr",
+  "review-required",
+  "merge-blocked"
+]);
 function gateBlocker(row, allowDraft) {
   const reason = gateReason(row, allowDraft);
-  return reason === null || reason === "draft-pr" && row.kind === "open" && row.ci.kind === "ci-pending" ? null : { kind: "merge-gate", pr: row.context, reason };
+  return reason === null || DEFERRED_WHILE_WAITING.has(reason) && waitReason(row) !== null ? null : { kind: "merge-gate", pr: row.context, reason };
 }
 function readyContribution(row, allowDraft) {
   if (row.kind === "merged")
@@ -2919,15 +2992,16 @@ function readyContribution(row, allowDraft) {
       context: row.context,
       mergedAt: row.facts.mergedAt
     };
-  if (row.kind !== "open" || row.ci.kind !== "ci-clean" || row.threads.length !== 0 || conflictBlocker(row) !== null || gateReason(row, allowDraft) !== null)
+  if (row.kind !== "open" || row.ci.kind !== "ci-clean" || row.threads.length !== 0 || conflictBlocker(row) !== null || gateReason(row, allowDraft) !== null || waitReason(row) !== null)
     return null;
   const reviewDecision = row.facts.reviewDecision;
-  if (reviewDecision === "CHANGES_REQUESTED")
+  if (reviewDecision === "CHANGES_REQUESTED" || reviewDecision === "REVIEW_REQUIRED")
     return null;
   return {
     kind: "ready-pr",
     context: row.context,
     proof: {
+      revision: row.revision,
       mergeability: "clear",
       threads: [],
       ci: row.ci,
@@ -2948,8 +3022,9 @@ function classifyPr(row, allowDraft = false) {
   ])
     if (blocker !== null)
       return { kind: "blocker", blocker };
-  if (row.kind === "open" && row.ci.kind === "ci-pending")
-    return { kind: "waiting", frontier: row.context, pending: row.ci.pending };
+  const wait = waitReason(row);
+  if (wait !== null)
+    return { kind: "waiting", frontier: row.context, reason: wait };
   const ready = readyContribution(row, allowDraft);
   if (ready === null)
     throw new Error("snapshot has no classified decision");
@@ -2967,13 +3042,11 @@ function selectTierMajorStackDecision(rows, allowDraft = false) {
     if (blocker !== null)
       return { kind: "blocker", blocker };
   }
-  for (const row of rows)
-    if (row.kind === "open" && row.ci.kind === "ci-pending")
-      return {
-        kind: "waiting",
-        frontier: row.context,
-        pending: row.ci.pending
-      };
+  for (const row of rows) {
+    const wait = waitReason(row);
+    if (wait !== null)
+      return { kind: "waiting", frontier: row.context, reason: wait };
+  }
   const prs = nonEmpty(rows.map((row) => readyContribution(row, allowDraft)).filter((row) => row !== null));
   if (prs === null || prs.length !== rows.length)
     throw new Error("stack has no classified decision");
@@ -3118,7 +3191,7 @@ async function runSimple(args) {
       kind: "WAITING",
       terminal: false,
       frontier: decision.frontier,
-      reason: { kind: "pending-checks", pending: decision.pending }
+      reason: decision.reason
     }));
     return {
       kind: "sleep",
@@ -3127,7 +3200,7 @@ async function runSimple(args) {
         kind: "TIMEOUT",
         terminal: true,
         exitCode: 5,
-        reason: { kind: "pending-checks", pending: decision.pending }
+        reason: decision.reason
       })
     };
   };
@@ -3227,10 +3300,11 @@ function evaluateQueue(state, now, options) {
       frontier,
       unmergedCount: active.length
     };
-  const row = rows[0];
-  const pending = row.kind === "open" && row.ci.kind === "ci-pending" ? row.ci.pending : null;
-  const reason = pending === null ? { kind: "merge-queue", unmergedCount: active.length } : { kind: "pending-checks", pending };
-  const key = reason.kind === "pending-checks" ? `pending:${frontier.number}:${reason.pending.length}` : `queue:${frontier.number}:${reason.unmergedCount}`;
+  const reason = waitReason(rows[0]) ?? {
+    kind: "merge-queue",
+    unmergedCount: active.length
+  };
+  const key = reason.kind === "pending-checks" ? `pending:${frontier.number}:${reason.pending.length}` : reason.kind === "merge-queue" ? `queue:${frontier.number}:${reason.unmergedCount}` : `${reason.kind}:${frontier.number}`;
   return {
     kind: "waiting",
     state: { ...state, frontier, lastWaitKey: key },
@@ -3384,7 +3458,7 @@ function reviewCell(row) {
   if (row.kind !== "open")
     return "—";
   const open = row.threads.length;
-  return row.reviewAutomationRunning ? open ? `\uD83E\uDD16 running, ${open} open` : "\uD83E\uDD16 running" : open ? `\uD83D\uDCDD ${open} open` : "✅";
+  return row.reviewAutomationRunning ? open ? `\uD83E\uDD16 running, ${open} open` : "\uD83E\uDD16 running" : open ? `\uD83D\uDCDD ${open} open` : row.facts.reviewDecision === "REVIEW_REQUIRED" ? "\uD83D\uDC40 review required" : "✅";
 }
 function mergeCell(row) {
   if (row.kind === "merged")
@@ -3395,7 +3469,7 @@ function mergeCell(row) {
     return "⏸ draft";
   if (row.facts.reviewDecision === "CHANGES_REQUESTED")
     return "⚠️ changes requested";
-  return row.facts.mergeable === "CONFLICTING" || row.facts.mergeStateStatus === "DIRTY" || row.facts.mergeStateStatus === "CONFLICTING" ? "⚠️ conflict" : "✅";
+  return row.facts.mergeable === "CONFLICTING" || row.facts.mergeStateStatus === "DIRTY" || row.facts.mergeStateStatus === "CONFLICTING" ? "⚠️ conflict" : row.facts.mergeable === "UNKNOWN" || row.facts.mergeStateStatus === "UNKNOWN" ? "⏳ mergeability unknown" : row.facts.mergeStateStatus === "BEHIND" ? "⚠️ behind base" : row.facts.mergeStateStatus === "BLOCKED" ? "⛔ blocked" : "✅";
 }
 function renderStatusTable(rows) {
   const lines = ["| PR | CI | Review | Merge |", "| --- | --- | --- | --- |"];
@@ -3452,7 +3526,7 @@ function renderBlocker(blocker) {
 `);
     }
     case "merge-gate": {
-      const action = blocker.reason === "closed-without-merge" ? "restore or remove the closed PR from the queued stack" : blocker.reason === "draft-pr" ? "mark the PR ready for review before waiting for the merge queue" : "resolve the changes-requested review before waiting for the merge queue";
+      const action = blocker.reason === "closed-without-merge" ? "restore or remove the closed PR from the queued stack" : blocker.reason === "draft-pr" ? "mark the PR ready for review before waiting for the merge queue" : blocker.reason === "changes-requested" ? "resolve the changes-requested review before waiting for the merge queue" : blocker.reason === "behind-base" ? "update the branch with its base, then rearm (mergeStateStatus=BEHIND)" : blocker.reason === "review-required" ? "get the required approving review, then rearm" : blocker.reason === "merge-blocked" ? "find the branch protection rule holding the merge (mergeStateStatus=BLOCKED with passing checks)" : blocker.reason;
       return [
         `BLOCKER: ${blocker.reason}`,
         `pr=${blocker.pr.number}`,
@@ -3482,6 +3556,9 @@ function renderPretty(verdict) {
     case "STATUS":
       return renderStatusTable(verdict.rows);
     case "WAITING":
+      if (verdict.reason.kind === "mergeability-unknown")
+        return `WAITING: frontier=#${verdict.frontier.number}; GitHub has not computed mergeability yet
+`;
       return verdict.reason.kind === "pending-checks" ? `WAITING: frontier=#${verdict.frontier.number}; ${verdict.reason.pending.length} check${verdict.reason.pending.length === 1 ? "" : "s"} pending
 ` : `WAITING: frontier=#${verdict.frontier.number} is blocker-free; waiting for merge queue (${verdict.reason.unmergedCount} PR${verdict.reason.unmergedCount === 1 ? "" : "s"} unmerged)
 `;
@@ -3489,7 +3566,7 @@ function renderPretty(verdict) {
       return `ADVANCE: merged #${verdict.merged.number}; next=#${verdict.frontier.number}; remaining=${verdict.remaining}
 `;
     case "RETRY":
-      return `RETRY: GitHub status query failed; retrying in ${verdict.retryInSeconds}s
+      return `RETRY: ${verdict.failure.kind === "snapshot-changed" ? "the PR changed while its status was read" : "GitHub status query failed"}; retrying in ${verdict.retryInSeconds}s
 detail=${verdict.failure.detail}
 `;
     case "BLOCKER":
@@ -3497,6 +3574,8 @@ detail=${verdict.failure.detail}
 `;
     case "READY": {
       const detail = verdict.scope.kind === "single" && verdict.scope.pr.kind === "ready-pr" ? `
+headRefOid=${verdict.scope.pr.proof.revision.headRefOid}
+base=${verdict.scope.pr.proof.revision.baseRefName}@${verdict.scope.pr.proof.revision.baseRefOid}
 mergeStateStatus=${verdict.scope.pr.proof.ci.github.mergeStateStatus}
 reviewDecision=${verdict.scope.pr.proof.gate.reviewDecision}
 isDraft=${verdict.scope.pr.proof.gate.draft === "draft-allowed"}${verdict.scope.pr.proof.gate.draft === "draft-allowed" ? `
@@ -3510,6 +3589,9 @@ note=draft allowed (--allow-draft); leave draft — do not mark ready` : ""}` : 
     case "TIMEOUT":
       if (verdict.reason.kind === "pending-checks")
         return `TIMEOUT: checks still pending
+`;
+      if (verdict.reason.kind === "mergeability-unknown")
+        return `TIMEOUT: GitHub has not computed mergeability yet
 `;
       if (verdict.reason.kind === "status-unavailable")
         return `TIMEOUT: GitHub status remained unavailable

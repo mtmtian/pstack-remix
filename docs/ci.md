@@ -23,9 +23,22 @@ bash scripts/check.sh runtime
 bash scripts/check.sh build
 ```
 
-`runtime` needs no Bun, vendor CLI, login, or shared pstack configuration. It exercises config resolution, the pi guard, verdict parsing, xagent receipts, cancellation, timeouts, and host verification with vendor stand-ins. It also copies the shipped Node bundles into a temporary directory without dependencies and checks orchestrator persistence and watcher argument handling.
+`runtime` needs no Bun, vendor CLI, login, or shared pstack configuration. It starts with the [fork guards](#fork-guards), then exercises config resolution, the pi guard, verdict parsing, xagent receipts, cancellation, timeouts, and host verification with vendor stand-ins. It also copies the shipped Node bundles into a temporary directory without dependencies and checks orchestrator persistence and watcher argument handling.
 
 `build` runs strict type checking and the Bun tests for both `orch` and `watch-pr`. It tests the real builder, then rebuilds into a temporary directory and compares the result with the working-tree artifacts. It fails if source hashes, bundles, or the bundled license differ or are missing, or a bundle loses execute permission. Build inputs exclude `node_modules`, logs, `.DS_Store`, and TypeScript build caches. It never repairs artifacts during a check. Checks stop at the first failure and print the failing command.
+
+## Fork guards
+
+`node scripts/check-fork.mjs` checks the shipped tree statically, so an upstream sync cannot silently undo a decision recorded in [the adaptation guide](../ADAPTATION.md). The `runtime` suite runs it first. It prints each problem with its file and line, and fails if any remain.
+
+| Guard | Fails when |
+| --- | --- |
+| Denylist | `skills/`, `references/`, or `agents/` names a Cursor-only primitive this fork replaced: `pstack-models.mdc`, a fixed `/loop 1h` interval, `control-ui` or `control-cli`, Cursor cloud agents, `~/.cursor` or `.cursor/` paths, `agent-transcripts`, the `Task` tool and its fields (`subagent_type`, `readonly`, `run_in_background`, `environment`), `disable-model-invocation`, an effort- or fast-suffixed model slug, `/visualize`, or Custom Modes |
+| Skills | a skill directory lacks `SKILL.md`, a frontmatter `name` differs from its directory or agent file name, a `description` is empty, or a `SKILL.md` has no link to `references/runtime.md` |
+| Links | a Markdown link outside code points at a missing file or leaves the repository |
+| Manifests | a manifest is not valid JSON or loses its name (`pstack`, or `pstack-codex` for Codex), or the root `plugin.json` references `agent-plugins.org`, whose `$schema` makes Codex truncate each skill to 8,000 bytes |
+
+When the denylist fires after a sync, rewrite the sentence the way the adaptation guide records for that sync instead of swapping tokens. A file that names a pattern on purpose, such as an adapter listing the fields it forbids, goes in that rule's `allow` list in `scripts/check-fork.mjs`; `skills/poteto-help/SKILL.md` is the one allowed `disable-model-invocation`. An allowed file that stops matching fails as stale, so an allowance cannot outlive the sentence it excuses. `scripts/check-fork.test.mjs` plants each violation in a copy of the tree and checks that it is reported.
 
 ## Update the distributed bundles
 
@@ -64,4 +77,4 @@ After the first successful GitHub run, select all three check names in branch pr
 
 PR CI does not call real model vendors or run a live host workflow. For changes to xagent or cross-agent routing, run the separately authorized [vendor and dual-host checks](../ADAPTATION.md#verification). Keep their receipts separate from offline test results.
 
-Plugin discovery, Skill instructions, frontmatter, and local-link validation still require the package review described in [the adaptation guide](../ADAPTATION.md#verification). This workflow does not establish host discovery, model behavior, deployment, or restart persistence.
+Plugin discovery and Skill behavior still require the package review described in [the adaptation guide](../ADAPTATION.md#verification); the fork guards check only text, frontmatter, links, and manifests. This workflow does not establish host discovery, model behavior, deployment, or restart persistence.

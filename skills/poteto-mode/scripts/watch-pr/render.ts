@@ -28,7 +28,9 @@ function reviewCell(row: T.PrSnapshot): string {
       : "🤖 running"
     : open
       ? `📝 ${open} open`
-      : "✅";
+      : row.facts.reviewDecision === "REVIEW_REQUIRED"
+        ? "👀 review required"
+        : "✅";
 }
 function mergeCell(row: T.PrSnapshot): string {
   if (row.kind === "merged") return "✅ merged";
@@ -40,7 +42,14 @@ function mergeCell(row: T.PrSnapshot): string {
     row.facts.mergeStateStatus === "DIRTY" ||
     row.facts.mergeStateStatus === "CONFLICTING"
     ? "⚠️ conflict"
-    : "✅";
+    : row.facts.mergeable === "UNKNOWN" ||
+        row.facts.mergeStateStatus === "UNKNOWN"
+      ? "⏳ mergeability unknown"
+      : row.facts.mergeStateStatus === "BEHIND"
+        ? "⚠️ behind base"
+        : row.facts.mergeStateStatus === "BLOCKED"
+          ? "⛔ blocked"
+          : "✅";
 }
 export function renderStatusTable(rows: T.NonEmpty<T.PrSnapshot>): string {
   const lines = ["| PR | CI | Review | Merge |", "| --- | --- | --- | --- |"];
@@ -110,7 +119,15 @@ function renderBlocker(blocker: T.MergeBlocker | StatusQueryBlocker): string {
           ? "restore or remove the closed PR from the queued stack"
           : blocker.reason === "draft-pr"
             ? "mark the PR ready for review before waiting for the merge queue"
-            : "resolve the changes-requested review before waiting for the merge queue";
+            : blocker.reason === "changes-requested"
+              ? "resolve the changes-requested review before waiting for the merge queue"
+              : blocker.reason === "behind-base"
+                ? "update the branch with its base, then rearm (mergeStateStatus=BEHIND)"
+                : blocker.reason === "review-required"
+                  ? "get the required approving review, then rearm"
+                  : blocker.reason === "merge-blocked"
+                    ? "find the branch protection rule holding the merge (mergeStateStatus=BLOCKED with passing checks)"
+                    : (blocker.reason satisfies never);
       return [
         `BLOCKER: ${blocker.reason}`,
         `pr=${blocker.pr.number}`,
@@ -137,19 +154,21 @@ export function renderPretty(verdict: T.WatcherVerdict): string {
     case "STATUS":
       return renderStatusTable(verdict.rows);
     case "WAITING":
+      if (verdict.reason.kind === "mergeability-unknown")
+        return `WAITING: frontier=#${verdict.frontier.number}; GitHub has not computed mergeability yet\n`;
       return verdict.reason.kind === "pending-checks"
         ? `WAITING: frontier=#${verdict.frontier.number}; ${verdict.reason.pending.length} check${verdict.reason.pending.length === 1 ? "" : "s"} pending\n`
         : `WAITING: frontier=#${verdict.frontier.number} is blocker-free; waiting for merge queue (${verdict.reason.unmergedCount} PR${verdict.reason.unmergedCount === 1 ? "" : "s"} unmerged)\n`;
     case "ADVANCE":
       return `ADVANCE: merged #${verdict.merged.number}; next=#${verdict.frontier.number}; remaining=${verdict.remaining}\n`;
     case "RETRY":
-      return `RETRY: GitHub status query failed; retrying in ${verdict.retryInSeconds}s\ndetail=${verdict.failure.detail}\n`;
+      return `RETRY: ${verdict.failure.kind === "snapshot-changed" ? "the PR changed while its status was read" : "GitHub status query failed"}; retrying in ${verdict.retryInSeconds}s\ndetail=${verdict.failure.detail}\n`;
     case "BLOCKER":
       return `${renderBlocker(verdict.blocker)}\n`;
     case "READY": {
       const detail =
         verdict.scope.kind === "single" && verdict.scope.pr.kind === "ready-pr"
-          ? `\nmergeStateStatus=${verdict.scope.pr.proof.ci.github.mergeStateStatus}\nreviewDecision=${verdict.scope.pr.proof.gate.reviewDecision}\nisDraft=${verdict.scope.pr.proof.gate.draft === "draft-allowed"}${verdict.scope.pr.proof.gate.draft === "draft-allowed" ? "\nnote=draft allowed (--allow-draft); leave draft \u2014 do not mark ready" : ""}`
+          ? `\nheadRefOid=${verdict.scope.pr.proof.revision.headRefOid}\nbase=${verdict.scope.pr.proof.revision.baseRefName}@${verdict.scope.pr.proof.revision.baseRefOid}\nmergeStateStatus=${verdict.scope.pr.proof.ci.github.mergeStateStatus}\nreviewDecision=${verdict.scope.pr.proof.gate.reviewDecision}\nisDraft=${verdict.scope.pr.proof.gate.draft === "draft-allowed"}${verdict.scope.pr.proof.gate.draft === "draft-allowed" ? "\nnote=draft allowed (--allow-draft); leave draft \u2014 do not mark ready" : ""}`
           : "";
       return `READY: no merge conflicts, no unresolved review threads, no failing or pending checks${detail}\n`;
     }
@@ -158,6 +177,8 @@ export function renderPretty(verdict: T.WatcherVerdict): string {
     case "TIMEOUT":
       if (verdict.reason.kind === "pending-checks")
         return "TIMEOUT: checks still pending\n";
+      if (verdict.reason.kind === "mergeability-unknown")
+        return "TIMEOUT: GitHub has not computed mergeability yet\n";
       if (verdict.reason.kind === "status-unavailable")
         return "TIMEOUT: GitHub status remained unavailable\n";
       return `TIMEOUT: queued stack still has ${verdict.reason.unmergedCount} PR${verdict.reason.unmergedCount === 1 ? "" : "s"} unmerged; frontier=#${verdict.reason.frontier.number}\n`;

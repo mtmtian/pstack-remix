@@ -7,6 +7,7 @@ import {
   openStore,
   parseVerdict,
   type Counts,
+  type Forge,
   type Frontier,
   type InboxPointer,
   type OpenGate,
@@ -81,6 +82,7 @@ interface GateResolveOptions {
 
 interface FrontierSetOptions {
   readonly repo?: string;
+  readonly forge: Forge;
   readonly prs?: readonly number[];
 }
 
@@ -477,7 +479,7 @@ function createProgram(io: Io): Command {
   leaf(
     frontier,
     "set",
-    "set an explicit GitHub PR frontier; without --prs use optional Graphite discovery"
+    "set the frontier from --prs, or resolve the pull request base chain"
   )
     .addOption(
       new Option(
@@ -485,9 +487,14 @@ function createProgram(io: Io): Command {
         "repository directory (or ORCH_REPO)"
       ).env("ORCH_REPO")
     )
+    .addOption(
+      new Option("--forge <forge>", "pull request forge")
+        .choices(["gh", "origin"])
+        .default("gh")
+    )
     .option(
       "--prs <n,...>",
-      "explicit pull request order; facts are read with gh (recommended)",
+      "explicit pull request order; facts are read with gh pr view",
       prList
     )
     .action((options: FrontierSetOptions) =>
@@ -497,6 +504,7 @@ function createProgram(io: Io): Command {
         (store) =>
           store.frontier.set({
             repo: frontierRepo(options),
+            forge: options.forge,
             prs: options.prs,
           }),
         frontierLine

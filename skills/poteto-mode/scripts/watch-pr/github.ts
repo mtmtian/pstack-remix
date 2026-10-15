@@ -1,10 +1,13 @@
 import { spawn } from "node:child_process";
 import type * as T from "./types.ts";
 import { nonEmpty, parsePrNumber } from "./types.ts";
+import { parseGitHubRemote } from "../github-remote.ts";
 export const REVIEW_THREADS_QUERY =
   "\nquery ReviewThreads($owner: String!, $repo: String!, $pr: Int!, $after: String) {\n  repository(owner: $owner, name: $repo) {\n    pullRequest(number: $pr) {\n      reviewThreads(first: 100, after: $after) {\n        pageInfo {\n          hasNextPage\n          endCursor\n        }\n        nodes {\n          id\n          isResolved\n          comments(first: 10) {\n            nodes {\n              body\n              createdAt\n              path\n              line\n              author { login }\n            }\n          }\n        }\n      }\n    }\n  }\n}\n";
 export const PR_COMMIT_STATUS_QUERY =
   "\nquery PrCommitStatuses($owner: String!, $repo: String!, $pr: Int!) {\n  repository(owner: $owner, name: $repo) {\n    pullRequest(number: $pr) {\n      commits(last: 50) {\n        nodes {\n          commit {\n            oid\n            statusCheckRollup {\n              state\n            }\n          }\n        }\n      }\n    }\n  }\n}\n";
+export const PR_FACTS_QUERY =
+  "\nquery PullRequestFacts($owner: String!, $repo: String!, $pr: Int!) {\n  repository(owner: $owner, name: $repo) {\n    pullRequest(number: $pr) {\n      mergeable\n      mergeStateStatus\n      reviewDecision\n      headRefOid\n      headRefName\n      baseRefName\n      baseRef { target { oid } }\n      state\n      mergedAt\n      isDraft\n    }\n  }\n}\n";
 export const PR_CHECK_ROLLUP_QUERY =
   "\nquery PrCheckRollup($owner: String!, $repo: String!, $pr: Int!, $after: String) {\n  repository(owner: $owner, name: $repo) {\n    pullRequest(number: $pr) {\n      commits(last: 1) {\n        nodes {\n          commit {\n            statusCheckRollup {\n              contexts(first: 100, after: $after) {\n                pageInfo {\n                  hasNextPage\n                  endCursor\n                }\n                nodes {\n                  __typename\n                  ... on CheckRun {\n                    name\n                    status\n                    conclusion\n                    detailsUrl\n                  }\n                  ... on StatusContext {\n                    context\n                    state\n                    targetUrl\n                  }\n                }\n              }\n            }\n          }\n        }\n      }\n    }\n  }\n}\n";
 
@@ -152,42 +155,17 @@ const REVIEW_DECISIONS = [
   "CHANGES_REQUESTED",
   "REVIEW_REQUIRED",
 ] as const;
-// `gh pr view` reports no review decision as "", not null. Only this field does
-// it, so the normalization stays here rather than in nullableEnum, where it
-// would stop a genuinely unexpected rollup state from failing closed.
-const reviewDecision = (value: unknown): T.ReviewDecision =>
-  nullableEnum(
-    value === "" ? null : value,
-    REVIEW_DECISIONS,
-    "pull request.reviewDecision"
-  );
-function parseRemote(value: string): T.Repository | null {
-  let normalized = value.trim();
-  if (normalized.startsWith("git@github.com:"))
-    normalized = `https://github.com/${normalized.slice(15)}`;
-  if (normalized.startsWith("ssh://git@github.com/"))
-    normalized = `https://github.com/${normalized.slice(21)}`;
-  try {
-    const url = new URL(normalized);
-    const parts = url.pathname
-      .replace(/\.git$/, "")
-      .split("/")
-      .filter(Boolean);
-    if (
-      url.protocol !== "https:" ||
-      url.hostname !== "github.com" ||
-      url.port ||
-      url.username ||
-      url.password ||
-      url.search ||
-      url.hash ||
-      parts.length !== 2
-    )
-      return null;
-    return { owner: parts[0], repo: parts[1] };
-  } catch {
-    return null;
-  }
+// The PR records the base commit it was opened against in `baseRefOid`, which
+// does not always follow the branch, so read the branch's own target.
+function baseRefOid(value: unknown): string | null {
+  if (value === null) return null;
+  const target = record(value, "pull request.baseRef").target;
+  return target === null
+    ? null
+    : string(
+        record(target, "pull request.baseRef.target").oid,
+        "pull request.baseRef.target.oid"
+      );
 }
 function parsePrUrl(value: string): T.PrContext {
   try {
@@ -237,22 +215,21 @@ export function parseFastCheck(value: unknown): T.Check {
   const details = checkDetails(object, "name");
   const state = string(object.state, "check.state").toUpperCase();
   const bucket = string(object.bucket, "check.bucket");
-  if (
-    bucket === "fail" ||
-    ["FAILURE", "ERROR", "ACTION_REQUIRED"].includes(state)
-  )
+  if (state === "ACTION_REQUIRED") return gateOr("failed", details, state);
+  if (bucket === "fail" || ["FAILURE", "ERROR"].includes(state))
     return { ...details, kind: "failed", reportedState: state };
-  if (bucket === "pending") return pendingOrGate(details, state);
+  if (bucket === "pending") return gateOr("pending", details, state);
   if (bucket === "pass")
     return { ...details, kind: "passed", reportedState: state };
   if (bucket === "skipping")
     return { ...details, kind: "skipped", reportedState: state };
   return { ...details, kind: "failed", reportedState: state };
 }
-// The owner-approval gate is excluded from pending everywhere, so the rule has
-// one home. Classifying it as pending on either read path makes the watcher
-// wait on a human, which is the behaviour #172004 removed from the Python.
-function pendingOrGate(
+// Every read path classifies the owner-approval gate here, so the rule has one
+// home. A gate that is pending or waits on an owner approval must not count as
+// pending or failed, or the watcher waits on a human.
+function gateOr(
+  kind: "pending" | "failed",
   details: {
     readonly name: string;
     readonly description: string;
@@ -268,7 +245,7 @@ function pendingOrGate(
         name: "Code Review Gate",
         reportedState,
       }
-    : { ...details, kind: "pending", reportedState };
+    : { ...details, kind, reportedState };
 }
 export function mapRollupNode(value: unknown): T.Check | null {
   const object = record(value, "rollup node");
@@ -288,22 +265,19 @@ export function mapRollupNode(value: unknown): T.Check | null {
         ? object.conclusion.toUpperCase()
         : "";
     if (status !== "COMPLETED")
-      return pendingOrGate({ ...details, link }, "PENDING");
+      return gateOr("pending", { ...details, link }, "PENDING");
     if (conclusion === "SUCCESS")
       return { ...details, link, kind: "passed", reportedState: "SUCCESS" };
     if (conclusion === "NEUTRAL" || conclusion === "SKIPPED")
       return { ...details, link, kind: "skipped", reportedState: conclusion };
-    return {
-      ...details,
-      link,
-      kind: "failed",
-      reportedState: conclusion === "ACTION_REQUIRED" ? conclusion : "FAILURE",
-    };
+    if (conclusion === "ACTION_REQUIRED")
+      return gateOr("failed", { ...details, link }, conclusion);
+    return { ...details, link, kind: "failed", reportedState: "FAILURE" };
   }
   const state =
     typeof object.state === "string" ? object.state.toUpperCase() : "";
   if (state === "PENDING" || state === "EXPECTED")
-    return pendingOrGate({ ...details, link }, "PENDING");
+    return gateOr("pending", { ...details, link }, "PENDING");
   return state === "SUCCESS"
     ? { ...details, link, kind: "passed", reportedState: state }
     : { ...details, link, kind: "failed", reportedState: state || "FAILURE" };
@@ -427,10 +401,15 @@ export function parsePullRequest(
       MERGE_STATES,
       "pull request.mergeStateStatus"
     ),
-    reviewDecision: reviewDecision(object.reviewDecision),
+    reviewDecision: nullableEnum(
+      object.reviewDecision,
+      REVIEW_DECISIONS,
+      "pull request.reviewDecision"
+    ),
     headRefOid: optionalString(object.headRefOid, "pull request.headRefOid"),
     headRefName: string(object.headRefName, "pull request.headRefName"),
     baseRefName: string(object.baseRefName, "pull request.baseRefName"),
+    baseRefOid: baseRefOid(object.baseRef),
     state: enumValue(
       object.state,
       ["OPEN", "CLOSED", "MERGED"] as const,
@@ -462,7 +441,7 @@ function graphqlArgs(
 export class GhGitHubReader implements T.GitHubReader {
   async originRepo(): Promise<T.Repository | null> {
     const result = await run(["git", "remote", "get-url", "origin"]);
-    return result.code === 0 ? parseRemote(result.stdout) : null;
+    return result.code === 0 ? parseGitHubRemote(result.stdout) : null;
   }
   async currentPr(pr: T.PrNumber | null): Promise<T.PrContext> {
     const argv: [string, ...string[]] = ["gh", "pr", "view"];
@@ -476,17 +455,9 @@ export class GhGitHubReader implements T.GitHubReader {
     };
   }
   async pullRequest(context: T.PrContext): Promise<T.PullRequestFacts> {
+    const value = await runJson(graphqlArgs(PR_FACTS_QUERY, context));
     return parsePullRequest(
-      await runJson([
-        "gh",
-        "pr",
-        "view",
-        String(context.number),
-        "--repo",
-        `${context.owner}/${context.repo}`,
-        "--json",
-        "mergeable,mergeStateStatus,reviewDecision,headRefOid,headRefName,baseRefName,state,mergedAt,isDraft",
-      ]),
+      at(value, ["data", "repository", "pullRequest"]),
       context
     );
   }
