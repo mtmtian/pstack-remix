@@ -5,7 +5,7 @@
   "skills/poteto-mode/scripts/check-plan.test.ts": "5202f80745616340e5a9182a05d452aaae02f7e195e55d8dfcca3e614621dd6d",
   "skills/poteto-mode/scripts/orch/orch.test.ts": "ad998fec671649830f8aa886444847d5f72eb068eb4492f63e02df4b5f7f0b55",
   "skills/poteto-mode/scripts/orch/orch.ts": "85ff2a5668e678699139c9a4068e56df89650a0770f4f7228be0bd79bd66944a",
-  "skills/poteto-mode/scripts/orch/store.ts": "342a05a9253c5c73bec13f1912e92d801293ff242b23e4855196d13396e83af7",
+  "skills/poteto-mode/scripts/orch/store.ts": "5ddc2554c7e82709a01bc5b130dcb556e41c9f2f6e816537159e5328f05b7e33",
   "skills/poteto-mode/scripts/package.json": "fd511a0c01f522e0c781ddd8eccea0e91697a0856c6e6a3261de78a6a0287c72",
   "skills/poteto-mode/scripts/watch-pr/cli.test.ts": "182d2dd3e7f8e74f79c43e263752e645deb2c8ea5876816282e465d770f13b87",
   "skills/poteto-mode/scripts/watch-pr/cli.ts": "226515dd8f32f56ea5f81e53047112de36e66d43ff41114e0f6794c648f0b530",

@@ -1052,9 +1052,7 @@ interface ForgeTarget {
 }
 
 function recoveryHint(forge: Forge): string {
-  return forge === "gh"
-    ? "set the frontier with --prs"
-    : "close or retarget the extra pull requests, since --prs reads GitHub only";
+  return forge === "gh" ? "; set the frontier with --prs" : "";
 }
 
 function listPullRequests({
@@ -1106,7 +1104,7 @@ function listPullRequests({
   }
   if (value.length >= PULL_REQUEST_LIST_LIMIT) {
     throw new UserError(
-      `${command} returned ${PULL_REQUEST_LIST_LIMIT} pull requests and may be truncated; ${recoveryHint(forge)}`
+      `${command} returned ${PULL_REQUEST_LIST_LIMIT} pull requests and may be truncated${recoveryHint(forge)}`
     );
   }
   return value.flatMap((row) => {
@@ -1162,7 +1160,7 @@ function branchPullRequest({
   }
   if (rows.length > 1) {
     throw new UserError(
-      `branch ${branch} has multiple pull requests (${rows.map((item) => `#${item.pr}`).join(", ")}); ${recoveryHint(target.forge)}`
+      `branch ${branch} has multiple pull requests (${rows.map((item) => `#${item.pr}`).join(", ")})${recoveryHint(target.forge)}`
     );
   }
   return row;
@@ -1232,7 +1230,7 @@ function trunkBranch(repo: string): string {
     );
     if (found.length > 1) {
       throw new UserError(
-        "cannot tell whether main or master is trunk without origin/HEAD; run git remote set-head origin --auto, or set the frontier with --prs"
+        "cannot tell whether main or master is trunk without origin/HEAD; run git remote set-head origin --auto, or on GitHub set the frontier with --prs"
       );
     }
     if (found[0] !== undefined) {
@@ -1240,7 +1238,7 @@ function trunkBranch(repo: string): string {
     }
   }
   throw new UserError(
-    "cannot resolve trunk without origin/HEAD, main, or master; run git remote set-head origin --auto, or set the frontier with --prs"
+    "cannot resolve trunk without origin/HEAD, main, or master; run git remote set-head origin --auto, or on GitHub set the frontier with --prs"
   );
 }
 
