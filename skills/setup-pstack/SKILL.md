@@ -30,6 +30,6 @@ Example shared patch, usable on both hosts:
 }
 ```
 
-Role names follow the bundled workflow, for example `feature`, `refactoring`, `bug-fix`, `perf-issue`, `hillclimb`, `judgment and prose`, `hardest tasks`, `how explorer`, `how explainer`, `why investigators`, `why synthesizer`, and `swarm workers`. Panels include `arena runners`, `arena cross-judge pool`, `architect runners`, and `interrogate reviewers`. Use the role a workflow actually requests; do not populate unused choices.
+Role names follow the bundled workflow: the code playbook roles `feature`, `refactoring`, `bug-fix`, `perf-issue`, and `hillclimb`; `hardest tasks` for the hardest changes; `judgment and prose`; `how explorer`, `how explainer`, `why investigators`, `why synthesizer`, `reflect judgment`, and `reflect tooling`; and `swarm workers`, which verification workers also read. Panels include `arena runners`, `arena cross-judge pool`, `architect runners`, and `interrogate reviewers`. Use the role a workflow actually requests; do not populate unused choices.
 
 Shared `required_panel_members`, for example `["xagent:grok", "xagent:gemini"]`, adds those external agents to every panel and the default panel on both hosts. It is rejected in a host override; `null` removes it.
