@@ -2161,6 +2161,24 @@ function parsePrNumber(value, label = "PR number") {
   return value;
 }
 
+// github-remote.ts
+function parseGitHubRemote(value) {
+  let normalized = value.trim();
+  if (normalized.startsWith("git@github.com:"))
+    normalized = `https://github.com/${normalized.slice(15)}`;
+  if (normalized.startsWith("ssh://git@github.com/"))
+    normalized = `https://github.com/${normalized.slice(21)}`;
+  try {
+    const url = new URL(normalized);
+    const parts = url.pathname.replace(/\.git$/, "").split("/").filter(Boolean);
+    if (url.protocol !== "https:" || url.hostname !== "github.com" || url.port || url.username || url.password || url.search || url.hash || parts.length !== 2)
+      return null;
+    return { owner: parts[0], repo: parts[1] };
+  } catch {
+    return null;
+  }
+}
+
 // watch-pr/github.ts
 var REVIEW_THREADS_QUERY = `
 query ReviewThreads($owner: String!, $repo: String!, $pr: Int!, $after: String) {
@@ -2401,22 +2419,6 @@ function baseRefOid(value) {
   const target = record(value, "pull request.baseRef").target;
   return target === null ? null : string(record(target, "pull request.baseRef.target").oid, "pull request.baseRef.target.oid");
 }
-function parseRemote(value) {
-  let normalized = value.trim();
-  if (normalized.startsWith("git@github.com:"))
-    normalized = `https://github.com/${normalized.slice(15)}`;
-  if (normalized.startsWith("ssh://git@github.com/"))
-    normalized = `https://github.com/${normalized.slice(21)}`;
-  try {
-    const url = new URL(normalized);
-    const parts = url.pathname.replace(/\.git$/, "").split("/").filter(Boolean);
-    if (url.protocol !== "https:" || url.hostname !== "github.com" || url.port || url.username || url.password || url.search || url.hash || parts.length !== 2)
-      return null;
-    return { owner: parts[0], repo: parts[1] };
-  } catch {
-    return null;
-  }
-}
 function parsePrUrl(value) {
   try {
     const url = new URL(value);
@@ -2610,7 +2612,7 @@ function graphqlArgs(query, context) {
 class GhGitHubReader {
   async originRepo() {
     const result = await run(["git", "remote", "get-url", "origin"]);
-    return result.code === 0 ? parseRemote(result.stdout) : null;
+    return result.code === 0 ? parseGitHubRemote(result.stdout) : null;
   }
   async currentPr(pr) {
     const argv = ["gh", "pr", "view"];

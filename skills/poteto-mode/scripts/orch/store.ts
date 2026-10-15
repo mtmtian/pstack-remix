@@ -3,22 +3,24 @@ import { randomUUID } from "node:crypto";
 import type { Dirent } from "node:fs";
 import {
   access,
-  link,
   mkdir,
   readFile,
   readdir,
   rename,
   rm,
-  unlink,
   writeFile,
 } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
-import { setTimeout as sleep } from "node:timers/promises";
+import {
+  parseGitHubRemote,
+  type GitHubRepository,
+} from "../github-remote.ts";
+import { UserError, errorCode } from "./errors.ts";
+import { acquireLock, type LockOptions } from "./lock.ts";
 
+const SHA_PATTERN = /^[0-9a-f]{40,64}$/i;
 const UNIT_HEADER = "id\ttrack\tstate\tbranch\tpr\tsha\tbrief";
 const LEDGER_HEADER = "pr\tsha\tverdict\tevidence\tverifier\tts";
-const LOCK_FILE = ".orch.lock";
-const TAKEOVER_DIR = `${LOCK_FILE}.takeover`;
 
 export type Verdict =
   | "live-ui-verified"
@@ -177,11 +179,7 @@ export interface AddStandingParams {
   readonly line: string;
 }
 
-export interface OpenStoreOptions {
-  readonly force?: boolean;
-  readonly onLockStolen?: (holder: string) => void;
-  readonly onStaleLock?: (holder: string) => void;
-}
+export type OpenStoreOptions = LockOptions;
 
 export interface Store {
   readonly units: {
@@ -227,7 +225,7 @@ export interface NotFoundOutput {
   readonly json: unknown;
 }
 
-export class UserError extends Error {}
+export { UserError };
 export class UsageError extends UserError {}
 export class NotFoundError extends UserError {
   public constructor(
@@ -236,18 +234,6 @@ export class NotFoundError extends UserError {
   ) {
     super(message);
   }
-}
-
-function errorCode(error: unknown): string | null {
-  if (
-    error !== null &&
-    typeof error === "object" &&
-    "code" in error &&
-    typeof error.code === "string"
-  ) {
-    return error.code;
-  }
-  return null;
 }
 
 function errorMessage(error: unknown): string {
@@ -366,162 +352,6 @@ async function requiredFile(path: string): Promise<string> {
     }
     throw error;
   }
-}
-
-function holderIsDead(holder: string): boolean {
-  const pid = Number.parseInt(holder, 10);
-  if (!Number.isSafeInteger(pid) || pid <= 0 || String(pid) !== holder) {
-    return false;
-  }
-  try {
-    process.kill(pid, 0);
-    return false;
-  } catch (error) {
-    return errorCode(error) === "ESRCH";
-  }
-}
-
-async function acquireLock(
-  store: string,
-  options: OpenStoreOptions
-): Promise<() => Promise<void>> {
-  const path = join(store, LOCK_FILE);
-  const takeover = join(store, TAKEOVER_DIR);
-  const pid = String(process.pid);
-
-  // A writer killed between an exclusive open and its write would leave an
-  // empty lock, which names no pid to judge dead. The pid goes into a private
-  // file that is hard-linked into place, so the lock appears with its pid in
-  // it. A filesystem without hard links gets the exclusive open.
-  const create = async (): Promise<void> => {
-    const pidFile = `${path}.${pid}.${randomUUID()}`;
-    await writeFile(pidFile, `${pid}\n`, { flag: "wx" });
-    try {
-      await link(pidFile, path);
-    } catch (error) {
-      if (errorCode(error) === "EEXIST") {
-        throw error;
-      }
-      await writeFile(path, `${pid}\n`, { flag: "wx" });
-    } finally {
-      await rm(pidFile, { force: true });
-    }
-  };
-
-  const readHolder = async (): Promise<string> => {
-    try {
-      return (await readFile(path, "utf8")).trim() || "unknown";
-    } catch {
-      return "unknown";
-    }
-  };
-
-  // POSIX cannot unlink a file only if it still holds what was read, so every
-  // read-then-unlink of the lock runs behind a claim: a directory that holds
-  // one file named for the claimant's pid. rename cannot replace a directory
-  // that holds a file, so one claim excludes every other, and a dead
-  // claimant's file is removed by name, which cannot remove a live one's.
-  // Resolves to false, without running the body, while a live writer holds it.
-  const claimed = async (body: () => Promise<void>): Promise<boolean> => {
-    const staged = `${takeover}.${pid}.${randomUUID()}`;
-    await mkdir(staged);
-    try {
-      await writeFile(join(staged, pid), "");
-      for (const claimant of await readdir(takeover).catch(() => [])) {
-        if (holderIsDead(claimant)) {
-          await rm(join(takeover, claimant), { force: true });
-        }
-      }
-      await rename(staged, takeover);
-    } catch (error) {
-      await rm(staged, { recursive: true, force: true });
-      const code = errorCode(error);
-      if (code === "ENOTEMPTY" || code === "EEXIST") {
-        return false;
-      }
-      throw error;
-    }
-    try {
-      await body();
-    } finally {
-      await rename(takeover, staged).catch(() => {});
-      await rm(staged, { recursive: true, force: true });
-    }
-    return true;
-  };
-
-  const takeOver = async (holder: string): Promise<void> => {
-    const replaced = await claimed(async () => {
-      try {
-        const current = (await readFile(path, "utf8")).trim() || "unknown";
-        if (current !== holder) {
-          throw new UserError(`store lock held by pid ${current}`);
-        }
-        await unlink(path);
-      } catch (error) {
-        if (errorCode(error) !== "ENOENT") {
-          throw error;
-        }
-      }
-      try {
-        await create();
-      } catch (error) {
-        if (errorCode(error) !== "EEXIST") {
-          throw error;
-        }
-        throw new UserError(`store lock held by pid ${await readHolder()}`);
-      }
-    });
-    if (!replaced) {
-      throw new UserError(
-        `store lock held by pid ${holder} is being released or replaced; retry`
-      );
-    }
-  };
-
-  try {
-    await create();
-  } catch (error) {
-    if (errorCode(error) !== "EEXIST") {
-      throw error;
-    }
-    const holder = await readHolder();
-    if (holderIsDead(holder)) {
-      options.onStaleLock?.(holder);
-      await takeOver(holder);
-    } else if (options.force) {
-      options.onLockStolen?.(holder);
-      await takeOver(holder);
-    } else {
-      throw new UserError(`store lock held by pid ${holder}`);
-    }
-  }
-
-  // A live claimant that refuses the release is replacing the lock. It
-  // finishes or dies, and the next claim sweeps a dead one, so retry. A store
-  // removed while held has no lock left to release.
-  return async (): Promise<void> => {
-    const removeOwn = async (): Promise<void> => {
-      try {
-        if ((await readFile(path, "utf8")).trim() === pid) {
-          await unlink(path);
-        }
-      } catch (error) {
-        if (errorCode(error) !== "ENOENT") {
-          throw error;
-        }
-      }
-    };
-    try {
-      while (!(await claimed(removeOwn))) {
-        await sleep(10);
-      }
-    } catch (error) {
-      if (errorCode(error) !== "ENOENT") {
-        throw error;
-      }
-    }
-  };
 }
 
 async function readTsv(
@@ -1057,7 +887,6 @@ interface ForgePullRequestQuery {
   readonly stateField: string;
   readonly headField: string;
   readonly baseField: string;
-  readonly headRepositoryField: string | null;
   readonly states: ReadonlyMap<string, FrontierPrState>;
 }
 
@@ -1070,7 +899,6 @@ const FORGE_PULL_REQUEST_QUERIES: Readonly<
     stateField: "state",
     headField: "headRefName",
     baseField: "baseRefName",
-    headRepositoryField: "headRepository",
     states: new Map<string, FrontierPrState>([
       ["OPEN", "OPEN"],
       ["MERGED", "MERGED"],
@@ -1081,7 +909,6 @@ const FORGE_PULL_REQUEST_QUERIES: Readonly<
     stateField: "status",
     headField: "headRef",
     baseField: "baseRef",
-    headRepositoryField: null,
     states: new Map<string, FrontierPrState>([
       ["open", "OPEN"],
       ["draft", "OPEN"],
@@ -1128,10 +955,44 @@ function runTool({
   }
 }
 
-interface ForgeTarget {
-  readonly forge: Forge;
-  readonly repo: string;
-  readonly repository: string | null;
+type ForgeTarget =
+  | {
+      readonly forge: "gh";
+      readonly repo: string;
+      readonly repository: GitHubRepository;
+    }
+  | { readonly forge: "origin"; readonly repo: string };
+
+interface ListScope {
+  readonly args: readonly string[];
+  readonly fields: readonly string[];
+  readonly owns: (row: Record<string, unknown>) => boolean;
+}
+
+// gh lists PRs from other forks under a branch name this repository also
+// uses, and their heads are not the local refs whose SHAs the frontier
+// records. Origin's list output names no head repository, so it cannot tell.
+function listScope(target: ForgeTarget): ListScope {
+  if (target.forge === "origin") {
+    return { args: [], fields: [], owns: () => true };
+  }
+  const name = repositoryName(target.repository);
+  return {
+    args: ["--repo", name],
+    fields: ["headRepository"],
+    owns: (row) =>
+      isRecord(row.headRepository) &&
+      typeof row.headRepository.nameWithOwner === "string" &&
+      row.headRepository.nameWithOwner.toLowerCase() === name.toLowerCase(),
+  };
+}
+
+function parseJson(raw: string, command: string): unknown {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw new UserError(`${command} output is not valid JSON`);
+  }
 }
 
 function recoveryHint(forge: Forge): string {
@@ -1147,15 +1008,16 @@ function listPullRequests({
   branch: string;
   target: ForgeTarget;
 }): readonly ForgePullRequest[] {
-  const { forge, repo, repository } = target;
+  const { forge, repo } = target;
   const query = FORGE_PULL_REQUEST_QUERIES[forge];
+  const scope = listScope(target);
   const command = `${forge} pr list ${filter} ${branch}`;
   const fields = [
     "number",
     query.stateField,
     query.headField,
     query.baseField,
-    ...(query.headRepositoryField === null ? [] : [query.headRepositoryField]),
+    ...scope.fields,
   ];
   // Every state is fetched because a merged or closed PR still anchors the
   // chain, and a draft counts as OPEN.
@@ -1164,7 +1026,7 @@ function listPullRequests({
     args: [
       "pr",
       "list",
-      ...(repository === null ? [] : ["--repo", repository]),
+      ...scope.args,
       filter,
       branch,
       "--state",
@@ -1176,12 +1038,7 @@ function listPullRequests({
     ],
     repo,
   });
-  let value: unknown;
-  try {
-    value = JSON.parse(raw);
-  } catch {
-    throw new UserError(`${command} output is not valid JSON`);
-  }
+  const value = parseJson(raw, command);
   if (!isUnknownArray(value)) {
     throw new UserError(`${command} output is not a JSON array`);
   }
@@ -1209,21 +1066,9 @@ function listPullRequests({
     ) {
       throw new UserError(`${command} output has an invalid PR row`);
     }
-    if (query.headRepositoryField !== null) {
-      // A PR from another fork can reuse this branch name, and its head is
-      // not the local ref whose SHA the frontier records.
-      const headRepository = row[query.headRepositoryField];
-      const owner = isRecord(headRepository)
-        ? headRepository.nameWithOwner
-        : undefined;
-      if (
-        typeof owner !== "string" ||
-        owner.toLowerCase() !== repository?.toLowerCase()
-      ) {
-        return [];
-      }
-    }
-    return [{ pr: row.number, state, branch: head, base }];
+    return scope.owns(row)
+      ? [{ pr: row.number, state, branch: head, base }]
+      : [];
   });
 }
 
@@ -1279,7 +1124,7 @@ function branchSha({
   repo: string;
 }): string {
   const sha = runGit({ args: ["rev-parse", branch], repo });
-  if (!/^[0-9a-f]{40,64}$/i.test(sha)) {
+  if (!SHA_PATTERN.test(sha)) {
     throw new UserError(`git rev-parse ${branch} returned an invalid SHA`);
   }
   return sha;
@@ -1331,11 +1176,10 @@ function resolveFrontier(repo: string, forge: Forge): readonly FrontierPr[] {
   if (current === trunk) {
     return [];
   }
-  const target: ForgeTarget = {
-    forge,
-    repo,
-    repository: forge === "gh" ? githubRepository(repo) : null,
-  };
+  const target: ForgeTarget =
+    forge === "gh"
+      ? { forge, repo, repository: githubRepository(repo) }
+      : { forge, repo };
   const seen = new Set([current]);
   let bottom = branchPullRequest({ branch: current, target });
   const chain = [bottom];
@@ -1383,93 +1227,39 @@ function resolveFrontier(repo: string, forge: Forge): readonly FrontierPr[] {
   }));
 }
 
-interface GhFrontierPullRequest {
-  readonly number: number;
-  readonly state: FrontierPrState;
-  readonly branch: string;
-  readonly sha: string;
+function repositoryName(repository: GitHubRepository): string {
+  return `${repository.owner}/${repository.repo}`;
 }
 
-function githubRepository(repo: string): string {
+function githubRepository(repo: string): GitHubRepository {
   let remote: string;
   try {
-    remote = execFileSync("git", ["config", "--get", "remote.origin.url"], {
-      cwd: repo,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-    }).trim();
+    remote = runGit({ args: ["config", "--get", "remote.origin.url"], repo });
   } catch (error) {
     throw new UserError(
-      `git config remote.origin.url failed; gh frontier resolution requires a GitHub origin: ${errorMessage(error)}`
+      `${errorMessage(error)}; gh frontier resolution requires a GitHub origin`
     );
   }
-  const scp = /^git@github\.com:([^/]+\/[^/]+?)(?:\.git)?$/.exec(remote);
-  if (scp?.[1] !== undefined) return scp[1];
-  try {
-    const url = new URL(remote);
-    const parts = url.pathname.replace(/\.git$/, "").split("/").filter(Boolean);
-    const ssh = url.protocol === "ssh:" && url.username === "git";
-    if (
-      (url.protocol !== "https:" && !ssh) ||
-      url.hostname !== "github.com" ||
-      url.port ||
-      (url.username && !ssh) ||
-      url.password ||
-      url.search ||
-      url.hash ||
-      parts.length !== 2
-    ) {
-      throw new Error("origin is not a canonical GitHub URL");
-    }
-    return parts.join("/");
-  } catch (error) {
+  const repository = parseGitHubRemote(remote);
+  if (repository === null) {
     throw new UserError(
-      `origin remote is not a supported GitHub repository URL; gh frontier resolution requires GitHub (${errorMessage(error)})`
+      `origin ${remote} is not a GitHub repository URL; gh frontier resolution requires GitHub`
     );
   }
-}
-
-function parseGhFrontierPullRequest(
-  value: unknown,
-  expected: number
-): GhFrontierPullRequest {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new UserError(`gh pr view #${expected} returned a non-object`);
-  }
-  const row = value as Record<string, unknown>;
-  const number = row.number;
-  const state = row.state;
-  const branch = row.headRefName;
-  const sha = row.headRefOid;
-  if (
-    number !== expected ||
-    typeof branch !== "string" ||
-    branch.length === 0 ||
-    typeof sha !== "string" ||
-    !/^[0-9a-f]{40,64}$/i.test(sha) ||
-    (state !== "OPEN" && state !== "MERGED" && state !== "CLOSED")
-  ) {
-    throw new UserError(`gh pr view #${expected} returned an invalid PR row`);
-  }
-  return {
-    number,
-    state,
-    branch,
-    sha,
-  };
+  return repository;
 }
 
 function githubFrontier(
   repo: string,
   prs: readonly number[]
 ): readonly FrontierPr[] {
-  const repository = githubRepository(repo);
+  const repository = repositoryName(githubRepository(repo));
   return prs.map((pr) => {
-    let raw: string;
-    try {
-      raw = execFileSync(
-        "gh",
-        [
+    const command = `gh pr view ${pr}`;
+    const row = parseJson(
+      runTool({
+        command: "gh",
+        args: [
           "pr",
           "view",
           String(pr),
@@ -1478,32 +1268,23 @@ function githubFrontier(
           "--json",
           "number,state,headRefName,headRefOid",
         ],
-        {
-          cwd: repo,
-          encoding: "utf8",
-          stdio: ["ignore", "pipe", "pipe"],
-        }
-      );
-    } catch (error) {
-      throw new UserError(
-        `gh pr view #${pr} failed: ${errorMessage(error)}`
-      );
+        repo,
+      }),
+      command
+    );
+    const state = isRecord(row) ? frontierPrStateOrNull(row.state) : null;
+    if (
+      !isRecord(row) ||
+      row.number !== pr ||
+      state === null ||
+      typeof row.headRefName !== "string" ||
+      row.headRefName.length === 0 ||
+      typeof row.headRefOid !== "string" ||
+      !SHA_PATTERN.test(row.headRefOid)
+    ) {
+      throw new UserError(`${command} returned an invalid PR row`);
     }
-    let value: unknown;
-    try {
-      value = JSON.parse(raw);
-    } catch (error) {
-      throw new UserError(
-        `gh pr view #${pr} returned invalid JSON: ${errorMessage(error)}`
-      );
-    }
-    const row = parseGhFrontierPullRequest(value, pr);
-    return {
-      pr: row.number,
-      branches: row.branch,
-      sha: row.sha,
-      state: row.state,
-    };
+    return { pr, branches: row.headRefName, sha: row.headRefOid, state };
   });
 }
 
