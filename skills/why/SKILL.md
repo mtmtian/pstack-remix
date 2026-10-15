@@ -9,7 +9,7 @@ Read [the shared runtime contract](../../references/runtime.md) before this work
 
 Investigate the motivation and intent behind code. The companion `how` skill answers what the code does and how it works. `why` answers what forces led to its shape.
 
-Every spawn is a supported subagent with a role chosen using the host adapter. Investigators use your configured why-investigators model and the synthesizer your configured why-synthesizer model (default `inherit-parent` for both).
+Every spawn is a supported subagent with a role chosen using the host adapter. Investigators use your configured why-investigators model and the synthesizer your configured why-synthesizer model (default `inherit-parent` for both). Set each worker's reasoning effort for the job, per the Subagents section of the **poteto-mode** skill.
 
 Every spawn runs with write-capable agent access, not a read-only mode. **Do not use a read-only scope or read-only agent role.** It can strip MCP access, which disables the MCP-backed investigators and the synthesizer's citation spot-checks. Investigators still shouldn't write anything; say so in the agent brief.
 

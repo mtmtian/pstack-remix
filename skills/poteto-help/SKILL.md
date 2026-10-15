@@ -52,11 +52,13 @@ The default for non-trivial work is `poteto-mode`, which routes to other skills 
 | The user wants to | Skill |
 |---|---|
 | Do a non-trivial task with a rigorous workflow | [`poteto-mode`](../poteto-mode/SKILL.md) |
+| Check that the agent understood your goal and the problem before it starts | [`in-your-own-words`](../in-your-own-words/SKILL.md) |
+| Aim a task higher before starting: more expert, more outcome-focused, not overspecified | [`sharpen`](../sharpen/SKILL.md) |
 | Understand what code does or where code should live | [`how`](../how/SKILL.md) |
 | Trace why code is shaped this way or why a number changed | [`why`](../why/SKILL.md) |
 | Understand a change in plain language | [`teach`](../teach/SKILL.md) |
 | Recover context from recent work | [`recall`](../recall/SKILL.md) |
-| Catch up on this chat since your last message, with enough context to decide each action item | [`ketchup`](../ketchup/SKILL.md) |
+| Catch up on what changed in this chat since your last message, in a few plain sentences and small visuals, with enough context to decide each action item | [`ketchup`](../ketchup/SKILL.md) |
 | Check what a small diff might break elsewhere | [`blast-radius`](../blast-radius/SKILL.md) |
 | Settle types and module boundaries before implementation | [`architect`](../architect/SKILL.md) |
 | Compare several attempts at one brief | [`arena`](../arena/SKILL.md) |

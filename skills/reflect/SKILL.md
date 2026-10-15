@@ -17,7 +17,7 @@ Use the current conversation or an authorized host thread-history tool. If local
 
 ## 2. Spawn three reviewers in parallel
 
-Spawn three bounded read-only review perspectives using actual host roles and available models. Grant no external writes; available read-only MCP lookups may supplement in-scope transcript evidence.
+Spawn three bounded read-only review perspectives using actual host roles and available models. Grant no external writes; available read-only MCP lookups may supplement in-scope transcript evidence. Set each worker's reasoning effort for the job, per the Subagents section of the **poteto-mode** skill.
 
 | Lens | `model` | Prompt template |
 |---|---|---|

@@ -6,7 +6,7 @@
 
 这是一个独立维护的本地适配版本，基于 Lauren Tan 以 MIT 协议发布的上游 pstack 0.15.21，跟踪提交 [`997ffc7f`](https://github.com/cursor/plugins/tree/997ffc7fe26bdaa6478a14e7f5b8d5f9ed747102/pstack)。本项目不由 Lauren Tan、Cursor、OpenAI 或 Anthropic 维护。
 
-两种主控共用 **53 个技能、23 个流程模板**、工程原则、Agent 提示词和 Node 工具。插件清单和少量运行时适配负责处理主控差异。仓库名为 `pstack-remix`；为兼容已有安装，Codex 插件名仍为 `pstack-codex`，Claude Code 插件名为 `pstack`。
+两种主控共用 **55 个技能、23 个流程模板**、工程原则、Agent 提示词和 Node 工具。插件清单和少量运行时适配负责处理主控差异。仓库名为 `pstack-remix`；为兼容已有安装，Codex 插件名仍为 `pstack-codex`，Claude Code 插件名为 `pstack`。
 
 ## 安装与快速开始
 
@@ -154,10 +154,12 @@ pstack 本身不安装定时器；长任务流程也不保证会话退出或主�
 |---|---|
 | [`poteto-mode`](./skills/poteto-mode/SKILL.md) | 非简单任务的默认入口，选择流程并协调执行。 |
 | [`poteto-help`](./skills/poteto-help/SKILL.md) | 了解 pstack、选择技能或流程，并得到一条可直接发送的提示词；不会因此自动开始底层任务。 |
+| [`in-your-own-words`](./skills/in-your-own-words/SKILL.md) | 开工前先用自己的话复述你的目标和要解决的问题，确认理解一致。 |
+| [`sharpen`](./skills/sharpen/SKILL.md) | 开工前按顶尖专家的做法校准任务：看清真实目标、去掉不必要的约束、保留一个外部校验，然后直接开始做。 |
 | [`how`](./skills/how/SKILL.md) | 梳理子系统的结构、行为和调用关系。 |
 | [`why`](./skills/why/SKILL.md) | 通过实际可用的源码、Issue、文档、讨论和观测工具追溯设计原因。 |
 | [`recall`](./skills/recall/SKILL.md) | 从相关历史会话和共享记录中恢复某个主题的当前上下文。 |
-| [`ketchup`](./skills/ketchup/SKILL.md) | 只回顾本次会话里你上一条消息之后发生的事，用平实的话讲清楚，并给每个待决事项附上足以做决定的摘要。 |
+| [`ketchup`](./skills/ketchup/SKILL.md) | 用几句平实的话加少量截图、视频或图示，回顾本次会话里你上一条消息之后的变化，并给每个待决事项附上刚好够做决定的背景。 |
 | [`blast-radius`](./skills/blast-radius/SKILL.md) | 检查小改动可能影响的其他部分，用运行证据验证关键安全假设。 |
 | [`architect`](./skills/architect/SKILL.md) | 在跨函数边界的实现前，明确调用示例、类型和模块形状。 |
 | [`arena`](./skills/arena/SKILL.md) | 对同一任务并行尝试多个方案，再选取各自优点。 |

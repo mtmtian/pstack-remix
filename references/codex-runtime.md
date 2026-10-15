@@ -3,7 +3,7 @@
 Read [the shared runtime](./runtime.md) first. This file defines only Codex-specific behavior.
 
 - Entry points keep the existing namespace, such as `$pstack-codex:poteto-mode` and `$pstack-codex:setup-pstack`.
-- Resolve preferences with `node <plugin-root>/bin/config.mjs show --host codex`. Validate concrete IDs and effort against the current collaboration schema. Fixed-model roles cannot be overridden. `inherit-parent`/`auto` omit the model field. Pass `reasoning_effort` only if the selected role and actual schema accept it.
+- Resolve preferences with `node <plugin-root>/bin/config.mjs show --host codex`. Validate concrete IDs and effort against the current collaboration schema. Fixed-model roles cannot be overridden. `inherit-parent`/`auto` omit the model field. Pass `reasoning_effort`, including poteto-mode's per-job adjustment, only if the selected role and actual schema accept it.
 - Use exposed collaboration tools, which may include `spawn_agent`, `send_message`, `followup_task`, `list_agents`, `wait_agent`, and `interrupt_agent`. Use the real `agent_type` and available role names. Do not send Claude/Cursor-only fields such as `subagent_type`, `run_in_background`, `readonly`, `environment`, or `cloud_base_branch`.
 - `agents/poteto-agent.md` and `agents/comment-sicko.md` are prompt templates here, not registered Codex roles. Pass the file pointer to an appropriate supported role. Claude frontmatter in those shared files does not register a Codex role or enforce its tools; enforce scope through the selected host role and brief.
 - Close children only after a final answer, explicit completion event, or confirmed completed/failed/canceled status. Preserve host-specific cancellation and progress rules.

@@ -5,6 +5,8 @@ Replace the goal, paths, and checks with the real ones. These examples use `pote
 ## Understand
 
 - `poteto-mode read <thread>. Restate the underlying issue plainly before doing anything. Don't change code yet.`
+- `in-your-own-words <long or messy ask>`
+- `sharpen <your task>`
 - `poteto-mode investigate why <symptom>. Give me what we know, which evidence you used, and your best hypotheses. Don't change code yet.`
 - `Use how to trace <subsystem>, then why to find the evidence behind the recent change.`
 - `Recall my work on <topic> from last week, then read this issue.`

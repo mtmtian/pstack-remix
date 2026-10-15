@@ -39,7 +39,7 @@ For each reviewer:
 
 If an explicitly configured concrete model is unavailable, use an actually supported alternative or inherit the parent and disclose the substitution. If a cross-model comparison was an explicit requirement, report that gap rather than claiming it passed. Report stale configuration; change it only within an authorized configuration task. Do not block the review on the slug issue. If the configured value is `inherit-parent` or `auto`, omit `model` instead. Never treat those aliases as broken slugs or enter this fallback for them. An `xagent:<agent>` value is dispatched through xagent as the shared runtime describes, never passed as `model` and never substituted; its dropouts follow the runtime's retry and unresolved-outcome rule.
 
-Read `references/reviewer-prompt.md` and fill in the same template for every reviewer with the stated intent, the diff or file contents, the rubric from `references/rubric.md`, and the code-quality lens from `references/code-quality-review.md`.
+Read `references/reviewer-prompt.md` and fill in the same template for every reviewer with the stated intent, the diff or file contents, the rubric from `references/rubric.md`, and the code-quality lens from `references/code-quality-review.md`. Set each worker's reasoning effort for the job, per the Subagents section of the **poteto-mode** skill.
 
 ## Step 4, Synthesize
 

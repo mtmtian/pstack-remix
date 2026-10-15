@@ -2757,147 +2757,186 @@ function countLine(value) {
   const entries = Object.entries(value);
   return entries.length === 0 ? "none" : entries.map(([name, count]) => `${name}=${count}`).join(", ");
 }
-var OPEN_GT_PR_STATUSES = new Set([
-  "Trunk branch locked",
-  "Changes requested",
-  "Waiting on PRs in this stack to merge",
-  "Waiting on downstack merge state",
-  "Draft",
-  "Required checks failed",
-  "Undergoing failure detection",
-  "Merge queue failed on current head commit",
-  "Handed off to merge queue...",
-  "Waiting on downstack",
-  "Merge conflicts",
-  "Needs reviewers",
-  "Needs approvals",
-  "Needs restack",
-  "Queued to merge...",
-  "Ready to merge",
-  "Ready to merge as stack",
-  "Rebasing...",
-  "Waiting on CI...",
-  "Stale, needs rebase onto trunk",
-  "Unresolved comments",
-  "Waiting on required CI",
-  "Waiting to merge..."
-]);
-function parseGtPullRequest({
-  branch,
-  detail
-}) {
-  const match = /^(?:\[origin\] )?PR #([1-9]\d*)(?: \(([^)\r\n]+)\))?(?: .+)?$/.exec(detail);
-  const pr = Number(match?.[1] ?? 0);
-  if (match === null || !Number.isSafeInteger(pr)) {
-    throw new UserError(`gt info output has an invalid PR row for branch ${branch}: ${detail}`);
+var FORGE_PULL_REQUEST_QUERIES = {
+  gh: {
+    stateField: "state",
+    headField: "headRefName",
+    baseField: "baseRefName",
+    states: new Map([
+      ["OPEN", "OPEN"],
+      ["MERGED", "MERGED"],
+      ["CLOSED", "CLOSED"]
+    ])
+  },
+  origin: {
+    stateField: "status",
+    headField: "headRef",
+    baseField: "baseRef",
+    states: new Map([
+      ["open", "OPEN"],
+      ["draft", "OPEN"],
+      ["merged", "MERGED"],
+      ["closed", "CLOSED"]
+    ])
   }
-  const status = match[2];
-  if (status === "Merged") {
-    return { pr, state: "MERGED" };
+};
+function parseForge(value) {
+  if (value === "gh" || value === "origin") {
+    return value;
   }
-  if (status === "Closed") {
-    return { pr, state: "CLOSED" };
-  }
-  if (status === undefined || OPEN_GT_PR_STATUSES.has(status)) {
-    return { pr, state: "OPEN" };
-  }
-  throw new UserError(`gt info output has an unknown PR state for branch ${branch}: ${status}`);
+  throw new UserError("forge must be gh or origin");
 }
-function parseGtBranches(raw) {
-  const branches = [];
-  const lines = raw.replace(/\r/g, "").split(`
-`);
-  for (const [index, line] of lines.entries()) {
-    if (line.length === 0) {
-      continue;
-    }
-    const branchMatch = /^(?:│ )*[◯◉] +([^\s]+)((?: \([^()\r\n]*\))*)$/.exec(line);
-    if (branchMatch === null) {
-      throw new UserError(`gt log short output has an unparseable line ${index + 1}: ${JSON.stringify(line)}`);
-    }
-    const branch = branchMatch[1] ?? "";
-    if (branches.includes(branch)) {
-      throw new UserError(`gt log short output contains duplicate branch ${branch}`);
-    }
-    branches.push(branch);
-  }
-  const trunk = branches[0];
-  if (trunk === undefined) {
-    throw new UserError("gt log short output did not contain a stack");
-  }
-  return branches.slice(1);
-}
-function graphitePullRequest({
-  branch,
+function runTool({
+  command,
+  args,
   repo
 }) {
-  let raw;
   try {
-    raw = execFileSync("gt", ["--no-interactive", "info", branch], {
-      cwd: repo,
-      encoding: "utf8",
-      env: { ...process.env, NO_COLOR: "1" },
-      stdio: ["ignore", "pipe", "pipe"]
-    });
-  } catch (error) {
-    throw new UserError(`gt info ${branch} failed: ${errorMessage(error)}`);
-  }
-  const rows = raw.replace(/\r/g, "").split(`
-`).filter((line) => line.startsWith("PR #") || line.startsWith("[origin] PR #"));
-  if (rows.length === 0) {
-    throw new UserError(`gt info output branch ${branch} has no pull request; this clone's gt metadata may predate the submit, so resolve the frontier from the stacker's clone or after gt sync`);
-  }
-  if (rows.length > 1) {
-    throw new UserError(`gt info output contains multiple PRs for branch ${branch}`);
-  }
-  return parseGtPullRequest({ branch, detail: rows[0] ?? "" });
-}
-function graphiteFrontier(repo) {
-  let raw;
-  try {
-    raw = execFileSync("gt", ["--no-interactive", "log", "short", "--stack", "--reverse"], {
-      cwd: repo,
-      encoding: "utf8",
-      env: { ...process.env, NO_COLOR: "1" },
-      stdio: ["ignore", "pipe", "pipe"]
-    });
-  } catch (error) {
-    throw new UserError(`gt log short --stack --reverse failed: ${errorMessage(error)}`);
-  }
-  const result = parseGtBranches(raw).map((branch) => ({
-    branches: branch,
-    ...graphitePullRequest({ branch, repo })
-  }));
-  if (new Set(result.map((row) => row.pr)).size !== result.length) {
-    throw new UserError("gt info output contains duplicate pull requests");
-  }
-  return result;
-}
-function branchSha({
-  branch,
-  repo
-}) {
-  let raw;
-  try {
-    raw = execFileSync("git", ["rev-parse", branch], {
+    return execFileSync(command, args, {
       cwd: repo,
       encoding: "utf8",
       env: process.env,
       stdio: ["ignore", "pipe", "pipe"]
     });
   } catch (error) {
-    throw new UserError(`git rev-parse ${branch} failed: ${errorMessage(error)}`);
+    throw new UserError(`${command} ${args.join(" ")} failed: ${errorMessage(error)}`);
   }
-  const sha = raw.trim();
+}
+function listPullRequests({
+  filter,
+  branch,
+  forge,
+  repo
+}) {
+  const query = FORGE_PULL_REQUEST_QUERIES[forge];
+  const command = `${forge} pr list ${filter} ${branch}`;
+  const raw = runTool({
+    command: forge,
+    args: [
+      "pr",
+      "list",
+      filter,
+      branch,
+      "--state",
+      "all",
+      "--json",
+      ["number", query.stateField, query.headField, query.baseField].join(",")
+    ],
+    repo
+  });
+  let value;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    throw new UserError(`${command} output is not valid JSON`);
+  }
+  if (!isUnknownArray(value)) {
+    throw new UserError(`${command} output is not a JSON array`);
+  }
+  return value.map((row) => {
+    const status = isRecord(row) ? row[query.stateField] : undefined;
+    const state = typeof status === "string" ? query.states.get(status) ?? null : null;
+    const head = isRecord(row) ? row[query.headField] : undefined;
+    const base = isRecord(row) ? row[query.baseField] : undefined;
+    if (!isRecord(row) || typeof row.number !== "number" || !Number.isSafeInteger(row.number) || row.number < 1 || state === null || typeof head !== "string" || head.length === 0 || typeof base !== "string" || base.length === 0) {
+      throw new UserError(`${command} output has an invalid PR row`);
+    }
+    return { pr: row.number, state, branch: head, base };
+  });
+}
+function branchPullRequest({
+  branch,
+  forge,
+  repo
+}) {
+  const rows = listPullRequests({ filter: "--head", branch, forge, repo });
+  const row = rows[0];
+  if (row === undefined) {
+    throw new UserError(`branch ${branch} has no pull request; open one with ${forge} pr create, or resolve the frontier from a branch whose chain is fully submitted`);
+  }
+  if (rows.length > 1) {
+    throw new UserError(`branch ${branch} has multiple pull requests (${rows.map((item) => `#${item.pr}`).join(", ")}); close the stale ones first`);
+  }
+  return row;
+}
+function openChildren({
+  branch,
+  forge,
+  repo
+}) {
+  return listPullRequests({ filter: "--base", branch, forge, repo }).filter((row) => row.state === "OPEN");
+}
+function runGit({
+  args,
+  repo
+}) {
+  return runTool({ command: "git", args, repo }).trim();
+}
+function branchSha({
+  branch,
+  repo
+}) {
+  const sha = runGit({ args: ["rev-parse", branch], repo });
   if (!/^[0-9a-f]{40,64}$/i.test(sha)) {
     throw new UserError(`git rev-parse ${branch} returned an invalid SHA`);
   }
   return sha;
 }
-function resolveFrontier(repo) {
-  return graphiteFrontier(repo).map((row) => ({
-    ...row,
-    sha: branchSha({ branch: row.branches, repo })
+function currentBranch(repo) {
+  return runGit({ args: ["symbolic-ref", "--short", "HEAD"], repo });
+}
+function trunkBranch(repo) {
+  try {
+    return runGit({
+      args: ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+      repo
+    }).replace(/^origin\//, "");
+  } catch {
+    return "main";
+  }
+}
+function resolveFrontier(repo, forge) {
+  const trunk = trunkBranch(repo);
+  const current = currentBranch(repo);
+  if (current === trunk) {
+    return [];
+  }
+  const seen = new Set([current]);
+  let bottom = branchPullRequest({ branch: current, forge, repo });
+  const chain = [bottom];
+  while (bottom.base !== trunk) {
+    if (seen.has(bottom.base)) {
+      throw new UserError(`pull request base chain loops at branch ${bottom.base}`);
+    }
+    seen.add(bottom.base);
+    bottom = branchPullRequest({ branch: bottom.base, forge, repo });
+    chain.unshift(bottom);
+  }
+  let tip = current;
+  for (;; ) {
+    const children = openChildren({ branch: tip, forge, repo });
+    const child = children[0];
+    if (child === undefined) {
+      break;
+    }
+    if (children.length > 1) {
+      throw new UserError(`stack is not linear: branches ${children.map((row) => row.branch).join(", ")} all target ${tip}`);
+    }
+    if (seen.has(child.branch)) {
+      throw new UserError(`pull request base chain loops at branch ${child.branch}`);
+    }
+    seen.add(child.branch);
+    chain.push(child);
+    tip = child.branch;
+  }
+  if (new Set(chain.map((row) => row.pr)).size !== chain.length) {
+    throw new UserError("pull request base chain contains duplicate pull requests");
+  }
+  return chain.map((row) => ({
+    pr: row.pr,
+    branches: row.branch,
+    sha: branchSha({ branch: row.branch, repo }),
+    state: row.state
   }));
 }
 function githubRepository(repo) {
@@ -3211,12 +3250,16 @@ function openStore(directory, options = {}) {
       set: async (params) => {
         await beginWrite();
         const repo = resolve(requiredLine(params.repo, "repo directory"));
+        const forge = parseForge(params.forge ?? "gh");
         const pin = params.prs === undefined ? undefined : params.prs.map((pr) => positiveInteger(pr, "PR"));
         if (pin !== undefined && new Set(pin).size !== pin.length) {
           throw new UserError("--prs must not contain duplicates");
         }
         const old = await readFrontier(store);
-        const prs = pin === undefined ? resolveFrontier(repo) : githubFrontier(repo, pin);
+        if (pin !== undefined && forge !== "gh") {
+          throw new UserError("--prs reads GitHub with gh pr view; omit --forge");
+        }
+        const prs = pin === undefined ? resolveFrontier(repo, forge) : githubFrontier(repo, pin);
         const value = {
           generation: old.generation + 1,
           prs,
@@ -3475,8 +3518,9 @@ function createProgram(io) {
   leaf(gate, "list", "list open decision gates").action(() => runStore(program, io, (store) => store.gates.list(), (rows) => compactRows(rows, gateLine, "(no open gates)")));
   leaf(gate, "resolve <id>", "resolve a decision gate").requiredOption("--answer <answer>", "chosen answer").action((id, options) => runStore(program, io, (store) => store.gates.resolve({ id, answer: options.answer }), (result) => `${result.id}	resolved	${result.answer}`));
   const frontier = program.command("frontier").description("manage the pull-request merge frontier").action(() => requireSubcommand(program));
-  leaf(frontier, "set", "set an explicit GitHub PR frontier; without --prs use optional Graphite discovery").addOption(new Option2("--repo <dir>", "repository directory (or ORCH_REPO)").env("ORCH_REPO")).option("--prs <n,...>", "explicit pull request order; facts are read with gh (recommended)", prList).action((options) => runStore(program, io, (store) => store.frontier.set({
+  leaf(frontier, "set", "set the frontier from --prs, or resolve the pull request base chain").addOption(new Option2("--repo <dir>", "repository directory (or ORCH_REPO)").env("ORCH_REPO")).addOption(new Option2("--forge <forge>", "pull request forge").choices(["gh", "origin"]).default("gh")).option("--prs <n,...>", "explicit pull request order; facts are read with gh pr view", prList).action((options) => runStore(program, io, (store) => store.frontier.set({
     repo: frontierRepo(options),
+    forge: options.forge,
     prs: options.prs
   }), frontierLine));
   leaf(frontier, "show", "show the frontier").action(() => runStore(program, io, (store) => store.frontier.show(), frontierLine));

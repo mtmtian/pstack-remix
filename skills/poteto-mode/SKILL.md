@@ -43,7 +43,7 @@ Read the leaf skill in full for any principle you apply. Each entry names when i
 - **Laziness Protocol.** Refactoring, sizing a diff, or tempted to add abstractions, layers, or signal threading. Bias to deletion and the smallest change that solves the problem.
 - **Foundational Thinking.** Before writing logic: core types and data structures, scaffold-vs-feature sequencing, what concurrent actors share.
 - **Redesign from First Principles.** Integrating a new requirement into an existing design. Redesign as if it had been foundational from day one.
-- **Attack the Premise.** Two or more fixes that share one premise have failed the same gate. Take a census of which actors hold the imbalance before the next fix, then question the premise instead of writing another fix that assumes it.
+- **Attack the Premise.** Two or more fixes that share one premise have failed the same gate. Write the premise down and test it directly before you write another fix that assumes it.
 - **Subtract Before You Add.** Sequencing an addition, refactor, or rewrite. Remove dead weight first, then build on the simpler base.
 - **Minimize Reader Load.** Reviewing or shaping code that's hard to trace. Count layers and hidden state, collapse one-caller wrappers, shrink mutable scope.
 - **Outcome-Oriented Execution.** Planned rewrites and migrations with explicit phase boundaries. Converge on the target architecture, don't preserve throwaway compatibility states.
@@ -63,9 +63,9 @@ Read the leaf skill in full for any principle you apply. Each entry names when i
 **Verification**
 
 - **Prove It Works.** After a task, before declaring done. Verify against the real artifact, not a proxy or "it compiles".
-- **Fix Root Causes.** Debugging. Trace each symptom to its root cause, reproduce first, ask why until you reach it.
+- **Fix Root Causes.** Debugging. Trace each symptom back to the first place the system went wrong and fix it there. A guard is a fix only when the state it handles is legitimate.
 - **Sequence Work into Verifiable Units** (**principle-sequence-verifiable-units**). Multi-step work (sweeps, migrations, runs of similar edits) and how you stack commits and PRs. Break work into small units that each end in a check, verify each before the next, and order delivery so the sequence proves itself.
-- **Test Behavior, Not Implementation.** Writing, changing, or keeping a test. Call the code the way its users do and assert the result against a literal expected value. If the test would still pass when every imported function returns `undefined`, rewrite the assertion or delete the test.
+- **Test Behavior, Not Implementation.** Writing, changing, or keeping a test. Assert what the code's users can observe, so the test fails when that behavior breaks and keeps passing when only the internals change.
 - **Explain the Number.** Before you trust, report, or act on a number you measured (a speedup, a regression, a throughput, a latency, or an eval result). Find what limits it, and rule out that it measured something other than the work you think.
 
 **Delegation**
@@ -90,6 +90,8 @@ Use independent judgment. Push back with evidence when an approach does not serv
 The chat that receives `$poteto-mode` runs the playbook. Never spawn a `poteto-agent` to run the playbook itself; `poteto-agent` is only for delegates inside a playbook step. Follow the actual collaboration schema and role constraints in the shared runtime contract. Use independent workers for useful parallel implementation or review; do small or sequential work directly. Do not fabricate cloud isolation or unsupported agent types.
 
 For a worker using the full pstack workflow, include a pointer to this plugin's `agents/poteto-agent.md` prompt template. Review workflows use their own narrower templates. Read the effective policy from `node <plugin-root>/bin/config.mjs show --host <codex|claude|t3|antigravity>`; absent values inherit the parent, and model/effort overrides must be supported by the current role.
+
+**Match effort to the job.** Before each spawn, start from the role's resolved policy and the effective `reasoning_effort`, then pick the effort the job needs. Raise it one step, up to `max`, for the hardest or subtlest work. Lower it one step for judgment and two or more steps, down to `low`, for routine work. Verification workers keep the resolved effort. Change only the effort, never the role's model, T3 target, or `xagent:<agent>` entry, so a diverse panel stays diverse. Pass it only through the separate effort control the host adapter names, never inside a model ID. With no effective value or no such control, the worker inherits and the reply says so. An `xagent:<agent>` worker runs at its CLI's own setting. If the host rejects the adjusted value, do not try another one. Use the resolved value and say so. Fast mode and priority service tiers cost more, so use them only when the user asked.
 
 You own the result. Inspect the changed files, diffs, test evidence, and terminal report. On a failed resume, consolidate the scope before replacing the worker. Report actual same-family or cross-family review accurately.
 

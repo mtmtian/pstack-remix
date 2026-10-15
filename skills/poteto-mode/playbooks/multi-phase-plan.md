@@ -4,7 +4,7 @@
 
 1. When the change is one or two files with an obvious approach, skip the plan. Say so and stop.
 2. Settle open questions by prototype before you write. Run `playbooks/prototype.md` for each. Keep the branch, the SHA, and the screenshots for Appendix A. Ask the operator only about a product or preference call that no run can settle. Give options (the **never-block-on-the-human** principle skill).
-3. Explore in subagents with a supported agent role instructed to read `agents/poteto-agent.md` from this plugin and an explicit model per the Subagents section (the **guard-the-context-window** principle skill). Each returns file pointers, conventions, test commands, and entry points. No inlined dumps.
+3. Explore in subagents with a supported agent role instructed to read `agents/poteto-agent.md` from this plugin and an explicit model per the Subagents section (the **guard-the-context-window** principle skill). Set each worker's reasoning effort for the job, per the Subagents section. Each returns file pointers, conventions, test commands, and entry points. No inlined dumps.
 4. Copy the skeleton below into the plan file and fill every placeholder. Unless the operator names a path, write the file under the selected state directory's `docs/`. Keep every heading and every sub-block in the order shown. One section per PR. One PR is one change with its own evidence (the **sequence-verifiable-units** principle skill). Name the execution playbook in **How to read this**. Pick between `playbooks/autopilot-full.md` and `playbooks/autopilot-stack.md` per the rule at the end of `playbooks/autopilot-stack.md`. A standing program takes `playbooks/orchestrate.md`.
 5. Write under `$technical-writing` in full, then `$unslop`. The body is one Diátaxis mode, how-to. Appendices hold explanation and reference. Each heading states the task or the finding. No long dashes. No mid-sentence colons.
 6. Run `node <plugin-root>/skills/poteto-mode/scripts/check-plan.mjs <plan.md>` launcher and fix every line it prints (the **encode-lessons-in-structure** principle skill).
@@ -63,8 +63,8 @@ Tests alone are not sufficient verification. A PR is verified only when its unit
 
 ### Verdict and merge, for every PR
 
-- [ ] At the code-ready head SHA and each later patch-changing push, run the independent review lanes named in the PR's **Verify, live** and **Verify, perf** blocks, plus independent audit lanes with distinct focuses that read the diff and receipts. Size lanes to the risk and state the reason. Audit merge-ready receipts before the final verdict.
-- [ ] Clean only when every required lane is `PASS`. Send all proven defects to the owner, including defects reported as notes, with a red regression test or reproducible evidence. Carry those defects into the next review brief. A new head gets a fresh round except for lane results valid under the Shipping patch-id rule.
+- [ ] At the code-ready head SHA, run the independent review lanes named in the PR's **Verify, live** and **Verify, perf** blocks, plus independent audit lanes with distinct focuses that read the diff and receipts. Size lanes to the risk and state the reason. Run the full set again only for new behavior, a redesign, or a large new diff. A rebase, a merge-conflict resolution, or a minor fix gets a single independent verifier at the new head. Audit merge-ready receipts before the final verdict.
+- [ ] Clean only when every required lane is `PASS`. Send all proven defects to the owner, including defects reported as notes, with a red regression test or reproducible evidence. Carry those defects into the next review brief. A new head gets a fresh verdict except for lane results valid under the Shipping patch-id rule.
 - [ ] <The merge or append rule from the execution playbook, with the patch-id rule from `playbooks/shipping.md`.>
 
 ### Boot recipe, for every live lane
