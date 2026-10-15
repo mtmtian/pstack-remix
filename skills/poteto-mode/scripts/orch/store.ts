@@ -3,8 +3,8 @@ import { randomUUID } from "node:crypto";
 import type { Dirent } from "node:fs";
 import {
   access,
+  link,
   mkdir,
-  open,
   readFile,
   readdir,
   rename,
@@ -13,10 +13,12 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 
 const UNIT_HEADER = "id\ttrack\tstate\tbranch\tpr\tsha\tbrief";
 const LEDGER_HEADER = "pr\tsha\tverdict\tevidence\tverifier\tts";
 const LOCK_FILE = ".orch.lock";
+const TAKEOVER_DIR = `${LOCK_FILE}.takeover`;
 
 export type Verdict =
   | "live-ui-verified"
@@ -384,24 +386,96 @@ async function acquireLock(
   options: OpenStoreOptions
 ): Promise<() => Promise<void>> {
   const path = join(store, LOCK_FILE);
+  const takeover = join(store, TAKEOVER_DIR);
   const pid = String(process.pid);
+
+  // A writer killed between an exclusive open and its write would leave an
+  // empty lock, which names no pid to judge dead. The pid goes into a private
+  // file that is hard-linked into place, so the lock appears with its pid in
+  // it. A filesystem without hard links gets the exclusive open.
   const create = async (): Promise<void> => {
-    const handle = await open(path, "wx");
-    await handle.writeFile(`${pid}\n`);
-    await handle.close();
+    const pidFile = `${path}.${pid}.${randomUUID()}`;
+    await writeFile(pidFile, `${pid}\n`, { flag: "wx" });
+    try {
+      await link(pidFile, path);
+    } catch (error) {
+      if (errorCode(error) === "EEXIST") {
+        throw error;
+      }
+      await writeFile(path, `${pid}\n`, { flag: "wx" });
+    } finally {
+      await rm(pidFile, { force: true });
+    }
   };
 
-  const takeOver = async (): Promise<void> => {
-    await unlink(path);
+  const readHolder = async (): Promise<string> => {
     try {
-      await create();
-    } catch (retryError) {
-      if (errorCode(retryError) === "EEXIST") {
-        const retryHolder =
-          (await readFile(path, "utf8")).trim() || "unknown";
-        throw new UserError(`store lock held by pid ${retryHolder}`);
+      return (await readFile(path, "utf8")).trim() || "unknown";
+    } catch {
+      return "unknown";
+    }
+  };
+
+  // POSIX cannot unlink a file only if it still holds what was read, so every
+  // read-then-unlink of the lock runs behind a claim: a directory that holds
+  // one file named for the claimant's pid. rename cannot replace a directory
+  // that holds a file, so one claim excludes every other, and a dead
+  // claimant's file is removed by name, which cannot remove a live one's.
+  // Resolves to false, without running the body, while a live writer holds it.
+  const claimed = async (body: () => Promise<void>): Promise<boolean> => {
+    const staged = `${takeover}.${pid}.${randomUUID()}`;
+    await mkdir(staged);
+    try {
+      await writeFile(join(staged, pid), "");
+      for (const claimant of await readdir(takeover).catch(() => [])) {
+        if (holderIsDead(claimant)) {
+          await rm(join(takeover, claimant), { force: true });
+        }
       }
-      throw retryError;
+      await rename(staged, takeover);
+    } catch (error) {
+      await rm(staged, { recursive: true, force: true });
+      const code = errorCode(error);
+      if (code === "ENOTEMPTY" || code === "EEXIST") {
+        return false;
+      }
+      throw error;
+    }
+    try {
+      await body();
+    } finally {
+      await rename(takeover, staged).catch(() => {});
+      await rm(staged, { recursive: true, force: true });
+    }
+    return true;
+  };
+
+  const takeOver = async (holder: string): Promise<void> => {
+    const replaced = await claimed(async () => {
+      try {
+        const current = (await readFile(path, "utf8")).trim() || "unknown";
+        if (current !== holder) {
+          throw new UserError(`store lock held by pid ${current}`);
+        }
+        await unlink(path);
+      } catch (error) {
+        if (errorCode(error) !== "ENOENT") {
+          throw error;
+        }
+      }
+      try {
+        await create();
+      } catch (error) {
+        if (errorCode(error) !== "EEXIST") {
+          throw error;
+        }
+        throw new UserError(`store lock held by pid ${await readHolder()}`);
+      }
+    });
+    if (!replaced) {
+      throw new UserError(
+        `store lock held by pid ${holder} is being released or replaced; retry`
+      );
     }
   };
 
@@ -411,27 +485,36 @@ async function acquireLock(
     if (errorCode(error) !== "EEXIST") {
       throw error;
     }
-    let holder = "unknown";
-    try {
-      holder = (await readFile(path, "utf8")).trim() || "unknown";
-    } catch {
-      holder = "unknown";
-    }
+    const holder = await readHolder();
     if (holderIsDead(holder)) {
       options.onStaleLock?.(holder);
-      await takeOver();
+      await takeOver(holder);
     } else if (options.force) {
       options.onLockStolen?.(holder);
-      await takeOver();
+      await takeOver(holder);
     } else {
       throw new UserError(`store lock held by pid ${holder}`);
     }
   }
 
+  // A live claimant that refuses the release is replacing the lock. It
+  // finishes or dies, and the next claim sweeps a dead one, so retry. A store
+  // removed while held has no lock left to release.
   return async (): Promise<void> => {
+    const removeOwn = async (): Promise<void> => {
+      try {
+        if ((await readFile(path, "utf8")).trim() === pid) {
+          await unlink(path);
+        }
+      } catch (error) {
+        if (errorCode(error) !== "ENOENT") {
+          throw error;
+        }
+      }
+    };
     try {
-      if ((await readFile(path, "utf8")).trim() === pid) {
-        await unlink(path);
+      while (!(await claimed(removeOwn))) {
+        await sleep(10);
       }
     } catch (error) {
       if (errorCode(error) !== "ENOENT") {
