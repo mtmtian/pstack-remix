@@ -12,6 +12,17 @@ Shared preferences live at `~/.config/pstack/config.json`. `bin/config.mjs` supp
 
 Benny remains dormant. Its copied runtime entry discovers this shared contract instead of maintaining a duplicated adapter. Installing the package does not arm messages, remote writes, webhooks, goals, or scheduled runs.
 
+## Upstream sync
+
+`node scripts/check-upstream.mjs` reports whether upstream moved past the pin and which files changed; it reads through `gh api` only. Merge each changed file by its history in this fork, never by copying the upstream directory:
+
+- A file this fork adapted: take upstream's intent and keep every adaptation this guide records; where upstream's wording is Cursor-specific, keep the fork's.
+- A new upstream file: adapt it as earlier syncs did, with local frontmatter, the runtime-contract line, and the fork's host primitives.
+- A file this fork never changed: apply the change, then check it against the decisions below. The 0.15.25 sync rewrote upstream's new fast-mode sentence in two otherwise untouched forensics playbooks.
+- A file this fork deleted, such as `.cursor-plugin/plugin.json`: keep it deleted unless the change removes the recorded reason.
+
+The fork guards catch only the denylisted primitives, so read every change against the decisions in this guide. When `comparisonMayBeTruncated` is true, the file list is incomplete; sync through an intermediate upstream commit. Finish a sync by moving `UPSTREAM.json` and the first line of this guide to the new commit, adding a paragraph below that names what was taken, kept, and skipped, running the [verification](#verification) checks, and refreshing the installations as described under Antigravity integration.
+
 ## Upstream behavior retained
 
 The 0.15.3 base retains code-ready review rounds, exact SHA/method evidence, child ledgers, merge-prep CI checks, Shipping lane reuse rules, and append-only logging. Adaptations preserve real completion evidence, risk-sized lanes, current runtime model names, explicit external-write authorization, and observed scheduling capabilities.
