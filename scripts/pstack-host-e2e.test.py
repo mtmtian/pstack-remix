@@ -94,17 +94,42 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
         receipt_path.write_text(json.dumps(result) + "\n")
         return result
 
-    def valid_receipts(self, receipts):
+    def valid_receipts(self, receipts, writer="xagent:writer", reviewers=("xagent:review-a", "xagent:review-b")):
         return validate_receipts(
             receipts,
             self.scope,
             self.parent,
             self.base,
-            "xagent:writer",
-            ["xagent:review-a", "xagent:review-b"],
+            writer,
+            list(reviewers),
             (self.parent / "stats.py").read_bytes(),
             TEST_SOURCE.encode(),
         )
+
+    def test_given_policy_pins_worker_models_when_receipts_are_checked_then_each_receipt_must_carry_its_model(self):
+        writer = self.add_worktree("writer")
+        reviewer_a = self.add_worktree("review-a")
+        reviewer_b = self.add_worktree("review-b")
+        for checkout in (writer, reviewer_a, reviewer_b):
+            (checkout / "stats.py").write_text(FIXED_STATS)
+        final_hash = self.write_final_parent()
+        self.write_verifier_receipt(final_hash)
+        policy = dict(writer="xagent:writer/vendor/model-w", reviewers=("xagent:review-a/model-a", "xagent:review-b"))
+        pinned = [
+            self.receipt("writer", "rw", writer, model="vendor/model-w"),
+            self.receipt("review-a", "ro", reviewer_a, model="model-a"),
+            self.receipt("review-b", "ro", reviewer_b),
+        ]
+        self.assertTrue(all(self.valid_receipts(pinned, **policy).values()))
+        unpinned = [
+            self.receipt("writer", "rw", writer, name="writer-default"),
+            self.receipt("review-a", "ro", reviewer_a, name="review-a-default"),
+            self.receipt("review-b", "ro", reviewer_b, name="review-b-pinned", model="model-b"),
+        ]
+        checks = self.valid_receipts(unpinned, **policy)
+        self.assertTrue(checks["all_attempts_terminal"] and checks["receipt_workspaces_owned"], checks)
+        self.assertFalse(checks["configured_writer_dispatched"])
+        self.assertFalse(checks["configured_reviewers_dispatched"])
 
     def test_given_misleading_or_nonterminal_pass_when_classified_then_it_is_rejected(self):
         legacy_false_positives = (

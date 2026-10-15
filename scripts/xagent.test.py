@@ -46,6 +46,15 @@ elif agent == 'grok': print(json.dumps(invalid_json[case]) if case in invalid_js
 elif agent == 'codex': pathlib.Path(sys.argv[sys.argv.index('-o')+1]).write_text(reply)
 else: print(reply)
 '''
+# Each CLI's own model and effort flags, from its --help at the versions xagent-e2e.sh exercises.
+SELECTION_MODELS = {"claude": "claude-opus-5-5[1m]", "codex": "gpt-6-astra", "grok": "grok-test-2", "gemini": "gemini-test-3", "pi": "openai/gpt-test-1"}
+SELECTION_FLAGS = {
+    "claude": lambda model, effort: [("--model", model), ("--effort", effort)],
+    "codex": lambda model, effort: [("-m", model), ("-c", f'model_reasoning_effort="{effort}"')],
+    "grok": lambda model, effort: [("-m", model), ("--reasoning-effort", effort)],
+    "gemini": lambda model, effort: [("--model", model), ("--effort", effort)],
+    "pi": lambda model, effort: [("--model", model), ("--thinking", effort)],
+}
 
 
 class XAgentTests(unittest.TestCase):
@@ -74,12 +83,12 @@ class XAgentTests(unittest.TestCase):
     def git(self, *args):
         return subprocess.run(["git", "-C", str(self.work), *args], check=True, capture_output=True)
 
-    def args(self, out, agent="grok", work=None, timeout="10", mode="ro"):
-        return [str(XAGENT), agent, mode, str(work or self.work), str(self.brief), str(out), timeout]
+    def args(self, out, agent="grok", work=None, timeout="10", mode="ro", extra=()):
+        return [str(XAGENT), agent, mode, str(work or self.work), str(self.brief), str(out), timeout, *extra]
 
-    def run_case(self, case, agent="grok", work=None, out=None, mode="ro"):
-        out = out or self.base / (case + "-" + agent)
-        result = subprocess.run(self.args(out, agent, work, mode=mode), env={**self.env, "XAGENT_TEST_CASE": case}, capture_output=True, text=True, timeout=15)
+    def run_case(self, case, agent="grok", work=None, out=None, mode="ro", extra=()):
+        out = out or self.base / (case + "-" + agent.replace("/", "_"))
+        result = subprocess.run(self.args(out, agent, work, mode=mode, extra=extra), env={**self.env, "XAGENT_TEST_CASE": case}, capture_output=True, text=True, timeout=15)
         self.assertTrue((out / "meta.json").exists(), result.stderr)
         return result, json.loads((out / "meta.json").read_text())
 
@@ -104,6 +113,50 @@ class XAgentTests(unittest.TestCase):
                 args = json.loads(captured.read_text())
                 self.assertEqual(args[args.index("--mode") + 1], "plan" if mode == "ro" else "accept-edits")
                 self.assertNotIn("--model", args)
+
+    def test_given_a_model_and_effort_when_each_adapter_runs_then_its_cli_gets_them_and_the_receipt_records_them(self):
+        captured = self.base / "selection-argv.json"
+        self.env["XAGENT_TEST_ARGV"] = str(captured)
+        for agent, model in SELECTION_MODELS.items():
+            for mode in ("ro", "rw"):
+                with self.subTest(agent=agent, mode=mode):
+                    out = self.base / f"selection-{agent}-{mode}"
+                    result, meta = self.run_case("pass", f"{agent}/{model}", out=out, mode=mode, extra=("--effort", "high"))
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(meta["status"], "PASS")
+                    self.assertEqual((meta["agent"], meta["model"], meta["effort"]), (agent, model, "high"))
+                    args = json.loads(captured.read_text())
+                    pairs = list(zip(args, args[1:]))
+                    for pair in SELECTION_FLAGS[agent](model, "high"):
+                        self.assertIn(pair, pairs)
+                    if agent == "pi":
+                        self.assertLess(args.index("--model"), args.index("--"))
+                        self.assertEqual(args[-1], (out / "prompt.md").read_text())
+
+    def test_given_no_model_or_effort_when_each_adapter_runs_then_its_cli_keeps_its_own_settings(self):
+        captured = self.base / "default-argv.json"
+        self.env["XAGENT_TEST_ARGV"] = str(captured)
+        for agent in SELECTION_MODELS:
+            with self.subTest(agent=agent):
+                result, meta = self.run_case("pass", agent, out=self.base / f"default-{agent}")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual((meta["model"], meta["effort"]), (None, None))
+                args = json.loads(captured.read_text())
+                self.assertFalse({"--model", "-m", "--effort", "--reasoning-effort", "--thinking"} & set(args), args)
+                self.assertFalse(any("model_reasoning_effort" in arg for arg in args), args)
+
+    def test_given_a_malformed_model_or_effort_then_usage_fails_before_any_worker_starts(self):
+        captured = self.base / "rejected-argv.json"
+        self.env["XAGENT_TEST_ARGV"] = str(captured)
+        cases = [(spec, ()) for spec in ("claude/", "claude//x", "claude/a b", "claude/x;rm", "claude/-x", "Claude/x", "unknown/model")]
+        cases += [("claude", ("--effort", value)) for value in ("extreme", "XHIGH", "")]
+        for index, (spec, extra) in enumerate(cases):
+            with self.subTest(spec=spec, extra=extra):
+                out = self.base / f"rejected-{index}"
+                result = subprocess.run(self.args(out, spec, extra=extra), env=self.env, capture_output=True, text=True, timeout=15)
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertFalse(out.exists())
+                self.assertFalse(captured.exists())
 
     def test_given_claude_run_when_ephemeral_is_opted_in_then_persistence_is_disabled(self):
         captured = self.base / "claude-argv.json"

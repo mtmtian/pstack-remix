@@ -15,7 +15,29 @@ import time
 
 ROOT = Path(__file__).resolve().parent
 AGENTS = ("claude", "codex", "grok", "gemini", "pi")
+# Mirrors the model part of an xagent:<agent>/<model> entry in bin/config.mjs.
+MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:@+\[\]/-]*")
+EFFORTS = ("low", "medium", "high", "xhigh", "max")
+# Each CLI's own model and effort flags.
+SELECTION_FLAGS = {"claude": ("--model", "--effort"), "codex": ("-m", "-c"), "grok": ("-m", "--reasoning-effort"), "gemini": ("--model", "--effort"), "pi": ("--model", "--thinking")}
 VERDICT = re.compile(r"(?:STATUS: (PASS|ISSUES|BLOCKED)|\*\*STATUS: (PASS|ISSUES|BLOCKED)\*\*)")
+
+
+def agent_spec(value):
+    agent, slash, model = value.partition("/")
+    if agent not in AGENTS:
+        raise argparse.ArgumentTypeError(f"unknown agent {agent!r}; choose from {', '.join(AGENTS)}")
+    if slash and not MODEL.fullmatch(model):
+        raise argparse.ArgumentTypeError(f"invalid model {model!r}")
+    return agent, model or None
+
+
+def selection(agent, model, effort):
+    model_flag, effort_flag = SELECTION_FLAGS[agent]
+    args = [model_flag, model] if model else []
+    if effort:
+        args += [effort_flag, f'model_reasoning_effort="{effort}"' if agent == "codex" else effort]
+    return args
 
 
 def classify(code, timed_out, text):
@@ -82,21 +104,21 @@ def snapshot(workdir, out):
     return digest.hexdigest()
 
 
-def command(agent, mode, workdir, out, prompt, allowed):
+def command(agent, mode, workdir, out, prompt, allowed, chosen):
     if agent == "claude":
-        args = ["claude", "-p", "--output-format", "json", "--permission-mode", "plan" if mode == "ro" else "acceptEdits"]
+        args = ["claude", "-p", "--output-format", "json", "--permission-mode", "plan" if mode == "ro" else "acceptEdits", *chosen]
         if os.environ.get("XAGENT_EPHEMERAL") == "1":
             args += ["--no-session-persistence"]
         if mode == "rw":
             args += ["--allowedTools", *[f"Bash({prefix}:*)" for prefix in allowed]]
         return args, out / "claude.json", "result"
     if agent == "codex":
-        return ["codex", "exec", "--skip-git-repo-check", "--ephemeral", "-s", "read-only" if mode == "ro" else "workspace-write", "-C", str(workdir), "-c", 'shell_environment_policy.set.XAGENT_DEPTH="1"', "-o", str(out / "result.md"), "-"], out / "agent.log", None
+        return ["codex", "exec", "--skip-git-repo-check", "--ephemeral", "-s", "read-only" if mode == "ro" else "workspace-write", "-C", str(workdir), "-c", 'shell_environment_policy.set.XAGENT_DEPTH="1"', *chosen, "-o", str(out / "result.md"), "-"], out / "agent.log", None
     if agent == "grok":
-        return ["grok", "--cwd", str(workdir), "--prompt-file", str(out / "prompt.md"), "--permission-mode", "auto", "--sandbox", "workspace", "--output-format", "json"], out / "grok.json", "text"
+        return ["grok", "--cwd", str(workdir), "--prompt-file", str(out / "prompt.md"), "--permission-mode", "auto", "--sandbox", "workspace", "--output-format", "json", *chosen], out / "grok.json", "text"
     if agent == "gemini":
-        return ["agy", "-p", prompt, "--mode", "plan" if mode == "ro" else "accept-edits"], out / "result.md", None
-    args = ["pi", "-p", "--no-session", "--tools", "read,grep,find,ls" if mode == "ro" else "read,grep,find,ls,edit,write,bash"]
+        return ["agy", "-p", prompt, "--mode", "plan" if mode == "ro" else "accept-edits", *chosen], out / "result.md", None
+    args = ["pi", "-p", "--no-session", "--tools", "read,grep,find,ls" if mode == "ro" else "read,grep,find,ls,edit,write,bash", *chosen]
     if mode == "rw":
         args += ["-e", str(ROOT / "xagent-pi-guard.ts")]
     return [*args, "--", prompt], out / "result.md", None
@@ -153,13 +175,15 @@ def write_meta(out, meta):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("agent", choices=AGENTS)
+    parser.add_argument("agent", type=agent_spec, metavar="<agent>[/<model>]", help=f"one of {', '.join(AGENTS)}; a model after the first / is passed to that CLI")
     parser.add_argument("mode", choices=("ro", "rw"))
     parser.add_argument("workdir", type=Path)
     parser.add_argument("prompt_file", type=Path)
     parser.add_argument("out_dir", type=Path)
     parser.add_argument("timeout", nargs="?", type=float, default=900)
+    parser.add_argument("--effort", choices=EFFORTS, help="reasoning effort passed to the CLI's own effort setting")
     options = parser.parse_args()
+    agent, model = options.agent
     if os.environ.get("XAGENT_DEPTH", "0") != "0":
         parser.error("refusing nested dispatch from inside an xagent worker")
     if not math.isfinite(options.timeout) or options.timeout <= 0:
@@ -178,7 +202,7 @@ def main():
     if options.mode == "ro":
         notes.append("This is a read-only task. Do not edit files, stage changes, or make commits.")
         notes.append("In a read-only review, every defect you report means STATUS: ISSUES, even when you finished the review successfully. A suggested fix is not an applied fix. PASS means you found no remaining defects.")
-    if options.agent == "gemini":
+    if agent == "gemini":
         notes.append("Do not run shell commands; read the files instead. Any shell command ends your turn with no reply." if options.mode == "ro" else "The only shell commands you may run are: " + ", ".join(allowed) + ". Any other shell command ends your turn with no reply.")
     notes += ["Verdict: ISSUES when defects remain or the task (including required checks) is incomplete; BLOCKED when you could not do it; otherwise PASS. Name any unverified optional checks.", "End your reply with exactly one final line: STATUS: PASS, STATUS: ISSUES, or STATUS: BLOCKED."]
     prompt = brief + "\n\n" + "\n".join(notes) + "\n"
@@ -186,7 +210,7 @@ def main():
     (out / "result.md").write_text("")
     (out / "agent.log").write_text("")
     meta = dict(
-        agent=options.agent, mode=options.mode, workdir=str(workdir), exit=None,
+        agent=agent, model=model, effort=options.effort, mode=options.mode, workdir=str(workdir), exit=None,
         timed_out=False, cancelled=False, seconds=0, status="DROPOUT",
         changed_workdir=None, snapshot_before=None, snapshot_after=None,
         completed=False, reason="incomplete",
@@ -199,7 +223,7 @@ def main():
         meta.update(status="BLOCKED", reason="snapshot_unavailable", completed=True)
         (out / "agent.log").write_text(f"Cannot verify a read-only checkout: {error}\n")
         write_meta(out, meta)
-        print(f"{options.agent} BLOCKED 0s -> {out}")
+        print(f"{agent} BLOCKED 0s -> {out}")
         return 0
     if options.mode == "ro":
         meta["snapshot_before"] = before
@@ -208,7 +232,7 @@ def main():
     if options.mode == "ro":
         env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["PATH"] = os.pathsep.join([env.get("PATH", ""), str(Path.home() / ".local/bin"), str(Path.home() / ".npm-global/bin"), str(Path.home() / ".grok/bin")])
-    args, stdout_path, json_field = command(options.agent, options.mode, workdir, out, prompt, allowed)
+    args, stdout_path, json_field = command(agent, options.mode, workdir, out, prompt, allowed, selection(agent, model, options.effort))
     try:
         code, timed_out, cancelled = run_process(args, workdir, out, stdout_path, options.timeout, env)
         meta.update(exit=code, timed_out=timed_out, cancelled=cancelled)
@@ -241,7 +265,7 @@ def main():
                 log.write(f"\nCannot verify the final checkout: {error}\n")
     meta.update(seconds=round(time.monotonic() - started, 2), completed=True)
     write_meta(out, meta)
-    print(f"{options.agent} {meta['status']} {meta['seconds']}s -> {out}")
+    print(f"{agent} {meta['status']} {meta['seconds']}s -> {out}")
     return 3 if meta["status"] == "DROPOUT" else 0
 
 

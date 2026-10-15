@@ -13,7 +13,8 @@ const UPDATE_HOSTS = [...HOSTS, T3];
 const SHOW_HOSTS = [...UPDATE_HOSTS, "antigravity"];
 const COMMON_MODEL_VALUES = new Set(["inherit-parent", "auto"]);
 // External agents run through the xagent CLI identically from every host, so they may be shared policy.
-const XAGENT_VALUE = /^xagent:[a-z][a-z0-9-]*$/;
+// An optional /<model> after the agent is that CLI's own model ID; bin/xagent mirrors the model pattern.
+const XAGENT_VALUE = /^xagent:[a-z][a-z0-9-]*(?:\/[A-Za-z0-9][A-Za-z0-9_.:@+[\]/-]*)?$/;
 // <providerInstanceId>/<modelId> from T3's orchestrator_capabilities; model IDs may contain slashes.
 const T3_TARGET = /^[A-Za-z][A-Za-z0-9_-]*\/[^\s/]\S*$/;
 const REASONING_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
@@ -52,13 +53,17 @@ function isCommonModelValue(value) {
   return COMMON_MODEL_VALUES.has(value) || XAGENT_VALUE.test(value);
 }
 
-// Throws when a nonempty string is not allowed in this scope; Codex and Claude host values stay free-form.
+// Throws when a nonempty string is not allowed in this scope; Codex and Claude host values stay free-form,
+// except that any xagent: value reaches bin/xagent and must parse as one.
 function checkModelValue(value, scope, field) {
+  if (value.startsWith("xagent:") && !XAGENT_VALUE.test(value)) {
+    throw new Error(`${field} must be xagent:<agent> or xagent:<agent>/<model>`);
+  }
   if (scope === "common" && !isCommonModelValue(value)) {
-    throw new Error(`${field} must be inherit-parent, auto or xagent:<agent> in common policy`);
+    throw new Error(`${field} must be inherit-parent, auto or xagent:<agent>[/<model>] in common policy`);
   }
   if (scope === T3 && !isCommonModelValue(value) && !T3_TARGET.test(value)) {
-    throw new Error(`${field} must be inherit-parent, auto, xagent:<agent> or <providerInstanceId>/<modelId> for T3`);
+    throw new Error(`${field} must be inherit-parent, auto, xagent:<agent>[/<model>] or <providerInstanceId>/<modelId> for T3`);
   }
 }
 
@@ -103,7 +108,7 @@ function validateRequiredMembers(policy, scope, label) {
   if (members === null) return;
   if (!Array.isArray(members) || members.length === 0) throw new Error(`${field} must be a nonempty array or null`);
   for (const member of members) {
-    if (typeof member !== "string" || !XAGENT_VALUE.test(member)) throw new Error(`${field} entries must be xagent:<agent>`);
+    if (typeof member !== "string" || !XAGENT_VALUE.test(member)) throw new Error(`${field} entries must be xagent:<agent>[/<model>]`);
   }
   if (new Set(members).size !== members.length) throw new Error(`${field} entries must be unique`);
 }

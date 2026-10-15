@@ -10,24 +10,24 @@ Read [the shared runtime contract](../../references/runtime.md) before this work
 One CLI turns any local agent into a pstack worker, whichever agent is the host. It requires Python 3.9+ and a POSIX host; the pi guard also needs the installed pi runtime. No package download is needed.
 
 ```sh
-<plugin-root>/bin/xagent <claude|codex|grok|gemini|pi> <ro|rw> <workdir> <prompt-file> <out-dir> [timeout-sec]
+<plugin-root>/bin/xagent <claude|codex|grok|gemini|pi>[/<model>] <ro|rw> <workdir> <prompt-file> <out-dir> [timeout-sec] [--effort low|medium|high|xhigh|max]
 ```
 
-`~/.local/bin/xagent` links to the checkout's `bin/xagent` on this machine. Each attempt needs a new empty out-dir, separate from workdir. Each run writes `prompt.md`, `result.md`, `agent.log` and an atomically replaced `meta.json`; pi also writes `guard.log`. The receipt includes `status`, `exit`, `seconds`, `completed`, `timed_out`, `cancelled`, `reason` and `changed_workdir`. A receipt with `completed=false` is an interrupted/in-progress attempt, never completion evidence. Timeout and cancellation stop the worker's process group, with one second for termination before a forced stop, and preserve partial output.
+`~/.local/bin/xagent` links to the checkout's `bin/xagent` on this machine. Each attempt needs a new empty out-dir, separate from workdir. Each run writes `prompt.md`, `result.md`, `agent.log` and an atomically replaced `meta.json`; pi also writes `guard.log`. The receipt includes `status`, `exit`, `seconds`, `completed`, `timed_out`, `cancelled`, `reason` and `changed_workdir`, plus the requested `model` and `effort` (null when the CLI's own setting applied). A receipt with `completed=false` is an interrupted/in-progress attempt, never completion evidence. Timeout and cancellation stop the worker's process group, with one second for termination before a forced stop, and preserve partial output.
 
 Claude workers keep their normal session persistence by default. For disposable checks, set `XAGENT_EPHEMERAL=1` to pass `--no-session-persistence`; those Claude sessions cannot be resumed. Both `scripts/xagent-e2e.sh` and `scripts/pstack-host-e2e.py` enable it for their hosts and workers automatically. Run evidence and receipts are still written to the output directory.
 
 ## Agents
 
-| agent | ro | rw |
-|---|---|---|
-| claude | plan mode | acceptEdits; commands from `bin/xagent-allowed-commands` |
-| codex | read-only sandbox | workspace-write sandbox; any command |
-| grok | auto mode in the workspace sandbox (see below) | auto mode in the workspace sandbox |
-| gemini | plan mode | accept-edits; commands from `permissions.allow` in `~/.gemini/antigravity-cli/settings.json` |
-| pi | read/grep/find/ls | + edit/write inside workdir, bash from `bin/xagent-allowed-commands`, both through `bin/xagent-pi-guard.ts` |
+| agent | ro | rw | model / effort flag |
+|---|---|---|---|
+| claude | plan mode | acceptEdits; commands from `bin/xagent-allowed-commands` | `--model` / `--effort` |
+| codex | read-only sandbox | workspace-write sandbox; any command | `-m` / `-c model_reasoning_effort` |
+| grok | auto mode in the workspace sandbox (see below) | auto mode in the workspace sandbox | `-m` / `--reasoning-effort` |
+| gemini | plan mode | accept-edits; commands from `permissions.allow` in `~/.gemini/antigravity-cli/settings.json` | `--model` / `--effort` |
+| pi | read/grep/find/ls | + edit/write inside workdir, bash from `bin/xagent-allowed-commands`, both through `bin/xagent-pi-guard.ts` | `--model` / `--thinking` |
 
-xagent passes no model flag: every agent runs the default model and reasoning settings from its own CLI configuration, so change a worker's model there. claude needs `claude auth login` once. The agy allowlist mirrors `bin/xagent-allowed-commands`; `scripts/xagent-e2e.sh` fails on drift. agy ends a headless run with no reply when gemini tries any other command, so xagent tells gemini its limits in the brief; a gemini `DROPOUT` usually means it tried anyway.
+A model after the agent's first `/`, such as `claude/claude-opus-5-5` or `pi/openai/gpt-6.1`, goes to that CLI's model flag, and `--effort` to its effort flag. Leave either out and the worker keeps the default from its own CLI configuration. The model is that vendor's own ID or alias, not the host's. Each CLI validates both itself: an unknown model or an effort the model does not support ends the run as `DROPOUT`, never as a quiet fallback to another model. Quote an agent argument containing `[` or `]`, such as `'claude/opus[1m]'`, in the shell. claude needs `claude auth login` once. The agy allowlist mirrors `bin/xagent-allowed-commands`; `scripts/xagent-e2e.sh` fails on drift. agy ends a headless run with no reply when gemini tries any other command, so xagent tells gemini its limits in the brief; a gemini `DROPOUT` usually means it tried anyway.
 
 Grok's built-in read-only sandbox refuses to start while `/var/run/docker.sock` is a symlink, so its readers can still write the workdir. A prompt or a tool allowlist is not an OS sandbox. Give every external reviewer an exclusively owned checkout at the intended revision, just as for writers; never dispatch a potentially writable reader into the user's shared checkout. If reviewing uncommitted work, copy the intended patch and needed untracked files into that isolated checkout first and record what was reviewed. The parent creates and verifies this isolation; xagent does not create worktrees.
 
@@ -47,9 +47,9 @@ The pi write guard accepts plain relative or absolute paths, including paths thr
 
 ## With pstack
 
-A role or panel entry `xagent:<agent>` runs that worker through xagent instead of the host's subagent tool, with the brief the workflow would give a native worker. Reviewers, judges and explorers run `ro`; writers run `rw`. Shared entries apply to every host; `hosts.<host>` entries override them, which is how each host gets the other family as its reviewer. Shared `required_panel_members` adds its agents to every panel on both hosts, and the runtime never lets a panel substitute or silently drop an `xagent:<agent>` entry.
+A role or panel entry `xagent:<agent>` or `xagent:<agent>/<model>` runs that worker through xagent instead of the host's subagent tool, with the brief the workflow would give a native worker. Pass everything after `xagent:` as the agent argument, and the worker's effort, meaning the effective `reasoning_effort` after poteto-mode's per-job adjustment, as `--effort`; with no effective value, omit it. Reviewers, judges and explorers run `ro`; writers run `rw`. Shared entries apply to every host; `hosts.<host>` entries override them, which is how each host gets the other family as its reviewer. Shared `required_panel_members` adds its agents to every panel on both hosts, and the runtime never lets a panel substitute or silently drop an `xagent:<agent>` entry. `xagent:claude` and `xagent:claude/opus` are different workers, so a required `xagent:claude` still joins a panel that already has `xagent:claude/opus`.
 
 ## Checks
 
 - `scripts/xagent-classify.test.sh`, `python3 scripts/xagent.test.py` and `node --test scripts/xagent-pi-guard.test.mjs`: offline, including deterministic read-only violations and unresponsive/cancelled processes.
-- `scripts/xagent-e2e.sh [run-dir]`: every agent in both modes, allowlist denials, the agy mirror, nested refusal, timeout, and Codex as host. Calls every vendor.
+- `scripts/xagent-e2e.sh [run-dir]`: every agent in both modes, each CLI accepting `--effort` and any model pinned in `XAGENT_E2E_MODELS`, allowlist denials, the agy mirror, nested refusal, timeout, and Codex as host. Calls every vendor.

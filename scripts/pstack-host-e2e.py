@@ -238,10 +238,17 @@ def validate_receipts(receipts, run_scope, parent, base, expected_writer, expect
             owners[workdir] = owner
             valid_workdirs[index] = workdir
 
-        def matches(receipt, agent, mode, allowed_statuses):
+        def xagent_spec(value):
+            # xagent:<agent>[/<model>] names the receipt's agent and the model it was asked to run.
+            if not isinstance(value, str) or not value.startswith("xagent:"):
+                return None
+            agent, _, model = value.removeprefix("xagent:").partition("/")
+            return agent, model or None
+
+        def matches(receipt, spec, mode, allowed_statuses):
             if not isinstance(receipt, dict):
                 return False
-            if receipt.get("agent") != agent or receipt.get("mode") != mode:
+            if (receipt.get("agent"), receipt.get("model")) != spec or receipt.get("mode") != mode:
                 return False
             if receipt.get("completed") is not True or receipt.get("status") not in allowed_statuses:
                 return False
@@ -249,27 +256,24 @@ def validate_receipts(receipts, run_scope, parent, base, expected_writer, expect
                 return False
             return True
 
-        writer_agent = expected_writer.removeprefix("xagent:") if isinstance(expected_writer, str) and expected_writer.startswith("xagent:") else None
+        writer_spec = xagent_spec(expected_writer)
         # ISSUES may carry a usable patch; final parent checks and reviews remain mandatory.
-        writer_ok = bool(writer_agent) and any(
-            index in valid_workdirs and matches(receipt, writer_agent, "rw", ("PASS", "ISSUES"))
+        writer_ok = bool(writer_spec) and any(
+            index in valid_workdirs and matches(receipt, writer_spec, "rw", ("PASS", "ISSUES"))
             for index, receipt in enumerate(receipts)
         )
 
-        reviewer_agents = []
+        reviewer_specs = []
         if isinstance(expected_reviewers, list):
-            reviewer_agents = [
-                value.removeprefix("xagent:") if isinstance(value, str) and value.startswith("xagent:") else None
-                for value in expected_reviewers
-            ]
-        reviewer_ok = bool(reviewer_agents) and all(reviewer_agents)
+            reviewer_specs = [xagent_spec(value) for value in expected_reviewers]
+        reviewer_ok = bool(reviewer_specs) and all(reviewer_specs)
         available = set(range(len(receipts)))
-        for agent in reviewer_agents:
+        for spec in reviewer_specs:
             matching_index = None
             for index in sorted(available):
                 receipt = receipts[index]
                 workdir = valid_workdirs.get(index)
-                if workdir is None or not matches(receipt, agent, "ro", ("PASS", "ISSUES")):
+                if workdir is None or not matches(receipt, spec, "ro", ("PASS", "ISSUES")):
                     continue
                 if receipt.get("changed_workdir") is not False:
                     continue
