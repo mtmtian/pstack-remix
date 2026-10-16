@@ -377,8 +377,11 @@ def _native_attempt(dispatch, run_scope, parent, base, parent_common, final_stat
     role = None
     if dispatch.usable and len(checkouts) == 1:
         (checkout,) = checkouts
+        # A writer's edits must include the repair itself, with the fixture's tests left alone.
+        repaired = (checkout / "stats.py") in {Path(path).resolve() for path in dispatch.paths_edited if Path(path).is_absolute()}
         if _linked_worktree_at_base(checkout, run_scope, parent, base, parent_common) and (
-                mode == "rw" or (_final_version(checkout, final_stats, test_file) and _reviewed_unchanged(dispatch, checkout, run_scope, parent))):
+                (repaired and (checkout / "test_stats.py").read_bytes() == test_file) if mode == "rw"
+                else _final_version(checkout, final_stats, test_file) and _reviewed_unchanged(dispatch, checkout, run_scope, parent)):
             role = mode
     return Attempt("native", mode, (None, dispatch.requested), dispatch.effort, dispatch.status in ("completed", "failed"), checkouts, role)
 

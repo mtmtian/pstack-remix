@@ -412,10 +412,16 @@ class NativeEvidenceTest(FIXTURES["HarnessFixture"]):
     def test_given_native_writer_evidence_when_checked_then_only_a_successful_edit_in_a_worktree_at_the_base_writes(self):
         self.write_final_parent()
         final, committed = self.final_checkout("writer-final"), self.committed_checkout("writer-committed")
+        notes, tests_changed = self.final_checkout("writer-notes"), self.final_checkout("writer-tests")
+        (notes / "notes.md").write_text("plan\n")
+        (tests_changed / "test_stats.py").write_text("import unittest\n")
         for name, tools, writes in (
             ("successful edit at the base", writes_in(final), True),
             ("edit the tool rejected", [*works_in(final), ("Edit", {"file_path": f"{final}/stats.py"}, False)], False),
             ("edit in a worktree that left the base", writes_in(committed), False),
+            # Codex review of 5934d62, P1: the edit must be the repair itself, with the tests left alone.
+            ("edit of an unrelated file only", [*works_in(notes), ("Write", {"file_path": f"{notes}/notes.md"})], False),
+            ("edit beside a changed test file", writes_in(tests_changed), False),
         ):
             with self.subTest(name):
                 native, _ = claude_native_dispatches(claude_stream(agent_call("toolu_writer", "opus", "claude-opus-5-5", tools=tools)))
