@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 import hashlib
 import json
 import math
@@ -45,6 +45,8 @@ NativeDispatch = NATIVE["NativeDispatch"]
 claude_native_dispatches = NATIVE["claude_native_dispatches"]
 codex_native_dispatches = NATIVE["codex_native_dispatches"]
 checkouts_touched = NATIVE["checkouts_touched"]
+# The fields the role checks read; another runpy load of the module makes an equal dispatch of a different class.
+NATIVE_FIELDS = tuple(field.name for field in fields(NativeDispatch))
 # A native reviewer brackets its work with this command, as xagent records snapshot_before and snapshot_after.
 SNAPSHOT_TOOL = ROOT / "scripts/e2e-snapshot.py"
 SNAPSHOT_LINE = re.compile(r"^PSTACK_E2E_SNAPSHOT ([0-9a-f]{64}) (.+)$", re.MULTILINE)
@@ -320,15 +322,27 @@ def _xagent_attempt(receipt, workdir, final_stats, test_file):
 
 
 def _snapshot_printed(command):
-    """Return (checkout, digest) when command is the bare snapshot command and printed its line, else None."""
+    """Return (checkout, digest) when command ran the snapshot tool and printed its line, else None.
+
+    The command may first cd somewhere and use any Python interpreter and flags, but nothing else may run before or
+    after the tool, so it can neither change the checkout nor print a line of its own. The checkout is the one the tool printed.
+    """
     try:
-        words = shlex.split(command.command)
+        lexer = shlex.shlex(command.command, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        words = list(lexer)
     except ValueError:
         return None
-    if len(words) != 4 or words[:2] != ["python3", "-B"] or Path(words[2]).resolve() != SNAPSHOT_TOOL:
+    if words[:1] == ["cd"] and len(words) > 2 and words[2] in ("&&", ";"):
+        words = words[3:]
+    if not words or not re.fullmatch(r"python(3(\.\d+)?)?", Path(words[0]).name):
+        return None
+    # Every other word is an interpreter flag, so no second command shares the line.
+    arguments = [word for word in words[1:] if not word.startswith("-")]
+    if not 1 <= len(arguments) <= 2 or not Path(arguments[0]).is_absolute() or Path(arguments[0]).resolve() != SNAPSHOT_TOOL:
         return None
     match = SNAPSHOT_LINE.search(command.output or "")
-    return (Path(match.group(2)).resolve(), match.group(1)) if match and Path(match.group(2)).resolve() == Path(words[3]).resolve() else None
+    return (Path(match.group(2)).resolve(), match.group(1)) if match and Path(match.group(2)).is_absolute() else None
 
 
 def _reviewed_unchanged(dispatch, checkout, run_scope, parent):
@@ -351,7 +365,7 @@ def _native_attempt(dispatch, run_scope, parent, base, parent_common, final_stat
     """A native dispatch writes when its subagent edited the one checkout it used, and reviews when it edited nothing
     there; either way the checkout must be a linked worktree at the fixture base, and a review must hold the final
     version, bracketed by the subagent's own matching snapshots of it."""
-    if not isinstance(dispatch, NativeDispatch):
+    if not all(hasattr(dispatch, name) for name in NATIVE_FIELDS):
         return Attempt("native", None, (None, None), None, False, frozenset(), None)
     try:
         checkouts = frozenset(checkouts_touched(dispatch.paths_touched, run_scope, parent))

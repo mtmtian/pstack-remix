@@ -12,7 +12,6 @@ FIXTURES = runpy.run_path(str(ROOT / "scripts/pstack-host-e2e-fixtures.py"))
 HARNESS, XAGENT = FIXTURES["HARNESS"], FIXTURES["XAGENT"]
 FIXED_STATS, STALE_STATS, ALL_CHECKS_PASS = FIXTURES["FIXED_STATS"], FIXTURES["STALE_STATS"], FIXTURES["ALL_CHECKS_PASS"]
 CLAUDE_MIXED, CODEX_MIXED = FIXTURES["CLAUDE_MIXED"], FIXTURES["CODEX_MIXED"]
-# The parsers the harness itself loaded, so their dispatches are the harness's own NativeDispatch.
 claude_native_dispatches = HARNESS["claude_native_dispatches"]
 codex_native_dispatches = HARNESS["codex_native_dispatches"]
 
@@ -421,6 +420,35 @@ class NativeEvidenceTest(FIXTURES["HarnessFixture"]):
             with self.subTest(name):
                 native, _ = claude_native_dispatches(claude_stream(agent_call("toolu_writer", "opus", "claude-opus-5-5", tools=tools)))
                 self.assertEqual(self.valid_receipts([], native_dispatches=native, writer="opus", reviewers=())["configured_writer_dispatched"], writes)
+
+    def test_given_snapshot_commands_written_differently_when_checked_then_any_python_run_of_the_tool_counts(self):
+        # Fourth review round, S2-S5: the checkout is the one the tool printed, and only a Python run of the tool counts.
+        self.write_final_parent()
+        writer, checkout = self.native_writer(self.final_checkout("writer-native")), self.final_checkout("review-native")
+        tool = ROOT / "scripts/e2e-snapshot.py"
+        _, line = snapshot_run(checkout)
+        for name, command, counted in (
+            ("cd into the worktree first", f"cd {checkout} && python3 -B {tool} .", True),
+            ("python instead of python3", f"python -B {tool} {checkout}", True),
+            ("without -B", f"python3 {tool} {checkout}", True),
+            ("an echoed snapshot line", f"echo {line.strip()}", False),
+            ("the tool beside a file holding a forged line", f"cat {tool} {self.scope / 'forged.txt'}", False),
+            ("the tool followed by an echoed line", f"python3 -B {tool} {checkout}-missing; echo {line.strip()}", False),
+            ("a change before the tool in the same command", f"cd {checkout} && sed -i.bak 's/x/x/' stats.py && python3 -B {tool} .", False),
+        ):
+            with self.subTest(name):
+                snapshot = ("Bash", {"command": command}, True, line)
+                native, _ = claude_native_dispatches(claude_stream(
+                    writer, agent_call("toolu_review", "opus", "claude-opus-5-5", tools=[snapshot, *works_in(checkout), snapshot])))
+                self.assertEqual(self.valid_receipts([], native_dispatches=native, writer="opus", reviewers=("opus",))["configured_reviewers_dispatched"], counted)
+
+    def test_given_dispatches_from_a_second_load_of_the_evidence_module_when_checked_then_the_result_is_the_same(self):
+        # Fourth review round: the role checks read a dispatch's fields, not the identity of a class runpy loaded.
+        self.write_final_parent()
+        stream = claude_stream(self.native_writer(self.final_checkout("writer-native")),
+                               agent_call("toolu_review", "opus", "claude-opus-5-5", tools=reviews_in(self.final_checkout("review-native"))))
+        second_load, _ = runpy.run_path(str(ROOT / "scripts/e2e-native-evidence.py"))["claude_native_dispatches"](stream)
+        self.assertEqual(self.valid_receipts([], native_dispatches=second_load, writer="opus", reviewers=("opus",)), ALL_CHECKS_PASS)
 
     def test_given_a_native_review_that_changed_its_checkout_through_the_shell_when_checked_then_it_is_not_a_review(self):
         # Codex review of fc4805e, P1: like xagent, a native review's own snapshots must show its checkout unchanged and final.
