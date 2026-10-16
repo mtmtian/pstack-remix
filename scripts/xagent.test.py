@@ -143,6 +143,11 @@ class XAgentTests(unittest.TestCase):
             ("claude/opus", ["claude-sonnet-5-5"], "DROPOUT"),
             ("claude/opus", ["claude-opus-5-5"], "PASS"),
             ("claude/fable", ["claude-fable-5-1", "claude-haiku-5-5"], "PASS"),
+            # A context-window suffix, as in the documented 'claude/opus[1m]', is not part of the model's name.
+            ("claude/opus[1m]", ["claude-opus-5-5"], "PASS"),
+            ("claude/opus[1m]", ["claude-opus-5-5[1m]"], "PASS"),
+            ("claude/opus[1m]", ["claude-sonnet-5-5"], "DROPOUT"),
+            ("claude/claude-opus-5-5[1m]", ["claude-opus-5-5[1m]"], "PASS"),
             ("grok/magpie/likecode-grok/grok-4.7", ["grok-4.3"], "DROPOUT"),
             ("grok/magpie/likecode-grok/grok-4.7", ["grok-4.7"], "PASS"),
             ("grok/magpie/likecode-grok/grok-4.7", ["grok-4.7", "grok-mini"], "PASS"),

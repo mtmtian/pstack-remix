@@ -31,10 +31,11 @@ TERMINATION_GRACE = 1
 RECEIPT_MARKERS = ("prompt.md", "agent.log")
 OUT_FILES = (*RECEIPT_MARKERS, "result.md")
 # How each CLI's own report of the models a run used names the requested one. Claude resolves an alias such as opus
-# to claude-opus-<version> and may add a small model for its own housekeeping; grok reports a routed model such as
-# magpie/likecode-grok/grok-4.7 by its last segment. Agents missing here report no model, so nothing is checked.
+# to claude-opus-<version>, ignores a context-window suffix such as [1m] on either side, and may add a small model for
+# its own housekeeping; grok reports a routed model such as magpie/likecode-grok/grok-4.7 by its last segment. Agents
+# missing here report no model, so nothing is checked.
 MODEL_MATCHES = {
-    "claude": lambda requested, used: used in (requested, requested.split("[")[0]) or used.startswith(f"claude-{requested}-"),
+    "claude": lambda requested, used: claude_matches(requested.split("[")[0], used.split("[")[0]),
     "grok": lambda requested, used: used in (requested, requested.rsplit("/", 1)[-1]),
     "codex": lambda requested, used: used == requested,
 }
@@ -58,6 +59,10 @@ def selection(agent, model, effort):
     if effort:
         args += [effort_flag, effort_value.format(effort)]
     return args
+
+
+def claude_matches(requested, used):
+    return used == requested or used.startswith(f"claude-{requested}-")
 
 
 def resolved_models(agent, payload, log):
