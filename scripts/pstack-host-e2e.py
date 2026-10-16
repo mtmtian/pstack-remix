@@ -32,6 +32,10 @@ class MeanTest(unittest.TestCase):
         self.assertEqual(mean([-3, -1, 4]), 0)
 '''
 XAGENT = runpy.run_path(str(ROOT / "bin/xagent"))
+# Each worker attempt gets this limit and at most one retry.
+WORKER_LIMIT_SECONDS = 600
+# The writer, review and post-fix re-review rounds run in sequence, and each can need an attempt plus its retry.
+HOST_TIMEOUT_SECONDS = 3 * 2 * WORKER_LIMIT_SECONDS
 CLASSIFY = XAGENT["classify"]
 SNAPSHOT = XAGENT["snapshot"]
 
@@ -186,6 +190,155 @@ def _valid_linked_worktree(receipt, run_scope, parent, base, parent_common):
         return None
 
 
+# Keys bin/xagent writes into every meta.json, from its first write on.
+XAGENT_RECEIPT_KEYS = frozenset((
+    "agent", "model", "effort", "mode", "workdir", "exit", "timed_out", "cancelled", "seconds", "status",
+    "changed_workdir", "snapshot_before", "snapshot_after", "completed", "reason",
+))
+
+
+def collect_xagent_receipts(evidence):
+    """Return the meta.json receipts bin/xagent wrote under evidence, and the paths of other meta.json files.
+
+    xagent requires an empty out_dir and creates prompt.md and agent.log there before its first meta.json,
+    and only it writes its full key set; a file with either mark counts, so an unreadable receipt in an
+    xagent out_dir still fails. A host's own notes, such as records of its native workers, have neither.
+    """
+    receipts, ignored = [], []
+    for file in sorted(Path(evidence).rglob("meta.json")):
+        try:
+            receipt = json.loads(file.read_text())
+        except (OSError, UnicodeError, ValueError):
+            receipt = None
+        in_out_dir = all((file.parent / name).is_file() for name in ("prompt.md", "agent.log"))
+        if not in_out_dir and not (isinstance(receipt, dict) and XAGENT_RECEIPT_KEYS <= receipt.keys()):
+            ignored.append(str(file))
+            continue
+        receipts.append({**receipt, "path": str(file)} if isinstance(receipt, dict) else None)
+    return receipts, ignored
+
+
+def _json_events(lines):
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict):
+            yield event
+
+
+def claude_native_dispatches(lines):
+    """Return the host's Agent dispatches from `claude -p --output-format stream-json --verbose` output."""
+    events = list(_json_events(lines))
+    if not any(event.get("type") == "system" and event.get("subtype") == "init" for event in events):
+        return [], "claude stream-json log has no init event"
+    dispatches = {}
+    for event in events:
+        content = event["message"].get("content") if isinstance(event.get("message"), dict) else None
+        blocks = [block for block in content if isinstance(block, dict)] if isinstance(content, list) else []
+        if event.get("type") == "assistant" and event.get("parent_tool_use_id") is None:
+            for block in blocks:
+                if block.get("type") == "tool_use" and block.get("name") in ("Agent", "Task"):
+                    arguments = block.get("input") if isinstance(block.get("input"), dict) else {}
+                    dispatches[block.get("id")] = {"id": block.get("id"), "requested": arguments.get("model"), "resolved": None, "status": "pending"}
+        elif event.get("type") == "user":
+            results = [block for block in blocks if block.get("type") == "tool_result" and block.get("tool_use_id") in dispatches]
+            # tool_use_result describes the event's single tool result; an ambiguous event stays pending.
+            if len(results) != 1:
+                continue
+            dispatch, result = dispatches[results[0]["tool_use_id"]], event.get("tool_use_result")
+            if not isinstance(result, dict):
+                dispatch["status"] = "failed"
+                continue
+            dispatch["resolved"] = result.get("resolvedModel")
+            if result.get("status") == "completed":
+                dispatch["status"] = "completed"
+            elif result.get("status") != "async_launched":
+                dispatch["status"] = "failed"
+        elif event.get("type") == "system" and event.get("subtype") == "task_notification":
+            # Background agents finish here; Bash tasks also notify, so only Agent tool_use ids count.
+            dispatch = dispatches.get(event.get("tool_use_id"))
+            if dispatch is not None:
+                dispatch["status"] = "completed" if event.get("status") == "completed" else "failed"
+    return list(dispatches.values()), None
+
+
+def codex_native_dispatches(lines, codex_home):
+    """Return the host's spawn_agent dispatches from the session rollouts named by `codex exec --json` output.
+
+    The --json stream omits collaboration calls, so the parent rollout supplies each requested model
+    and the child rollout's turn_context the model that actually ran.
+    """
+    try:
+        return _codex_native_dispatches(lines, codex_home)
+    except OSError as error:
+        return [], f"cannot read Codex rollouts: {error}"
+
+
+def _codex_native_dispatches(lines, codex_home):
+    thread = next((event["thread_id"] for event in _json_events(lines)
+                   if event.get("type") == "thread.started" and isinstance(event.get("thread_id"), str)), None)
+    if not thread:
+        return [], "codex --json log has no thread.started thread_id"
+    sessions = Path(codex_home) / "sessions"
+
+    def rollout(thread_id):
+        return next(iter(sorted(sessions.rglob(f"rollout-*-{thread_id}.jsonl"))), None)
+
+    def payloads(path):
+        for event in _json_events(path.read_text(errors="replace").splitlines()):
+            if isinstance(event.get("payload"), dict):
+                yield event.get("type"), event["payload"]
+
+    parent = rollout(thread)
+    if parent is None:
+        return [], f"no Codex rollout for thread {thread} under {sessions}"
+    requested, returned, started, finished = {}, set(), {}, set()
+    for _, payload in payloads(parent):
+        if payload.get("type") == "function_call" and payload.get("name") == "spawn_agent":
+            try:
+                arguments = json.loads(payload.get("arguments") or "{}")
+            except (TypeError, ValueError):
+                arguments = {}
+            requested[payload.get("call_id")] = arguments.get("model") if isinstance(arguments, dict) else None
+        elif payload.get("type") == "function_call_output":
+            returned.add(payload.get("call_id"))
+        elif payload.get("type") == "item_completed" and isinstance(payload.get("item"), dict):
+            item = payload["item"]
+            if item.get("type") == "SubAgentActivity" and item.get("kind") == "started":
+                started[item.get("id")] = item.get("agent_thread_id")
+            elif item.get("type") == "SubAgentActivity" and item.get("kind") == "completed":
+                finished.add(item.get("agent_thread_id"))
+    dispatches = []
+    for call, model in requested.items():
+        child = started.get(call)
+        dispatch = {"id": call, "thread": child, "rollout": None, "requested": model, "resolved": None,
+                    "status": "failed" if call in returned else "pending"}
+        child_rollout = rollout(child) if isinstance(child, str) and child else None
+        if child is not None:
+            dispatch["status"] = "failed" if child in finished else "pending"
+        if child_rollout is not None:
+            linked, models, complete, aborted = False, [], False, False
+            for kind, payload in payloads(child_rollout):
+                if kind == "session_meta":
+                    linked = payload.get("parent_thread_id") == thread
+                elif kind == "turn_context":
+                    models.append(payload.get("model"))
+                elif kind == "event_msg":
+                    complete = complete or payload.get("type") == "task_complete"
+                    aborted = aborted or payload.get("type") == "turn_aborted"
+            if linked:
+                dispatch["rollout"] = str(child_rollout)
+                dispatch["resolved"] = models[0] if models and len(set(models)) == 1 else None
+                if complete and not aborted:
+                    dispatch["status"] = "completed"
+                elif aborted:
+                    dispatch["status"] = "failed"
+        dispatches.append(dispatch)
+    return dispatches, None
+
+
 def validate_parent_verification(directory, parent):
     try:
         directory = Path(directory).resolve()
@@ -209,14 +362,17 @@ def validate_parent_verification(directory, parent):
         return False
 
 
-def validate_receipts(receipts, run_scope, parent, base, expected_writer, expected_reviewers, final_stats, test_file):
-    """Validate dispatches, workspace ownership, and reviewer version evidence."""
+def validate_receipts(receipts, run_scope, parent, base, expected_writer, expected_reviewers, final_stats, test_file, native_dispatches=()):
+    """Validate xagent receipts and native host dispatches, workspace ownership, and reviewer version evidence."""
     try:
-        receipts = list(receipts)
+        receipts, native_dispatches = list(receipts), list(native_dispatches)
         all_terminal = bool(receipts) and all(
             isinstance(receipt, dict) and receipt.get("completed") is True
             and receipt.get("status") in ("PASS", "ISSUES", "BLOCKED", "DROPOUT")
             for receipt in receipts
+        ) and all(
+            isinstance(dispatch, dict) and dispatch.get("status") in ("completed", "failed")
+            for dispatch in native_dispatches
         )
         run_scope, parent = Path(run_scope).resolve(), Path(parent).resolve()
         parent_common = _git_path(parent, "--git-common-dir")
@@ -238,12 +394,32 @@ def validate_receipts(receipts, run_scope, parent, base, expected_writer, expect
             owners[workdir] = owner
             valid_workdirs[index] = workdir
 
-        def xagent_spec(value):
+        def route(value):
             # xagent:<agent>[/<model>] names the receipt's agent and the model it was asked to run.
-            if not isinstance(value, str) or not value.startswith("xagent:"):
+            # Any other entry is a host model for a native dispatch; inherit-parent and auto omit its model.
+            if not isinstance(value, str) or not value:
                 return None
-            agent, _, model = value.removeprefix("xagent:").partition("/")
-            return agent, model or None
+            if value.startswith("xagent:"):
+                agent, _, model = value.removeprefix("xagent:").partition("/")
+                return "xagent", (agent, model or None)
+            return "native", None if value in ("inherit-parent", "auto") else value
+
+        native_available = set(range(len(native_dispatches)))
+
+        def take_native(model):
+            for index in sorted(native_available):
+                dispatch = native_dispatches[index]
+                if not isinstance(dispatch, dict) or dispatch.get("status") != "completed" or dispatch.get("requested") != model:
+                    continue
+                resolved = dispatch.get("resolved")
+                if not isinstance(resolved, str) or not resolved:
+                    continue
+                # Claude resolves an alias such as opus to claude-opus-<version>; Codex reports the requested ID.
+                if model is not None and resolved != model and not resolved.startswith(f"claude-{model}-"):
+                    continue
+                native_available.remove(index)
+                return True
+            return False
 
         def matches(receipt, spec, mode, allowed_statuses):
             if not isinstance(receipt, dict):
@@ -256,19 +432,25 @@ def validate_receipts(receipts, run_scope, parent, base, expected_writer, expect
                 return False
             return True
 
-        writer_spec = xagent_spec(expected_writer)
-        # ISSUES may carry a usable patch; final parent checks and reviews remain mandatory.
-        writer_ok = bool(writer_spec) and any(
-            index in valid_workdirs and matches(receipt, writer_spec, "rw", ("PASS", "ISSUES"))
-            for index, receipt in enumerate(receipts)
-        )
+        writer_route = route(expected_writer)
+        if writer_route and writer_route[0] == "native":
+            writer_ok = take_native(writer_route[1])
+        else:
+            # ISSUES may carry a usable patch; final parent checks and reviews remain mandatory.
+            writer_ok = bool(writer_route) and any(
+                index in valid_workdirs and matches(receipt, writer_route[1], "rw", ("PASS", "ISSUES"))
+                for index, receipt in enumerate(receipts)
+            )
 
-        reviewer_specs = []
+        reviewer_routes = []
         if isinstance(expected_reviewers, list):
-            reviewer_specs = [xagent_spec(value) for value in expected_reviewers]
-        reviewer_ok = bool(reviewer_specs) and all(reviewer_specs)
+            reviewer_routes = [route(value) for value in expected_reviewers]
+        reviewer_ok = bool(reviewer_routes) and all(reviewer_routes)
         available = set(range(len(receipts)))
-        for spec in reviewer_specs:
+        for kind, spec in filter(None, reviewer_routes):
+            if kind == "native":
+                reviewer_ok = take_native(spec) and reviewer_ok
+                continue
             matching_index = None
             for index in sorted(available):
                 receipt = receipts[index]
@@ -354,12 +536,15 @@ the parent owns the contract probe and final verification commands below.
 Give the writer an exclusive worktree from fixture base {base}; keep all worktrees and outputs under {directory}.
 The parent checkout is {work}. Integrate the worker's patch locally, then run python3 -m unittest yourself.
 Use interrogate on the resulting change with all configured reviewers, selected from the effective policy.
-Reviewers get separate worktrees containing the proposed patch. Preserve parent and worker evidence.
+Give each reviewer its own exclusive worktree checked out at fixture base {base}, with the proposed patch applied
+as uncommitted changes; do not commit the patch or check out a writer commit. Preserve parent and worker evidence.
 Fix any real in-scope findings and rerun the affected check; do not count a dropout, cancelled run, or missing evidence as a pass.
+If stats.py changes after any review, every configured reviewer must review the final version again in a new worktree
+prepared the same way; a review of an earlier version does not count.
 Both host controllers run one-shot/headless. Do not send the final reply until every external command and reviewer
 has completed and you have inspected its terminal output and receipt. When running xagent commands in parallel,
 start them with & in one foreground Bash call, capture every PID, and wait for every PID; give the call a timeout
-longer than the 240-second attempt limit plus termination grace and enough time for the allowed retry. Do not
+longer than the {WORKER_LIMIT_SECONDS}-second attempt limit plus termination grace and enough time for the allowed retry. Do not
 promise later notifications, rely on Monitor or shell sentinels, or use TaskOutput (it is not an available tool).
 Follow the host adapter's supported tools and wait behavior.
 
@@ -371,26 +556,34 @@ Each verification command has a {check_timeout:g}-second deadline and terminates
 Do not edit stats.py after running it. The harness checks that this receipt describes the final parent version,
 then independently reruns the tests and contract probe.
 
-Every xagent attempt must write to a new subdirectory under {evidence}. Limit each worker to 240 seconds and at most one retry.
+Every xagent attempt must write to a new subdirectory under {evidence}. Limit each worker to {WORKER_LIMIT_SECONDS} seconds and at most one retry.
 Use only this synthetic fixture and local candidate skill files. The human has authorized this real multi-vendor E2E,
 including sending this synthetic code and the standalone briefs to the locally configured agents.
 No extra confirmation is needed for those calls. Do not push, publish, change global settings, contact people, or edit the candidate plugin.
 Workers must remain leaves. Do not replace configured external agents with native workers.
+A policy entry without the xagent: prefix is a native worker: dispatch it with your host's own subagent tool and
+pass that exact model, omitting the model only for inherit-parent or auto.
 Report the resolved routes, actual worker receipt paths, findings, your own test output, and any gaps.
 End with PSTACK_E2E: PASS only if the repair, all configured reviews and your independent tests are complete,
 with no unresolved reproduced violation of the stated contract; otherwise PSTACK_E2E: FAIL.
 '''
     (directory / "prompt.md").write_text(prompt)
     if host == "codex":
-        args = ["codex", "exec", "--skip-git-repo-check", "--ephemeral", "--json", "-C", str(work), "-c", 'shell_environment_policy.set.XAGENT_EPHEMERAL="1"', "-o", str(directory / "result.md"), "-"]
+        # Not --ephemeral: spawn_agent evidence for native workers exists only in the persisted session rollout.
+        args = ["codex", "exec", "--skip-git-repo-check", "--json", "-C", str(work), "-c", 'shell_environment_policy.set.XAGENT_EPHEMERAL="1"', "-o", str(directory / "result.md"), "-"]
     else:
-        args = ["claude", "-p", "--no-session-persistence", "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits", "--plugin-dir", str(ROOT), "--allowedTools", "Bash", "Read", "Write", "Edit", "Glob", "Grep"]
+        # --allowedTools is variadic, so the prompt goes through stdin.
+        args = ["claude", "-p", "--no-session-persistence", "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits", "--plugin-dir", str(ROOT), "--allowedTools", "Agent", "Bash", "Read", "Write", "Edit", "Glob", "Grep"]
     env = {**os.environ, "XAGENT_EPHEMERAL": "1"}
     env.pop("XAGENT_DEPTH", None)
+    if host == "claude":
+        # Claude Code caps a Bash call at 10 minutes by default; one foreground wait must outlast an attempt and its grace.
+        env["BASH_MAX_TIMEOUT_MS"] = str((WORKER_LIMIT_SECONDS + 300) * 1000)
     with (directory / "host.log").open("w") as log:
         finished = subprocess.run(["timeout", "-k", "5", str(host_timeout), *args], cwd=work, env=env, input=prompt, text=True, stdout=log, stderr=subprocess.STDOUT)
+    host_log = (directory / "host.log").read_text(errors="replace").splitlines()
     if host == "claude":
-        for line in (directory / "host.log").read_text().splitlines():
+        for line in host_log:
             try:
                 event = json.loads(line)
             except ValueError:
@@ -401,13 +594,11 @@ with no unresolved reproduced violation of the stated contract; otherwise PSTACK
         reply = (directory / "result.md").read_text()
     except (OSError, UnicodeError):
         reply = ""
-    receipts = []
-    for file in sorted(evidence.rglob("meta.json")):
-        try:
-            receipt = json.loads(file.read_text())
-            receipts.append({**receipt, "path": str(file)} if isinstance(receipt, dict) else None)
-        except (OSError, UnicodeError, ValueError):
-            receipts.append(None)
+    receipts, ignored_meta = collect_xagent_receipts(evidence)
+    if host == "claude":
+        native, native_gap = claude_native_dispatches(host_log)
+    else:
+        native, native_gap = codex_native_dispatches(host_log, os.environ.get("CODEX_HOME") or Path.home() / ".codex")
     expected_writer = policy["effective"]["roles"].get("swarm workers", "inherit-parent")
     expected_reviewers = policy["effective"]["panels"].get("interrogate reviewers", [])
     try:
@@ -424,6 +615,7 @@ with no unresolved reproduced violation of the stated contract; otherwise PSTACK
         expected_reviewers,
         final_stats,
         TEST.encode(),
+        native,
     )
     parent_verification_valid = validate_parent_verification(directory, work)
     checks = {
@@ -440,10 +632,15 @@ with no unresolved reproduced violation of the stated contract; otherwise PSTACK
     (directory / "contract-probe.log").write_text(contract.stdout + contract.stderr)
     checks["finite_number_contract_preserved"] = contract.returncode == 0
     report = {"host": host, "exit": finished.returncode, "base": base, "policy": policy["effective"], "checks": checks, "receipts": receipts,
+              "ignored_meta": ignored_meta, "native_evidence": {"gap": native_gap, "dispatches": native},
               "verification": {"tests_exit_code": verification.returncode, "contract_exit_code": contract.returncode, "timeout_seconds": check_timeout}}
     (directory / "checks.json").write_text(json.dumps(report, indent=2) + "\n")
     for name, passed in checks.items():
         print(f"{'ok' if passed else 'FAIL'} {host}: {name}", flush=True)
+    if native_gap:
+        print(f"GAP {host}: native dispatch evidence unavailable: {native_gap}", flush=True)
+    for path in ignored_meta:
+        print(f"IGNORED {host}: {path} was not written by xagent", flush=True)
     return all(checks.values())
 
 
@@ -451,7 +648,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("run_dir", type=Path)
     parser.add_argument("--host", choices=("claude", "codex"), action="append")
-    parser.add_argument("--host-timeout", type=int, default=1200, help="outer host deadline in seconds (default: 1200)")
+    parser.add_argument("--host-timeout", type=int, default=HOST_TIMEOUT_SECONDS, help=(
+        f"outer host deadline in seconds (default: {HOST_TIMEOUT_SECONDS}, enough for writer, review and post-fix "
+        f"re-review rounds that each need a {WORKER_LIMIT_SECONDS}-second attempt plus one retry)"))
     parser.add_argument("--check-timeout", type=float, default=30, help="deadline for each verification command (default: 30)")
     options = parser.parse_args()
     if options.host_timeout <= 0:
