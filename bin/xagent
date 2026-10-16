@@ -18,8 +18,14 @@ AGENTS = ("claude", "codex", "grok", "gemini", "pi")
 # Mirrors the model part of an xagent:<agent>/<model> entry in bin/config.mjs.
 MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:@+\[\]/-]*")
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
-# Each CLI's own model and effort flags.
-SELECTION_FLAGS = {"claude": ("--model", "--effort"), "codex": ("-m", "-c"), "grok": ("-m", "--reasoning-effort"), "gemini": ("--model", "--effort"), "pi": ("--model", "--thinking")}
+# Each CLI's own model flag, effort flag and the effort value's template.
+SELECTION_FLAGS = {
+    "claude": ("--model", "--effort", "{}"), "codex": ("-m", "-c", 'model_reasoning_effort="{}"'),
+    "grok": ("-m", "--reasoning-effort", "{}"), "gemini": ("--model", "--effort", "{}"), "pi": ("--model", "--thinking", "{}"),
+}
+DEFAULT_TIMEOUT = 900
+# Created in every out_dir before its first meta.json, so readers can tell xagent's receipts from other files.
+OUT_FILES = ("prompt.md", "result.md", "agent.log")
 VERDICT = re.compile(r"(?:STATUS: (PASS|ISSUES|BLOCKED)|\*\*STATUS: (PASS|ISSUES|BLOCKED)\*\*)")
 
 
@@ -33,10 +39,10 @@ def agent_spec(value):
 
 
 def selection(agent, model, effort):
-    model_flag, effort_flag = SELECTION_FLAGS[agent]
+    model_flag, effort_flag, effort_value = SELECTION_FLAGS[agent]
     args = [model_flag, model] if model else []
     if effort:
-        args += [effort_flag, f'model_reasoning_effort="{effort}"' if agent == "codex" else effort]
+        args += [effort_flag, effort_value.format(effort)]
     return args
 
 
@@ -180,7 +186,7 @@ def main():
     parser.add_argument("workdir", type=Path)
     parser.add_argument("prompt_file", type=Path)
     parser.add_argument("out_dir", type=Path)
-    parser.add_argument("timeout", nargs="?", type=float, default=900)
+    parser.add_argument("timeout", nargs="?", type=float, default=DEFAULT_TIMEOUT)
     parser.add_argument("--effort", choices=EFFORTS, help="reasoning effort passed to the CLI's own effort setting")
     options = parser.parse_args()
     agent, model = options.agent
@@ -206,9 +212,8 @@ def main():
         notes.append("Do not run shell commands; read the files instead. Any shell command ends your turn with no reply." if options.mode == "ro" else "The only shell commands you may run are: " + ", ".join(allowed) + ". Any other shell command ends your turn with no reply.")
     notes += ["Verdict: ISSUES when defects remain or the task (including required checks) is incomplete; BLOCKED when you could not do it; otherwise PASS. Name any unverified optional checks.", "End your reply with exactly one final line: STATUS: PASS, STATUS: ISSUES, or STATUS: BLOCKED."]
     prompt = brief + "\n\n" + "\n".join(notes) + "\n"
-    (out / "prompt.md").write_text(prompt)
-    (out / "result.md").write_text("")
-    (out / "agent.log").write_text("")
+    for name, text in zip(OUT_FILES, (prompt, "", "")):
+        (out / name).write_text(text)
     meta = dict(
         agent=agent, model=model, effort=options.effort, mode=options.mode, workdir=str(workdir), exit=None,
         timed_out=False, cancelled=False, seconds=0, status="DROPOUT",

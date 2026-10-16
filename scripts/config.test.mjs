@@ -571,3 +571,34 @@ test("Given a value that is not a T3 target, When T3 is updated, Then it is reje
   assert.notEqual(shown.status, 0);
   assert.match(shown.stderr, /hosts\.t3/);
 });
+
+test("Given the same model strings, When bin/xagent and config.mjs check xagent:<agent>/<model>, Then both accept and reject the same ones", (t) => {
+  const dir = tempDir();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const models = [
+    "opus", "claude-opus-5-5[1m]", "gpt-6.1-sol", "magpie/likecode-grok/grok-4.7", "openai/gpt-test-1", "org@v1:latest",
+    "a+b", "trailing/", "", "-leading", ".hidden", "has space", "tab\tmodel", "ünïcode", "star*", "semi;colon", "new\nline",
+  ];
+  const probe = [
+    "import argparse, json, runpy, sys",
+    "spec = runpy.run_path(sys.argv[1])['agent_spec']",
+    "def accepts(model):",
+    "    try:",
+    "        spec('claude/' + model)",
+    "        return True",
+    "    except argparse.ArgumentTypeError:",
+    "        return False",
+    "print(json.dumps([accepts(model) for model in json.loads(sys.argv[2])]))",
+  ].join("\n");
+  const xagent = spawnSync("python3", ["-I", "-c", probe, path.join(root, "bin/xagent"), JSON.stringify(models)], { encoding: "utf8" });
+  assert.equal(xagent.status, 0, xagent.stderr);
+  const configAccepts = models.map((model, index) => {
+    const configPath = path.join(dir, `config-${index}.json`);
+    const config = validConfig();
+    config.hosts.claude.roles["swarm workers"] = `xagent:claude/${model}`;
+    writeJson(configPath, config);
+    return runCli(["show", "--host", "claude", "--config", configPath]).status === 0;
+  });
+  assert.deepEqual(configAccepts, JSON.parse(xagent.stdout));
+  assert.ok(configAccepts.includes(true) && configAccepts.includes(false));
+});
