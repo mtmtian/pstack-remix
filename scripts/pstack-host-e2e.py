@@ -194,16 +194,14 @@ def _linked_worktree_at_base(workdir, run_scope, parent, base, parent_common):
 
 
 def _valid_linked_worktree(receipt, run_scope, parent, base, parent_common):
-    """Return the receipt's worktree and its owner (mode, agent, model), or None when either is invalid."""
+    """Return the receipt's linked worktree at the fixture base, or None when it or the receipt's worker is invalid."""
     if not isinstance(receipt, dict) or not isinstance(receipt.get("workdir"), str) or not receipt["workdir"]:
         return None
     mode, agent, model = receipt.get("mode"), receipt.get("agent"), receipt.get("model")
     if mode not in ("rw", "ro") or not isinstance(agent, str) or not agent or not isinstance(model, (str, type(None))):
         return None
     workdir = Path(receipt["workdir"]).resolve()
-    if not _linked_worktree_at_base(workdir, run_scope, parent, base, parent_common):
-        return None
-    return workdir, (mode, agent, model)
+    return workdir if _linked_worktree_at_base(workdir, run_scope, parent, base, parent_common) else None
 
 
 def collect_xagent_receipts(evidence):
@@ -272,11 +270,17 @@ def expected_roles(effective):
 class Attempt:
     """One worker attempt from an xagent receipt or a native host dispatch, as the role and ownership checks see it."""
     kind: str  # xagent or native
+    mode: str | None  # rw or ro: an xagent receipt's mode, or whether a native subagent edited its checkout
     worker: tuple[str | None, str | None]  # (agent, model); a native dispatch names no agent
-    owner: tuple[str | None, ...]  # (mode, agent, model) for xagent, so its retries share a worktree; the dispatch id for native
+    effort: str | None
     terminal: bool
-    checkouts: frozenset[Path]  # the checkouts it worked in, each of which may belong to one owner only
-    role: str | None  # rw: a usable writer result; ro: a review of the final version; None: fills no role
+    checkouts: frozenset[Path]  # the checkouts it worked in
+    role: str | None  # the slot it can fill, its mode, when the attempt is usable; otherwise None
+
+    @property
+    def owner(self):
+        # One worker in one mode, so retries and follow-up fixes may reuse a worktree that nobody else may use.
+        return self.kind, self.mode, self.worker
 
 
 def _final_version(checkout, final_stats, test_file):
@@ -296,49 +300,46 @@ def _reviewed_final_version(receipt, workdir, final_stats, test_file):
         return False
 
 
-def _xagent_attempt(receipt, validated, final_stats, test_file, effort_required):
+def _xagent_attempt(receipt, workdir, final_stats, test_file):
     if not isinstance(receipt, dict):
-        return Attempt("xagent", (None, None), (None,), False, frozenset(), None)
-    workdir, owner = validated or (None, (None,))
+        return Attempt("xagent", None, (None, None), None, False, frozenset(), None)
+    mode = receipt.get("mode") if receipt.get("mode") in ("rw", "ro") else None
     terminal = receipt.get("completed") is True and receipt.get("status") in ("PASS", "ISSUES", "BLOCKED", "DROPOUT")
     # ISSUES may carry a usable patch or review; final parent checks and reviews remain mandatory.
     usable = (workdir is not None and terminal and receipt.get("status") in ("PASS", "ISSUES")
-              and type(receipt.get("exit")) is int and receipt.get("exit") == 0
-              and (not effort_required or receipt.get("effort") in XAGENT["EFFORTS"]))
-    if usable and receipt.get("mode") == "ro":
+              and type(receipt.get("exit")) is int and receipt.get("exit") == 0)
+    if usable and mode == "ro":
         usable = _reviewed_final_version(receipt, workdir, final_stats, test_file)
-    return Attempt("xagent", (receipt.get("agent"), receipt.get("model")), owner, terminal,
-                   frozenset({workdir} if workdir else ()), receipt.get("mode") if usable else None)
+    return Attempt("xagent", mode, (receipt.get("agent"), receipt.get("model")), receipt.get("effort"), terminal,
+                   frozenset({workdir} if workdir else ()), mode if usable else None)
 
 
-def _native_attempt(dispatch, run_scope, parent, base, parent_common, final_stats, test_file, effort_required):
-    """A native dispatch whose subagent worked in exactly one checkout writes if it edited that checkout, and
-    otherwise reviews if the checkout is the final version at the base."""
+def _native_attempt(dispatch, run_scope, parent, base, parent_common, final_stats, test_file):
+    """A native dispatch writes when its subagent edited the one checkout it used, and reviews when it edited nothing
+    there; either way the checkout must be a linked worktree at the fixture base, and a review must hold the final version."""
     if not isinstance(dispatch, NativeDispatch):
-        return Attempt("native", (None, None), ("native", None), False, frozenset(), None)
-    worker, owner = (None, dispatch.requested), ("native", dispatch.id)
-    terminal = dispatch.status in ("completed", "failed")
-    if dispatch.usable is not True:
-        return Attempt("native", worker, owner, terminal, frozenset(), None)
+        return Attempt("native", None, (None, None), None, False, frozenset(), None)
     try:
         checkouts = frozenset(checkouts_touched(dispatch.paths_touched, run_scope, parent))
         edited = checkouts_touched(dispatch.paths_edited, run_scope, parent)
     except (OSError, RuntimeError, TypeError, ValueError):
         checkouts, edited = frozenset(), set()
+    # Its own edits decide the mode whether or not it finished, as an xagent receipt records its mode up front.
+    mode = "rw" if edited else "ro"
     role = None
-    if len(checkouts) == 1 and (not effort_required or dispatch.effort in XAGENT["EFFORTS"]):
+    if dispatch.usable and len(checkouts) == 1:
         (checkout,) = checkouts
-        if checkout in edited:
-            role = "rw"
-        elif _linked_worktree_at_base(checkout, run_scope, parent, base, parent_common) and _final_version(checkout, final_stats, test_file):
-            role = "ro"
-    return Attempt("native", worker, owner, terminal, checkouts, role)
+        if _linked_worktree_at_base(checkout, run_scope, parent, base, parent_common) and (mode == "rw" or _final_version(checkout, final_stats, test_file)):
+            role = mode
+    return Attempt("native", mode, (None, dispatch.requested), dispatch.effort, dispatch.status in ("completed", "failed"), checkouts, role)
 
 
-def validate_receipts(receipts, run_scope, parent, base, expected_writer, expected_reviewers, final_stats, test_file, native_dispatches=(), effort=None):
-    """Check that every attempt finished, each configured role consumed a usable attempt, and each checkout has one owner.
+def validate_receipts(receipts, run_scope, parent, base, expected_writer, expected_reviewers, final_stats, test_file,
+                      native_dispatches=(), effort_required=False):
+    """Check that every attempt finished, each configured slot took a usable attempt in a checkout of its own, and each
+    checkout has one owner.
 
-    When the policy sets a reasoning effort, an attempt fills a role only if it records one; poteto-mode adjusts the level per task.
+    When the policy sets a reasoning effort, an attempt fills a slot only if it records one; poteto-mode adjusts the level per task.
     """
     try:
         run_scope, parent = Path(run_scope).resolve(), Path(parent).resolve()
@@ -346,10 +347,9 @@ def validate_receipts(receipts, run_scope, parent, base, expected_writer, expect
         parent_top = _git_output(parent, "rev-parse", "--show-toplevel")
         if not parent_top or Path(parent_top).resolve() != parent:
             parent_common = None
-        attempts = [_xagent_attempt(receipt, _valid_linked_worktree(receipt, run_scope, parent, base, parent_common), final_stats, test_file, effort is not None)
+        attempts = [_xagent_attempt(receipt, _valid_linked_worktree(receipt, run_scope, parent, base, parent_common), final_stats, test_file)
                     for receipt in receipts]
-        attempts += [_native_attempt(dispatch, run_scope, parent, base, parent_common, final_stats, test_file, effort is not None)
-                     for dispatch in native_dispatches]
+        attempts += [_native_attempt(dispatch, run_scope, parent, base, parent_common, final_stats, test_file) for dispatch in native_dispatches]
         # Every xagent receipt needs its own linked worktree, and each checkout belongs to one owner across all attempts.
         workspaces_valid, claims = parent_common is not None, {}
         for attempt in attempts:
@@ -357,13 +357,15 @@ def validate_receipts(receipts, run_scope, parent, base, expected_writer, expect
                 workspaces_valid = False
             for checkout in attempt.checkouts:
                 workspaces_valid = claims.setdefault(checkout, attempt.owner) == attempt.owner and workspaces_valid
-        pool = list(attempts)
+        pool, taken = list(attempts), set()
 
         def take(value, mode):
+            # A slot cannot use a checkout another slot used, so every configured worker had a worktree of its own.
             wanted = route(value)
             for index, attempt in enumerate(pool):
-                if wanted == (attempt.kind, attempt.worker) and attempt.role == mode:
-                    del pool[index]
+                if (wanted == (attempt.kind, attempt.worker) and attempt.role == mode and not attempt.checkouts & taken
+                        and (not effort_required or attempt.effort in XAGENT["EFFORTS"])):
+                    taken.update(pool.pop(index).checkouts)
                     return True
             return False
 
@@ -461,7 +463,8 @@ the mathematical mean cannot be represented as a finite float. The independent a
 Use swarm with one worker for this one-file repair. Select its agent from the effective policy, not by guessing.
 The writer can run python3 -m unittest -q from the shared allowlist. Do not require it to use -B or -c;
 the parent owns the contract probe and final verification commands below.
-Give the writer an exclusive worktree from fixture base {base}; keep all worktrees and outputs under {directory}.
+Give the writer an exclusive worktree at fixture base {base} and have it leave its change uncommitted there;
+keep all worktrees and outputs under {directory}.
 The parent checkout is {work}. Integrate the worker's patch locally, then run python3 -m unittest yourself.
 Use interrogate on the resulting change with all configured reviewers, selected from the effective policy.
 Give each reviewer its own exclusive worktree checked out at fixture base {base}, with the proposed patch applied
@@ -527,7 +530,7 @@ with no unresolved reproduced violation of the stated contract; otherwise PSTACK
         final_stats,
         TEST.encode(),
         native,
-        policy["effective"].get("reasoning_effort"),
+        policy["effective"].get("reasoning_effort") is not None,
     )
     parent_verification_valid = validate_parent_verification(directory, work)
     checks = {

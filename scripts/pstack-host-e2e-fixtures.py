@@ -98,7 +98,7 @@ class HarnessFixture(unittest.TestCase):
     def valid_receipts(self, receipts, writer="xagent:codex", reviewers=("xagent:claude", "xagent:grok"), native_dispatches=(), effort=None):
         return HARNESS["validate_receipts"](
             receipts, self.scope, self.parent, self.base, writer, list(reviewers),
-            (self.parent / "stats.py").read_bytes(), TEST_SOURCE.encode(), native_dispatches, effort,
+            (self.parent / "stats.py").read_bytes(), TEST_SOURCE.encode(), native_dispatches, effort is not None,
         )
 
     def final_checkout(self, name, stats=FIXED_STATS):

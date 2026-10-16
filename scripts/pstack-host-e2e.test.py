@@ -135,6 +135,15 @@ class HostHarnessAcceptanceTest(FIXTURES["HarnessFixture"]):
         self.assertTrue((self.parent / ".test-ran").exists())
         self.assertFalse(validate_parent_verification(self.scope, self.parent))
 
+    def test_given_two_configured_reviewers_of_one_agent_sharing_a_worktree_when_checked_then_only_one_review_counts(self):
+        # Third review round, scenario H: every configured reviewer needs its own worktree, as native reviews do.
+        writer, shared = self.final_checkout("writer"), self.final_checkout("review-grok")
+        self.write_final_parent()
+        receipts = [self.receipt("codex", "rw", writer), self.receipt("grok", "ro", shared, name="ro-grok-1"), self.receipt("grok", "ro", shared, name="ro-grok-2")]
+        checks = self.valid_receipts(receipts, reviewers=("xagent:grok", "xagent:grok"))
+        self.assertTrue(checks["configured_writer_dispatched"])
+        self.assertFalse(checks["configured_reviewers_dispatched"])
+
     def test_given_writer_and_reviewers_share_one_worktree_when_receipts_are_checked_then_it_fails(self):
         shared = self.add_worktree("shared")
         (shared / "stats.py").write_text(FIXED_STATS)

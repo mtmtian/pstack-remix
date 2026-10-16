@@ -27,9 +27,12 @@ def agent_call(tool_id, requested, resolved, background=False, finished=True, de
     events = [{"type": "assistant", "parent_tool_use_id": None, "message": {"model": "claude-opus-5-5", "content": [
         {"type": "tool_use", "id": tool_id, "name": "Agent", "input": arguments},
     ]}}]
-    # The subagent's own tool calls stream under the Agent call's id, for foreground and background agents alike.
-    events += [{"type": "assistant", "parent_tool_use_id": tool_id, "message": {"content": [
-        {"type": "tool_use", "id": f"{tool_id}-{index}", "name": name, "input": arguments}]}} for index, (name, arguments) in enumerate(tools)]
+    # The subagent's own tool calls and results stream under the Agent call's id, for background agents too.
+    for index, (name, arguments, *succeeded) in enumerate(tools):
+        events.append({"type": "assistant", "parent_tool_use_id": tool_id, "message": {"content": [
+            {"type": "tool_use", "id": f"{tool_id}-{index}", "name": name, "input": arguments}]}})
+        events.append({"type": "user", "parent_tool_use_id": tool_id, "message": {"content": [
+            {"type": "tool_result", "tool_use_id": f"{tool_id}-{index}", "is_error": not (succeeded or [True])[0], "content": "ok"}]}})
     result_block = {"type": "tool_result", "tool_use_id": tool_id, "content": "done"}
     if denied:
         events.append({"type": "user", "parent_tool_use_id": None, "tool_use_result": "Error: permission denied",
@@ -135,7 +138,7 @@ class NativeEvidenceTest(FIXTURES["HarnessFixture"]):
         notes = [self.native_note("native-writer-1", "/root/swarm_writer"), self.native_note("reviewer-native-r1-a1", "/root/interrogate_native_r1")]
         home = self.root / "codex-home"
         native, _ = codex_native_dispatches(write_codex_rollouts(home, "thread-third-run", [
-            ("call-writer", "gpt-6.1-sol", "thread-writer", "gpt-6.1-sol", True, *self.codex_writes(self.committed_checkout("writer-1"))),
+            ("call-writer", "gpt-6.1-sol", "thread-writer", "gpt-6.1-sol", True, *self.codex_writes(self.final_checkout("writer-1"))),
             ("call-review", "gpt-6.1-sol", "thread-review", "gpt-6.1-sol", True, f"cat {self.final_checkout('reviewer-native-r1')}/stats.py"),
         ]), home)
 
@@ -149,7 +152,7 @@ class NativeEvidenceTest(FIXTURES["HarnessFixture"]):
     def test_given_mixed_claude_policy_when_stream_shows_native_dispatches_and_xagent_receipts_then_all_checks_pass(self):
         receipts = self.xagent_reviews_for(CLAUDE_MIXED["reviewers"])
         native, gap = claude_native_dispatches(claude_stream(
-            self.native_writer(self.committed_checkout("writer-native")),
+            self.native_writer(self.final_checkout("writer-native")),
             agent_call("toolu_review", "opus", "claude-opus-5-5", background=True, tools=works_in(self.final_checkout("review-native"))),
         ))
         self.assertIsNone(gap)
@@ -159,7 +162,7 @@ class NativeEvidenceTest(FIXTURES["HarnessFixture"]):
         receipts = self.xagent_reviews_for(CODEX_MIXED["reviewers"])
         home = self.root / "codex-home"
         log = write_codex_rollouts(home, "thread-host", [
-            ("call-writer", "gpt-6.1-sol", "thread-writer", "gpt-6.1-sol", True, *self.codex_writes(self.committed_checkout("writer-native"))),
+            ("call-writer", "gpt-6.1-sol", "thread-writer", "gpt-6.1-sol", True, *self.codex_writes(self.final_checkout("writer-native"))),
             ("call-review", "gpt-6.1-sol", "thread-review", "gpt-6.1-sol", True, f"git -C {self.final_checkout('review-native')} diff"),
         ])
         native, gap = codex_native_dispatches(log, home)
@@ -169,7 +172,7 @@ class NativeEvidenceTest(FIXTURES["HarnessFixture"]):
 
     def test_given_an_all_native_policy_when_every_agent_call_completes_then_no_xagent_receipt_is_required(self):
         self.write_final_parent()
-        native, gap = claude_native_dispatches(claude_stream(self.native_writer(self.committed_checkout("writer-native")), *(
+        native, gap = claude_native_dispatches(claude_stream(self.native_writer(self.final_checkout("writer-native")), *(
             agent_call(f"toolu_review_{index}", "opus", "claude-opus-5-5", tools=works_in(self.final_checkout(f"review-{index}"))) for index in range(2))))
         self.assertIsNone(gap)
         self.assertEqual(self.valid_receipts([], native_dispatches=native, writer="opus", reviewers=("opus", "opus")), ALL_CHECKS_PASS)
@@ -182,15 +185,16 @@ class NativeEvidenceTest(FIXTURES["HarnessFixture"]):
             self.receipt("claude", "ro", shared, name="claude-default"),
             self.receipt("claude", "ro", shared, name="claude-opus", model="opus"),
         ]
-        native, _ = claude_native_dispatches(claude_stream(self.native_writer(self.committed_checkout("writer-native"))))
+        native, _ = claude_native_dispatches(claude_stream(self.native_writer(self.final_checkout("writer-native"))))
         checks = self.valid_receipts(receipts, native_dispatches=native, writer="opus", reviewers=("xagent:claude", "xagent:claude/opus"))
-        self.assertTrue(checks["configured_reviewers_dispatched"], checks)
+        # Different models are different workers, and the second review slot cannot reuse the first one's checkout either.
         self.assertFalse(checks["receipt_workspaces_owned"])
+        self.assertFalse(checks["configured_reviewers_dispatched"])
 
     def test_given_codex_reports_a_claude_style_model_id_when_checked_then_only_claude_resolves_aliases(self):
         self.write_final_parent()
         home = self.root / "codex-home"
-        writer_checkout = self.committed_checkout("writer-native")
+        writer_checkout = self.final_checkout("writer-native")
         codex, gap = codex_native_dispatches(write_codex_rollouts(home, "thread-alias", [
             ("call-writer", "opus", "thread-alias-w", "claude-opus-5-5", True, *self.codex_writes(writer_checkout))]), home)
         self.assertIsNone(gap)
@@ -206,7 +210,7 @@ class NativeEvidenceTest(FIXTURES["HarnessFixture"]):
         brief = self.scope / "briefs" / "review.md"
         brief.parent.mkdir()
         brief.write_text(f"Your exclusive read-only worktree: {stale}\n")
-        writer = self.native_writer(self.committed_checkout("writer-native"))
+        writer = self.native_writer(self.final_checkout("writer-native"))
         for name, tools, counted in (
             ("final checkout", works_in(final), True),
             ("brief outside any checkout, then the final checkout", [("Read", {"file_path": str(brief)}), *works_in(final)], True),
@@ -228,7 +232,7 @@ class NativeEvidenceTest(FIXTURES["HarnessFixture"]):
         self.write_final_parent()
         final = self.final_checkout("review-final")
         stale = self.final_checkout("review-stale", stats=STALE_STATS)
-        writer_checkout = self.committed_checkout("writer-native")
+        writer_checkout = self.final_checkout("writer-native")
         home = self.root / "codex-home"
         for index, (name, commands, counted) in enumerate((
             ("final checkout", [f"git -C {final} diff"], True),
@@ -259,14 +263,14 @@ class NativeEvidenceTest(FIXTURES["HarnessFixture"]):
         self.assertTrue(checks["configured_writer_dispatched"])
         self.assertFalse(checks["configured_reviewers_dispatched"])
 
-    def test_given_two_native_reviews_working_in_one_checkout_when_checked_then_ownership_fails(self):
+    def test_given_two_native_reviews_working_in_one_checkout_when_checked_then_only_one_review_counts(self):
         self.write_final_parent()
         writer_checkout = self.final_checkout("writer-native")
         shared = self.final_checkout("review-shared")
         native, _ = claude_native_dispatches(claude_stream(self.native_writer(writer_checkout), *(
             agent_call(f"toolu_review_{index}", "opus", "claude-opus-5-5", prompt=f"Review {shared}.", tools=works_in(shared)) for index in range(2))))
         checks = self.valid_receipts([], native_dispatches=native, writer="opus", reviewers=("opus", "opus"))
-        self.assertFalse(checks["receipt_workspaces_owned"])
+        self.assertFalse(checks["configured_reviewers_dispatched"])
 
     def test_given_a_native_review_working_in_the_xagent_writers_checkout_when_checked_then_ownership_fails(self):
         writer_checkout = self.final_checkout("writer-codex")
@@ -277,23 +281,20 @@ class NativeEvidenceTest(FIXTURES["HarnessFixture"]):
         checks = self.valid_receipts([writer], native_dispatches=native, writer="xagent:codex", reviewers=("opus",))
         self.assertFalse(checks["receipt_workspaces_owned"])
 
-    def test_given_a_review_prompt_that_mentions_the_writers_committed_checkout_when_the_review_worked_elsewhere_then_it_counts(self):
+    def test_given_a_review_prompt_that_mentions_a_committed_checkout_when_the_review_worked_elsewhere_then_it_counts(self):
         self.write_final_parent()
-        writer_checkout = self.final_checkout("writer-committed")
-        self.git(writer_checkout, "-c", "user.name=fixture", "-c", "user.email=fixture@local", "-c", "commit.gpgsign=false", "commit", "-qam", "writer commit")
+        writer_checkout, committed = self.final_checkout("writer-native"), self.committed_checkout("writer-committed")
         review_checkout = self.final_checkout("review-native")
         native, _ = claude_native_dispatches(claude_stream(
-            self.native_writer(writer_checkout, prompt=f"Fix stats.py in {writer_checkout} and commit it."),
+            self.native_writer(writer_checkout),
             agent_call("toolu_review", "opus", "claude-opus-5-5", tools=works_in(review_checkout),
-                       prompt=f"The writer committed in {writer_checkout}. Review the uncommitted patch in {review_checkout}."),
+                       prompt=f"An earlier writer committed in {committed}. Review the uncommitted patch in {review_checkout}."),
         ))
         self.assertEqual(self.valid_receipts([], native_dispatches=native, writer="opus", reviewers=("opus",)), ALL_CHECKS_PASS)
 
     def test_given_a_review_that_writes_notes_naming_an_old_checkout_when_checked_then_its_own_checkout_decides(self):
         self.write_final_parent()
-        # A committed writer checkout cannot pass as a review, so only the review's own evidence decides.
-        writer_checkout = self.final_checkout("writer-committed")
-        self.git(writer_checkout, "-c", "user.name=fixture", "-c", "user.email=fixture@local", "-c", "commit.gpgsign=false", "commit", "-qam", "writer commit")
+        writer_checkout = self.final_checkout("writer-native")
         stale = self.final_checkout("review-stale", stats=STALE_STATS)
         review_checkout = self.final_checkout("review-native")
         notes = self.scope / "evidence" / "review-notes.md"
@@ -324,7 +325,7 @@ class NativeEvidenceTest(FIXTURES["HarnessFixture"]):
     def test_given_a_policy_effort_when_a_worker_records_none_then_it_fills_no_role(self):
         # Codex review of 78ecce9, P1: any level counts, since poteto-mode adjusts it per task, but it must be passed.
         self.write_final_parent()
-        writer_checkout = self.committed_checkout("writer-native")
+        writer_checkout = self.final_checkout("writer-native")
         review_checkout = self.final_checkout("review-native")
         home = self.root / "codex-home"
         for index, (effort, policy, counted) in enumerate(((None, "xhigh", False), ("high", "xhigh", True), (None, None, True), ("turbo", "xhigh", False))):
@@ -346,9 +347,54 @@ class NativeEvidenceTest(FIXTURES["HarnessFixture"]):
                     checks = self.valid_receipts([], native_dispatches=native, writer=model, reviewers=(model,), effort=policy)
                     self.assertEqual((checks["configured_writer_dispatched"], checks["configured_reviewers_dispatched"]), (counted, counted))
 
+    def test_given_a_native_writer_sent_back_to_its_own_worktree_when_checked_then_the_follow_up_keeps_its_owner(self):
+        # Third review round, scenario G: like an xagent retry, a writer's follow-up fix may reuse its worktree.
+        self.write_final_parent()
+        writer_checkout, review_checkout = self.final_checkout("writer-native"), self.final_checkout("review-native")
+        native, _ = claude_native_dispatches(claude_stream(
+            self.native_writer(writer_checkout),
+            agent_call("toolu_review", "opus", "claude-opus-5-5", tools=works_in(review_checkout)),
+            agent_call("toolu_fix", "opus", "claude-opus-5-5", prompt=f"Address the review in {writer_checkout}.", tools=writes_in(writer_checkout)),
+        ))
+        self.assertEqual(self.valid_receipts([], native_dispatches=native, writer="opus", reviewers=("opus",)), ALL_CHECKS_PASS)
+
+    def test_given_a_review_by_the_writers_model_in_the_writers_worktree_when_checked_then_ownership_fails(self):
+        # One worker writing and reviewing is two owners, so a review cannot reuse the writer's worktree.
+        self.write_final_parent()
+        writer_checkout = self.final_checkout("writer-native")
+        native, _ = claude_native_dispatches(claude_stream(
+            self.native_writer(writer_checkout), agent_call("toolu_review", "opus", "claude-opus-5-5", tools=works_in(writer_checkout))))
+        self.assertFalse(self.valid_receipts([], native_dispatches=native, writer="opus", reviewers=("opus",))["receipt_workspaces_owned"])
+
+    def test_given_a_shell_written_writer_and_an_edit_outside_the_fixture_worktrees_when_checked_then_no_writer_counts(self):
+        # Third review round, scenario F: shell edits are invisible, so only a structured edit in a worktree at the base writes.
+        self.write_final_parent()
+        shell_written = self.final_checkout("writer-shell")
+        elsewhere = self.scope / "scratch"
+        elsewhere.mkdir()
+        self.git(elsewhere, "init", "-q")
+        (elsewhere / "stats.py").write_text(FIXED_STATS)
+        native, _ = claude_native_dispatches(claude_stream(
+            agent_call("toolu_writer", "opus", "claude-opus-5-5", tools=[("Bash", {"command": f"cat > {shell_written}/stats.py <<'EOF'"})]),
+            agent_call("toolu_other", "opus", "claude-opus-5-5", tools=[("Edit", {"file_path": f"{elsewhere}/stats.py"})]),
+        ))
+        self.assertFalse(self.valid_receipts([], native_dispatches=native, writer="opus", reviewers=("opus",))["configured_writer_dispatched"])
+
+    def test_given_native_writer_evidence_when_checked_then_only_a_successful_edit_in_a_worktree_at_the_base_writes(self):
+        self.write_final_parent()
+        final, committed = self.final_checkout("writer-final"), self.committed_checkout("writer-committed")
+        for name, tools, writes in (
+            ("successful edit at the base", writes_in(final), True),
+            ("edit the tool rejected", [*works_in(final), ("Edit", {"file_path": f"{final}/stats.py"}, False)], False),
+            ("edit in a worktree that left the base", writes_in(committed), False),
+        ):
+            with self.subTest(name):
+                native, _ = claude_native_dispatches(claude_stream(agent_call("toolu_writer", "opus", "claude-opus-5-5", tools=tools)))
+                self.assertEqual(self.valid_receipts([], native_dispatches=native, writer="opus", reviewers=())["configured_writer_dispatched"], writes)
+
     def test_given_mixed_policy_when_a_native_dispatch_is_missing_unfinished_or_denied_then_its_role_fails(self):
         receipts = self.xagent_reviews_for(CLAUDE_MIXED["reviewers"])
-        writer = self.native_writer(self.committed_checkout("writer-native"))
+        writer = self.native_writer(self.final_checkout("writer-native"))
         review_checkout = self.final_checkout("review-native")
         cases = {
             "writer only": (claude_stream(writer), {"configured_writer_dispatched": True, "configured_reviewers_dispatched": False}),
@@ -393,7 +439,7 @@ class NativeEvidenceTest(FIXTURES["HarnessFixture"]):
 
     def test_given_native_dispatch_with_wrong_model_when_checked_then_it_cannot_fill_the_configured_role(self):
         receipts = self.xagent_reviews_for(CLAUDE_MIXED["reviewers"])
-        writer_checkout, review_checkout = self.committed_checkout("writer-native"), self.final_checkout("review-native")
+        writer_checkout, review_checkout = self.final_checkout("writer-native"), self.final_checkout("review-native")
         writer = self.native_writer(writer_checkout)
         # Each review worked in a final checkout, so only its model keeps it from the review slot.
         for name, reviewer in {
@@ -477,6 +523,7 @@ class NativeEvidenceTest(FIXTURES["HarnessFixture"]):
                 self.assertIn(f"exclusive worktree checked out at fixture base {report['base']}, with the proposed patch applied as uncommitted changes", prompt)
                 self.assertIn("every configured reviewer must review the final version again", prompt)
                 self.assertIn("A native writer changes files only with its host's file-edit tool", prompt)
+                self.assertIn(f"exclusive worktree at fixture base {report['base']} and have it leave its change uncommitted", prompt)
                 self.assertIn("pass an effort to every worker, native or xagent", prompt)
                 if host == "claude":
                     self.assertIn("-p", launch["argv"])

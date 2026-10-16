@@ -45,7 +45,7 @@ def claude_native_dispatches(lines):
     events = list(json_events(lines))
     if not any(event.get("type") == "system" and event.get("subtype") == "init" for event in events):
         return [], "claude stream-json log has no init event"
-    dispatches, touched, edited = {}, {}, {}
+    dispatches, touched, edited, edits = {}, {}, {}, {}
     for event in events:
         content = event["message"].get("content") if isinstance(event.get("message"), dict) else None
         blocks = [block for block in content if isinstance(block, dict)] if isinstance(content, list) else []
@@ -63,10 +63,16 @@ def claude_native_dispatches(lines):
                 paths = {value for value in (arguments.get(key) for key in ("file_path", "notebook_path", "path")) if isinstance(value, str)}
                 touched[parent].update(paths)
                 if block.get("name") in CLAUDE_EDIT_TOOLS:
-                    edited[parent].update(paths)
+                    edits[block.get("id")] = parent, paths
                 if isinstance(arguments.get("command"), str):
                     touched[parent].update(ABSOLUTE_PATH.findall(arguments["command"]))
         elif event.get("type") == "user":
+            # An edit counts once its tool_result reports success, as Codex records only completed FileChanges.
+            for block in blocks:
+                if block.get("type") == "tool_result" and block.get("tool_use_id") in edits:
+                    parent, paths = edits.pop(block["tool_use_id"])
+                    if not block.get("is_error"):
+                        edited[parent].update(paths)
             results = [block for block in blocks if block.get("type") == "tool_result" and block.get("tool_use_id") in dispatches]
             # tool_use_result describes the event's single tool result; an ambiguous event stays pending.
             if len(results) != 1:
