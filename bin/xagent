@@ -30,6 +30,16 @@ TERMINATION_GRACE = 1
 # elsewhere and marks nothing.
 RECEIPT_MARKERS = ("prompt.md", "agent.log")
 OUT_FILES = (*RECEIPT_MARKERS, "result.md")
+# How each CLI's own report of the models a run used names the requested one. Claude resolves an alias such as opus
+# to claude-opus-<version> and may add a small model for its own housekeeping; grok reports a routed model such as
+# magpie/likecode-grok/grok-4.7 by its last segment. Agents missing here report no model, so nothing is checked.
+MODEL_MATCHES = {
+    "claude": lambda requested, used: used in (requested, requested.split("[")[0]) or used.startswith(f"claude-{requested}-"),
+    "grok": lambda requested, used: used in (requested, requested.rsplit("/", 1)[-1]),
+    "codex": lambda requested, used: used == requested,
+}
+# Codex prints its settings, including the model, at the top of its log.
+CODEX_MODEL_LINE = re.compile(r"^model:\s*(\S+)\s*$", re.MULTILINE)
 VERDICT = re.compile(r"(?:STATUS: (PASS|ISSUES|BLOCKED)|\*\*STATUS: (PASS|ISSUES|BLOCKED)\*\*)")
 
 
@@ -48,6 +58,15 @@ def selection(agent, model, effort):
     if effort:
         args += [effort_flag, effort_value.format(effort)]
     return args
+
+
+def resolved_models(agent, payload, log):
+    """Return the models the CLI reports the run used, or None when it reports none."""
+    if agent == "codex":
+        match = CODEX_MODEL_LINE.search(log)
+        return [match.group(1)] if match else None
+    usage = payload.get("modelUsage") if isinstance(payload, dict) and agent in MODEL_MATCHES else None
+    return sorted(usage) if isinstance(usage, dict) and usage else None
 
 
 def classify(code, timed_out, text):
@@ -221,7 +240,7 @@ def main():
     meta = dict(
         agent=agent, model=model, effort=options.effort, mode=options.mode, workdir=str(workdir), exit=None,
         timed_out=False, cancelled=False, seconds=0, status="DROPOUT",
-        changed_workdir=None, snapshot_before=None, snapshot_after=None,
+        changed_workdir=None, snapshot_before=None, snapshot_after=None, resolved_models=None,
         completed=False, reason="incomplete",
     )
     write_meta(out, meta)
@@ -245,6 +264,7 @@ def main():
     try:
         code, timed_out, cancelled = run_process(args, workdir, out, stdout_path, options.timeout, env)
         meta.update(exit=code, timed_out=timed_out, cancelled=cancelled)
+        payload = None
         if json_field:
             payload = json.loads(stdout_path.read_text())
             if not isinstance(payload, dict):
@@ -255,6 +275,10 @@ def main():
             (out / "result.md").write_text(reply)
         status = classify(code, timed_out, (out / "result.md").read_text())
         reason = "cancelled" if cancelled else "timeout" if timed_out else "process_failed" if code else "invalid_verdict" if status == "DROPOUT" else None
+        meta["resolved_models"] = resolved_models(agent, payload, (out / "agent.log").read_text(errors="replace"))
+        # A CLI may run its default instead of a model the account may not use, and still exit 0.
+        if model and meta["resolved_models"] and status != "DROPOUT" and not any(MODEL_MATCHES[agent](model, used) for used in meta["resolved_models"]):
+            status, reason = "DROPOUT", "model_mismatch"
         meta.update(status=status, reason=reason)
     except (OSError, ValueError, KeyError) as error:
         meta.update(status="DROPOUT", reason="timeout" if meta["timed_out"] else "cancelled" if meta["cancelled"] else "execution_error")

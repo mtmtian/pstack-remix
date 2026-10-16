@@ -20,6 +20,8 @@ if os.environ.get('XAGENT_TEST_ARGV'):
 if agent == 'grok': os.chdir(sys.argv[sys.argv.index('--cwd')+1])
 if agent == 'codex': os.chdir(sys.argv[sys.argv.index('-C')+1])
 reply = 'Completed.\nSTATUS: PASS\n'
+used = json.loads(os.environ.get('XAGENT_TEST_USAGE') or 'null')
+report = {'modelUsage': {name: {} for name in used}} if used else {}
 invalid_json = {'json_null': None, 'json_array': [], 'json_number': 42, 'json_null_changed': None}
 def git(*args): subprocess.run(['git', *args], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 if case == 'nonfinal': reply = 'STATUS: PASS\nThe review is not completed.\n'
@@ -41,9 +43,11 @@ if case == 'wait':
         s.connect(os.environ['XAGENT_TEST_SOCKET'])
         s.sendall(json.dumps({'pid':os.getpid()}).encode())
     time.sleep(30)
-if agent == 'claude': print(json.dumps(invalid_json[case]) if case in invalid_json else json.dumps({'result':reply}))
-elif agent == 'grok': print(json.dumps(invalid_json[case]) if case in invalid_json else json.dumps({'text':reply}))
-elif agent == 'codex': pathlib.Path(sys.argv[sys.argv.index('-o')+1]).write_text(reply)
+if agent == 'claude': print(json.dumps(invalid_json[case]) if case in invalid_json else json.dumps({'result':reply, **report}))
+elif agent == 'grok': print(json.dumps(invalid_json[case]) if case in invalid_json else json.dumps({'text':reply, **report}))
+elif agent == 'codex':
+    if used: print('model: ' + used[0])
+    pathlib.Path(sys.argv[sys.argv.index('-o')+1]).write_text(reply)
 else: print(reply)
 '''
 # Each CLI's own model and effort flags, from its --help at the versions xagent-e2e.sh exercises.
@@ -132,6 +136,29 @@ class XAgentTests(unittest.TestCase):
                     if agent == "pi":
                         self.assertLess(args.index("--model"), args.index("--"))
                         self.assertEqual(args[-1], (out / "prompt.md").read_text())
+
+    def test_given_a_pinned_model_when_the_cli_reports_another_one_then_the_attempt_is_a_dropout(self):
+        # A CLI may swap a model the account may not use for its default and still exit 0; its own report decides.
+        cases = (
+            ("claude/opus", ["claude-sonnet-5-5"], "DROPOUT"),
+            ("claude/opus", ["claude-opus-5-5"], "PASS"),
+            ("claude/fable", ["claude-fable-5-1", "claude-haiku-5-5"], "PASS"),
+            ("grok/magpie/likecode-grok/grok-4.7", ["grok-4.3"], "DROPOUT"),
+            ("grok/magpie/likecode-grok/grok-4.7", ["grok-4.7"], "PASS"),
+            ("grok/magpie/likecode-grok/grok-4.7", ["grok-4.7", "grok-mini"], "PASS"),
+            ("codex/gpt-6.1-sol", ["gpt-6-luna"], "DROPOUT"),
+            ("codex/gpt-6.1-sol", ["gpt-6.1-sol"], "PASS"),
+            # Nothing to compare: no model was pinned, or the CLI reports none.
+            ("claude", ["claude-sonnet-5-5"], "PASS"),
+            ("pi/openai/gpt-test-1", None, "PASS"),
+        )
+        for index, (spec, used, status) in enumerate(cases):
+            with self.subTest(spec=spec, used=used):
+                self.env["XAGENT_TEST_USAGE"] = json.dumps(used or ["reported-but-unread"])
+                result, meta = self.run_case("pass", spec, out=self.base / f"usage-{index}")
+                self.assertEqual((meta["status"], meta["resolved_models"]), (status, sorted(used) if used else None))
+                if status == "DROPOUT":
+                    self.assertEqual((meta["reason"], result.returncode), ("model_mismatch", 3))
 
     def test_given_no_model_or_effort_when_each_adapter_runs_then_its_cli_keeps_its_own_settings(self):
         captured = self.base / "default-argv.json"
