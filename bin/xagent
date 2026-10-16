@@ -26,10 +26,10 @@ SELECTION_FLAGS = {
 DEFAULT_TIMEOUT = 900
 # Seconds a timed-out or cancelled agent gets after SIGTERM before its process group is killed.
 TERMINATION_GRACE = 1
-# Created in every out_dir before its first meta.json. result.md is a common name elsewhere, so only the
-# first two mark an xagent attempt.
-OUT_FILES = ("prompt.md", "agent.log", "result.md")
-RECEIPT_MARKERS = OUT_FILES[:2]
+# Created in every out_dir before its first meta.json, so they mark an xagent attempt; result.md is a common name
+# elsewhere and marks nothing.
+RECEIPT_MARKERS = ("prompt.md", "agent.log")
+OUT_FILES = (*RECEIPT_MARKERS, "result.md")
 VERDICT = re.compile(r"(?:STATUS: (PASS|ISSUES|BLOCKED)|\*\*STATUS: (PASS|ISSUES|BLOCKED)\*\*)")
 
 

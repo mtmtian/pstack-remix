@@ -45,11 +45,17 @@ def mean(xs):
 
 STALE_STATS = "def mean(xs):\n    return sum(xs) / len(xs)\n"
 
+ALL_CHECKS_PASS = {
+    "all_attempts_terminal": True,
+    "configured_writer_dispatched": True,
+    "configured_reviewers_dispatched": True,
+    "receipt_workspaces_owned": True,
+}
 CLAUDE_MIXED = dict(writer="opus", reviewers=("opus", "xagent:codex/gpt-6.1-sol", "xagent:grok/magpie/likecode-grok/grok-4.7"))
 CODEX_MIXED = dict(writer="gpt-6.1-sol", reviewers=("gpt-6.1-sol", "xagent:claude/opus", "xagent:grok/magpie/likecode-grok/grok-4.7"))
 
 
-def agent_call(tool_id, requested, resolved, background=False, finished=True, denied=False, prompt="brief"):
+def agent_call(tool_id, requested, resolved, background=False, finished=True, denied=False, prompt="brief", tools=()):
     """Claude stream-json events for one Agent dispatch, shaped like a real `claude -p --verbose` run."""
     arguments = {"description": tool_id, "subagent_type": "general-purpose", "prompt": prompt, "run_in_background": background}
     if requested is not None:
@@ -57,6 +63,9 @@ def agent_call(tool_id, requested, resolved, background=False, finished=True, de
     events = [{"type": "assistant", "parent_tool_use_id": None, "message": {"model": "claude-opus-5-5", "content": [
         {"type": "tool_use", "id": tool_id, "name": "Agent", "input": arguments},
     ]}}]
+    # The subagent's own tool calls stream under the Agent call's id, for foreground and background agents alike.
+    events += [{"type": "assistant", "parent_tool_use_id": tool_id, "message": {"content": [
+        {"type": "tool_use", "id": f"{tool_id}-{index}", "name": name, "input": arguments}]}} for index, (name, arguments) in enumerate(tools)]
     result_block = {"type": "tool_result", "tool_use_id": tool_id, "content": "done"}
     if denied:
         events.append({"type": "user", "parent_tool_use_id": None, "tool_use_result": "Error: permission denied",
@@ -68,6 +77,11 @@ def agent_call(tool_id, requested, resolved, background=False, finished=True, de
     if background and finished:
         events.append({"type": "system", "subtype": "task_notification", "tool_use_id": tool_id, "status": "completed"})
     return events
+
+
+def works_in(checkout):
+    """A subagent's own tool calls inside checkout."""
+    return [("Bash", {"command": f"cd {checkout} && git diff"}), ("Read", {"file_path": f"{checkout}/stats.py"})]
 
 
 def claude_stream(*calls):
@@ -196,6 +210,12 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
         (checkout / "stats.py").write_text(stats)
         return checkout
 
+    def committed_checkout(self, name):
+        """A writer worktree whose patch is committed, so it has left the fixture base."""
+        checkout = self.final_checkout(name)
+        self.git(checkout, "-c", "user.name=fixture", "-c", "user.email=fixture@local", "-c", "commit.gpgsign=false", "commit", "-qam", "writer commit")
+        return checkout
+
     def xagent_reviews_for(self, reviewers):
         """Final-code receipts for the policy's xagent reviewers; native entries get none."""
         self.write_final_parent()
@@ -227,7 +247,7 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
         notes = [self.native_note("native-writer-1", "/root/swarm_writer"), self.native_note("reviewer-native-r1-a1", "/root/interrogate_native_r1")]
         home = self.root / "codex-home"
         native, _ = codex_native_dispatches(write_codex_rollouts(home, "thread-third-run", [
-            ("call-writer", "gpt-6.1-sol", "thread-writer", "gpt-6.1-sol", True),
+            ("call-writer", "gpt-6.1-sol", "thread-writer", "gpt-6.1-sol", True, f"cd {self.committed_checkout('writer-1')} && git diff"),
             ("call-review", "gpt-6.1-sol", "thread-review", "gpt-6.1-sol", True, f"cat {self.final_checkout('reviewer-native-r1')}/stats.py"),
         ]), home)
 
@@ -263,8 +283,8 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
     def test_given_mixed_claude_policy_when_stream_shows_native_dispatches_and_xagent_receipts_then_all_checks_pass(self):
         receipts = self.xagent_reviews_for(CLAUDE_MIXED["reviewers"])
         native, gap = claude_native_dispatches(claude_stream(
-            agent_call("toolu_writer", "opus", "claude-opus-5-5"),
-            agent_call("toolu_review", "opus", "claude-opus-5-5", background=True, prompt=f"Review the patch in {self.final_checkout('review-native')}"),
+            self.native_writer(self.committed_checkout("writer-native")),
+            agent_call("toolu_review", "opus", "claude-opus-5-5", background=True, tools=works_in(self.final_checkout("review-native"))),
         ))
         self.assertIsNone(gap)
         self.assertEqual(self.valid_receipts(receipts, native_dispatches=native, **CLAUDE_MIXED), {
@@ -278,7 +298,7 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
         receipts = self.xagent_reviews_for(CODEX_MIXED["reviewers"])
         home = self.root / "codex-home"
         log = write_codex_rollouts(home, "thread-host", [
-            ("call-writer", "gpt-6.1-sol", "thread-writer", "gpt-6.1-sol", True),
+            ("call-writer", "gpt-6.1-sol", "thread-writer", "gpt-6.1-sol", True, f"cd {self.committed_checkout('writer-native')} && git diff"),
             ("call-review", "gpt-6.1-sol", "thread-review", "gpt-6.1-sol", True, f"git -C {self.final_checkout('review-native')} diff"),
         ])
         native, gap = codex_native_dispatches(log, home)
@@ -288,8 +308,8 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
 
     def test_given_an_all_native_policy_when_every_agent_call_completes_then_no_xagent_receipt_is_required(self):
         self.write_final_parent()
-        native, gap = claude_native_dispatches(claude_stream(agent_call("toolu_writer", "opus", "claude-opus-5-5"), *(
-            agent_call(f"toolu_review_{index}", "opus", "claude-opus-5-5", prompt=f"Review {self.final_checkout(f'review-{index}')}") for index in range(2))))
+        native, gap = claude_native_dispatches(claude_stream(self.native_writer(self.committed_checkout("writer-native")), *(
+            agent_call(f"toolu_review_{index}", "opus", "claude-opus-5-5", tools=works_in(self.final_checkout(f"review-{index}"))) for index in range(2))))
         self.assertIsNone(gap)
         self.assertEqual(self.valid_receipts([], native_dispatches=native, writer="opus", reviewers=("opus", "opus")), {
             "all_attempts_terminal": True,
@@ -306,7 +326,7 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
             self.receipt("claude", "ro", shared, name="claude-default"),
             self.receipt("claude", "ro", shared, name="claude-opus", model="opus"),
         ]
-        native, _ = claude_native_dispatches(claude_stream(agent_call("toolu_writer", "opus", "claude-opus-5-5")))
+        native, _ = claude_native_dispatches(claude_stream(self.native_writer(self.committed_checkout("writer-native"))))
         checks = self.valid_receipts(receipts, native_dispatches=native, writer="opus", reviewers=("xagent:claude", "xagent:claude/opus"))
         self.assertTrue(checks["configured_reviewers_dispatched"], checks)
         self.assertFalse(checks["receipt_workspaces_owned"])
@@ -326,9 +346,11 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
     def test_given_codex_reports_a_claude_style_model_id_when_checked_then_only_claude_resolves_aliases(self):
         self.write_final_parent()
         home = self.root / "codex-home"
-        codex, gap = codex_native_dispatches(write_codex_rollouts(home, "thread-alias", [("call-writer", "opus", "thread-alias-w", "claude-opus-5-5", True)]), home)
+        writer_checkout = self.committed_checkout("writer-native")
+        codex, gap = codex_native_dispatches(write_codex_rollouts(home, "thread-alias", [
+            ("call-writer", "opus", "thread-alias-w", "claude-opus-5-5", True, f"cd {writer_checkout} && git diff")]), home)
         self.assertIsNone(gap)
-        claude, _ = claude_native_dispatches(claude_stream(agent_call("toolu_writer", "opus", "claude-opus-5-5")))
+        claude, _ = claude_native_dispatches(claude_stream(self.native_writer(writer_checkout)))
         self.assertFalse(self.valid_receipts([], native_dispatches=codex, writer="opus", reviewers=())["configured_writer_dispatched"])
         self.assertTrue(self.valid_receipts([], native_dispatches=claude, writer="opus", reviewers=())["configured_writer_dispatched"])
 
@@ -338,27 +360,26 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
         effective = shown["effective"]
         self.assertEqual(HARNESS["expected_roles"](effective), (effective["defaultModel"], effective["defaultPanel"]))
 
-    def test_given_claude_native_reviews_when_their_prompts_name_checkouts_then_only_a_final_version_at_the_base_counts(self):
+    def test_given_claude_native_reviews_when_their_subagents_work_in_checkouts_then_only_one_final_checkout_at_the_base_counts(self):
         self.write_final_parent()
         final = self.final_checkout("review-final")
         stale = self.final_checkout("review-stale", stats=STALE_STATS)
-        committed = self.final_checkout("review-committed")
-        self.git(committed, "-c", "user.name=fixture", "-c", "user.email=fixture@local", "-c", "commit.gpgsign=false", "commit", "-qam", "writer commit")
+        committed = self.committed_checkout("review-committed")
         brief = self.scope / "briefs" / "review.md"
         brief.parent.mkdir()
-        brief.write_text(f"Your exclusive read-only worktree: {final}\n")
-        writer = agent_call("toolu_writer", "opus", "claude-opus-5-5", prompt="Fix stats.py.")
-        for name, prompt, counted in (
-            ("final checkout", f"Review the uncommitted patch in {final}.", True),
-            ("brief naming the final checkout", f"Read {brief} and follow it.", True),
-            ("final checkout beside the parent", f"Do not touch {self.parent}; review {final}", True),
-            ("checkout reviewed before the last change", f"Review {stale}/stats.py.", False),
-            ("checkout moved off the fixture base", f"Review {committed}", False),
-            ("final and stale checkouts", f"Review {final} and compare {stale}", False),
-            ("no checkout", "Review the change.", False),
+        brief.write_text(f"Your exclusive read-only worktree: {stale}\n")
+        writer = self.native_writer(self.committed_checkout("writer-native"))
+        for name, tools, counted in (
+            ("final checkout", works_in(final), True),
+            ("brief outside any checkout, then the final checkout", [("Read", {"file_path": str(brief)}), *works_in(final)], True),
+            ("parent checkout and the final checkout", [("Bash", {"command": f"git -C {self.parent} status"}), *works_in(final)], True),
+            ("checkout reviewed before the last change", works_in(stale), False),
+            ("checkout moved off the fixture base", works_in(committed), False),
+            ("final and stale checkouts", [*works_in(final), *works_in(stale)], False),
+            ("relative and missing paths only", [("Bash", {"command": "cat stats.py"}), ("Read", {"file_path": f"{final}/notes/missing.md"})], False),
         ):
             with self.subTest(name):
-                native, _ = claude_native_dispatches(claude_stream(writer, agent_call("toolu_review", "opus", "claude-opus-5-5", prompt=prompt)))
+                native, _ = claude_native_dispatches(claude_stream(writer, agent_call("toolu_review", "opus", "claude-opus-5-5", tools=tools)))
                 checks = self.valid_receipts([], native_dispatches=native, writer="opus", reviewers=("opus",))
                 self.assertTrue(checks["configured_writer_dispatched"])
                 self.assertEqual(checks["configured_reviewers_dispatched"], counted)
@@ -368,6 +389,7 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
         self.write_final_parent()
         final = self.final_checkout("review-final")
         stale = self.final_checkout("review-stale", stats=STALE_STATS)
+        writer_checkout = self.committed_checkout("writer-native")
         home = self.root / "codex-home"
         for index, (name, commands, counted) in enumerate((
             ("final checkout", [f"git -C {final} diff"], True),
@@ -379,7 +401,7 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
                 # The review comes first, so the writer must not take the only attempt that can review.
                 native, gap = codex_native_dispatches(write_codex_rollouts(home, thread, [
                     (f"{thread}-review", "gpt-6.1-sol", f"{thread}-r", "gpt-6.1-sol", True, *commands),
-                    (f"{thread}-writer", "gpt-6.1-sol", f"{thread}-w", "gpt-6.1-sol", True),
+                    (f"{thread}-writer", "gpt-6.1-sol", f"{thread}-w", "gpt-6.1-sol", True, f"cd {writer_checkout} && git diff"),
                 ]), home)
                 self.assertIsNone(gap)
                 checks = self.valid_receipts([], native_dispatches=native, writer="gpt-6.1-sol", reviewers=("gpt-6.1-sol",))
@@ -402,19 +424,81 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
         self.assertEqual((receipts, ignored), ([None], []))
         self.assertFalse(self.valid_receipts(receipts, writer="opus", reviewers=("opus",))["all_attempts_terminal"])
 
+    # Scenarios A-E from the second review round: a native review is bound by its subagent's own tool calls.
+    def native_writer(self, checkout, prompt=None):
+        return agent_call("toolu_writer", "opus", "claude-opus-5-5", prompt=prompt or f"Fix stats.py in {checkout}.", tools=works_in(checkout))
+
+    def test_given_a_native_writer_and_an_unrelated_agent_call_when_nothing_was_reviewed_then_the_review_slot_stays_empty(self):
+        self.write_final_parent()
+        writer_checkout = self.final_checkout("writer-native")
+        native, _ = claude_native_dispatches(claude_stream(
+            self.native_writer(writer_checkout),
+            agent_call("toolu_summary", "opus", "claude-opus-5-5", prompt="Summarize the plan."),
+        ))
+        checks = self.valid_receipts([], native_dispatches=native, writer="opus", reviewers=("opus",))
+        self.assertTrue(checks["configured_writer_dispatched"])
+        self.assertFalse(checks["configured_reviewers_dispatched"])
+
+    def test_given_two_native_reviews_working_in_one_checkout_when_checked_then_ownership_fails(self):
+        self.write_final_parent()
+        writer_checkout = self.final_checkout("writer-native")
+        shared = self.final_checkout("review-shared")
+        native, _ = claude_native_dispatches(claude_stream(self.native_writer(writer_checkout), *(
+            agent_call(f"toolu_review_{index}", "opus", "claude-opus-5-5", prompt=f"Review {shared}.", tools=works_in(shared)) for index in range(2))))
+        checks = self.valid_receipts([], native_dispatches=native, writer="opus", reviewers=("opus", "opus"))
+        self.assertFalse(checks["receipt_workspaces_owned"])
+
+    def test_given_a_native_review_working_in_the_xagent_writers_checkout_when_checked_then_ownership_fails(self):
+        writer_checkout = self.final_checkout("writer-codex")
+        self.write_final_parent()
+        writer = self.receipt("codex", "rw", writer_checkout)
+        native, _ = claude_native_dispatches(claude_stream(
+            agent_call("toolu_review", "opus", "claude-opus-5-5", prompt=f"Review {writer_checkout}.", tools=works_in(writer_checkout))))
+        checks = self.valid_receipts([writer], native_dispatches=native, writer="xagent:codex", reviewers=("opus",))
+        self.assertFalse(checks["receipt_workspaces_owned"])
+
+    def test_given_a_review_prompt_that_mentions_the_writers_committed_checkout_when_the_review_worked_elsewhere_then_it_counts(self):
+        self.write_final_parent()
+        writer_checkout = self.final_checkout("writer-committed")
+        self.git(writer_checkout, "-c", "user.name=fixture", "-c", "user.email=fixture@local", "-c", "commit.gpgsign=false", "commit", "-qam", "writer commit")
+        review_checkout = self.final_checkout("review-native")
+        native, _ = claude_native_dispatches(claude_stream(
+            self.native_writer(writer_checkout, prompt=f"Fix stats.py in {writer_checkout} and commit it."),
+            agent_call("toolu_review", "opus", "claude-opus-5-5", tools=works_in(review_checkout),
+                       prompt=f"The writer committed in {writer_checkout}. Review the uncommitted patch in {review_checkout}."),
+        ))
+        self.assertEqual(self.valid_receipts([], native_dispatches=native, writer="opus", reviewers=("opus",)), ALL_CHECKS_PASS)
+
+    def test_given_a_review_that_writes_notes_naming_an_old_checkout_when_checked_then_its_own_checkout_decides(self):
+        self.write_final_parent()
+        # A committed writer checkout cannot pass as a review, so only the review's own evidence decides.
+        writer_checkout = self.final_checkout("writer-committed")
+        self.git(writer_checkout, "-c", "user.name=fixture", "-c", "user.email=fixture@local", "-c", "commit.gpgsign=false", "commit", "-qam", "writer commit")
+        stale = self.final_checkout("review-stale", stats=STALE_STATS)
+        review_checkout = self.final_checkout("review-native")
+        notes = self.scope / "evidence" / "review-notes.md"
+        notes.write_text(f"An earlier draft was reviewed in {stale}.\n")
+        native, _ = claude_native_dispatches(claude_stream(
+            self.native_writer(writer_checkout),
+            agent_call("toolu_review", "opus", "claude-opus-5-5", prompt=f"Review {review_checkout} and keep notes in {notes}.",
+                       tools=[*works_in(review_checkout), ("Write", {"file_path": str(notes)})]),
+        ))
+        self.assertEqual(self.valid_receipts([], native_dispatches=native, writer="opus", reviewers=("opus",)), ALL_CHECKS_PASS)
+
     def test_given_mixed_policy_when_a_native_dispatch_is_missing_unfinished_or_denied_then_its_role_fails(self):
         receipts = self.xagent_reviews_for(CLAUDE_MIXED["reviewers"])
-        writer = agent_call("toolu_writer", "opus", "claude-opus-5-5")
+        writer = self.native_writer(self.committed_checkout("writer-native"))
+        review_checkout = self.final_checkout("review-native")
         cases = {
             "writer only": (claude_stream(writer), {"configured_writer_dispatched": True, "configured_reviewers_dispatched": False}),
             "no dispatch": (claude_stream(), {"configured_writer_dispatched": False, "configured_reviewers_dispatched": False}),
             "reviewer never joined": (
-                claude_stream(writer, agent_call("toolu_review", "opus", "claude-opus-5-5", background=True, finished=False)),
+                claude_stream(writer, agent_call("toolu_review", "opus", "claude-opus-5-5", background=True, finished=False, tools=works_in(review_checkout))),
                 {"configured_reviewers_dispatched": False, "all_attempts_terminal": False},
             ),
-            # Native roles bind by model and count, so the one completed opus dispatch fills the writer first.
+            # A completed review can also write, and the writer slot is filled first.
             "Agent tool denied": (
-                claude_stream(agent_call("toolu_writer", "opus", None, denied=True), agent_call("toolu_review", "opus", "claude-opus-5-5")),
+                claude_stream(agent_call("toolu_writer", "opus", None, denied=True), agent_call("toolu_review", "opus", "claude-opus-5-5", tools=works_in(review_checkout))),
                 {"configured_writer_dispatched": True, "configured_reviewers_dispatched": False, "all_attempts_terminal": True},
             ),
         }
@@ -448,12 +532,14 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
 
     def test_given_native_dispatch_with_wrong_model_when_checked_then_it_cannot_fill_the_configured_role(self):
         receipts = self.xagent_reviews_for(CLAUDE_MIXED["reviewers"])
-        writer = agent_call("toolu_writer", "opus", "claude-opus-5-5")
+        writer_checkout, review_checkout = self.committed_checkout("writer-native"), self.final_checkout("review-native")
+        writer = self.native_writer(writer_checkout)
+        # Each review worked in a final checkout, so only its model keeps it from the review slot.
         for name, reviewer in {
-            "requested another alias": agent_call("toolu_review", "sonnet", "claude-sonnet-5-5"),
-            "resolved another model": agent_call("toolu_review", "opus", "claude-sonnet-5-5"),
-            "inherited instead of pinned": agent_call("toolu_review", None, "claude-opus-5-5"),
-            "no resolved model": agent_call("toolu_review", "opus", None),
+            "requested another alias": agent_call("toolu_review", "sonnet", "claude-sonnet-5-5", tools=works_in(review_checkout)),
+            "resolved another model": agent_call("toolu_review", "opus", "claude-sonnet-5-5", tools=works_in(review_checkout)),
+            "inherited instead of pinned": agent_call("toolu_review", None, "claude-opus-5-5", tools=works_in(review_checkout)),
+            "no resolved model": agent_call("toolu_review", "opus", None, tools=works_in(review_checkout)),
         }.items():
             with self.subTest(name):
                 native, _ = claude_native_dispatches(claude_stream(writer, reviewer))
@@ -468,8 +554,8 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
             with self.subTest(name):
                 thread = f"thread-mismatch-{index}"
                 log = write_codex_rollouts(home, thread, [
-                    (f"{thread}-writer", "gpt-6.1-sol", f"{thread}-w", "gpt-6.1-sol", True),
-                    (f"{thread}-review", requested, f"{thread}-r", actual, True),
+                    (f"{thread}-writer", "gpt-6.1-sol", f"{thread}-w", "gpt-6.1-sol", True, f"cd {writer_checkout} && git diff"),
+                    (f"{thread}-review", requested, f"{thread}-r", actual, True, f"git -C {review_checkout} diff"),
                 ])
                 native, gap = codex_native_dispatches(log, home)
                 self.assertIsNone(gap)
@@ -743,7 +829,7 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
                     allowed = launch["argv"][launch["argv"].index("--allowedTools") + 1:]
                     self.assertIn("Agent", allowed)
                     # One foreground Bash wait has to outlast a full attempt plus xagent's termination grace.
-                    self.assertGreater(int(launch["bash_max_ms"]), (HARNESS["WORKER_LIMIT_SECONDS"] + 30) * 1000)
+                    self.assertGreaterEqual(int(launch["bash_max_ms"]), (XAGENT["DEFAULT_TIMEOUT"] + XAGENT["TERMINATION_GRACE"]) * 1000)
                 else:
                     # Native spawn_agent evidence exists only in the host's persisted rollout.
                     self.assertNotIn("--ephemeral", launch["argv"])

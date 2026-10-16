@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise real swarm -> interrogate policy routing from Claude and Codex on a synthetic repo."""
 import argparse
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 import hashlib
@@ -34,12 +35,16 @@ class MeanTest(unittest.TestCase):
         self.assertEqual(mean([-3, -1, 4]), 0)
 '''
 XAGENT = runpy.run_path(str(ROOT / "bin/xagent"))
+CLASSIFY = XAGENT["classify"]
+SNAPSHOT = XAGENT["snapshot"]
 # Each worker attempt gets xagent's own default limit and at most one retry; the retry is not doubled.
 WORKER_LIMIT_SECONDS = XAGENT["DEFAULT_TIMEOUT"]
+# Per attempt, on top of its limit and xagent's termination grace: process start-up and xagent's before/after snapshots.
+ATTEMPT_OVERHEAD_SECONDS = 30
+# The longest one attempt can take, so one foreground wait in the host must outlast it.
+ATTEMPT_SECONDS = WORKER_LIMIT_SECONDS + XAGENT["TERMINATION_GRACE"] + ATTEMPT_OVERHEAD_SECONDS
 # Worst case: the writer, review and post-fix re-review rounds run in sequence, each an attempt plus one retry.
 WORST_CASE_ATTEMPTS = 3 * 2
-# Per attempt, on top of its limit and termination grace: process start-up and xagent's before/after snapshots.
-ATTEMPT_OVERHEAD_SECONDS = 30
 # The host's own start-up, patch integration and reasoning between rounds.
 HOST_WORK_SECONDS = 600
 DEFAULT_CHECK_TIMEOUT = 30
@@ -47,10 +52,8 @@ DEFAULT_CHECK_TIMEOUT = 30
 
 def default_host_timeout(check_timeout):
     """Every worst-case attempt run to its limit, plus the host's own work and its two final verification checks."""
-    per_attempt = WORKER_LIMIT_SECONDS + XAGENT["TERMINATION_GRACE"] + ATTEMPT_OVERHEAD_SECONDS
-    return math.ceil(WORST_CASE_ATTEMPTS * per_attempt + HOST_WORK_SECONDS + 2 * check_timeout)
-CLASSIFY = XAGENT["classify"]
-SNAPSHOT = XAGENT["snapshot"]
+    return math.ceil(WORST_CASE_ATTEMPTS * ATTEMPT_SECONDS + HOST_WORK_SECONDS + 2 * check_timeout)
+
 
 PARENT_VERIFIER_TEMPLATE = r'''#!/usr/bin/env python3
 import hashlib
@@ -244,9 +247,15 @@ def claude_native_dispatches(lines):
             for block in blocks:
                 if block.get("type") == "tool_use" and block.get("name") in ("Agent", "Task"):
                     arguments = block.get("input") if isinstance(block.get("input"), dict) else {}
-                    prompt = arguments.get("prompt") if isinstance(arguments.get("prompt"), str) else ""
-                    dispatches[block.get("id")] = {"id": block.get("id"), "requested": arguments.get("model"), "resolved": None, "status": "pending",
-                                                   "paths_named": sorted(set(ABSOLUTE_PATH.findall(prompt)))}
+                    dispatches[block.get("id")] = {"id": block.get("id"), "requested": arguments.get("model"), "resolved": None, "status": "pending", "paths_touched": set()}
+        elif event.get("type") == "assistant" and event.get("parent_tool_use_id") in dispatches:
+            # The subagent's own tool calls stream under its Agent call, for background agents too.
+            touched = dispatches[event["parent_tool_use_id"]]["paths_touched"]
+            for block in blocks:
+                arguments = block.get("input") if block.get("type") == "tool_use" and isinstance(block.get("input"), dict) else {}
+                touched.update(value for key in ("file_path", "notebook_path", "path") if isinstance(value := arguments.get(key), str))
+                if isinstance(arguments.get("command"), str):
+                    touched.update(ABSOLUTE_PATH.findall(arguments["command"]))
         elif event.get("type") == "user":
             results = [block for block in blocks if block.get("type") == "tool_result" and block.get("tool_use_id") in dispatches]
             # tool_use_result describes the event's single tool result; an ambiguous event stays pending.
@@ -267,6 +276,7 @@ def claude_native_dispatches(lines):
             if dispatch is not None:
                 dispatch["status"] = "completed" if event.get("status") == "completed" else "failed"
     for dispatch in dispatches.values():
+        dispatch["paths_touched"] = sorted(dispatch["paths_touched"])
         requested, resolved = dispatch["requested"], dispatch["resolved"]
         # Claude resolves an alias such as opus to claude-opus-<version>; an omitted model inherits the parent's.
         dispatch["usable"] = dispatch["status"] == "completed" and isinstance(resolved, str) and bool(resolved) and (
@@ -342,14 +352,14 @@ def _codex_native_dispatches(lines, codex_home):
                 aborted = aborted or payload.get("type") == "turn_aborted"
         if linked and complete and not aborted:
             status = "completed"
-        elif linked and aborted or child is not None and child in finished or child is None and call in returned:
+        elif (linked and aborted) or (child is not None and child in finished) or (child is None and call in returned):
             status = "failed"
         else:
             status = "pending"
         resolved = models[0] if linked and models and len(set(models)) == 1 else None
         dispatches.append({
             "id": call, "thread": child, "rollout": str(child_rollout) if linked else None, "requested": model,
-            "resolved": resolved, "status": status, "paths_named": sorted(set(ABSOLUTE_PATH.findall("\n".join(commands)))) if linked else [],
+            "resolved": resolved, "status": status, "paths_touched": sorted(set(ABSOLUTE_PATH.findall("\n".join(commands)))) if linked else [],
             # Codex reports the model it ran; an omitted model inherits the parent's.
             "usable": status == "completed" and isinstance(resolved, str) and bool(resolved) and model in (None, resolved),
         })
@@ -380,7 +390,7 @@ def validate_parent_verification(directory, parent):
 
 
 def route(value):
-    """Return ("xagent", (agent, model)) or ("native", model) for a policy entry, or None when it names no worker."""
+    """Return (kind, (agent, model)) for a policy entry, or None when it names no worker."""
     if not isinstance(value, str) or not value:
         return None
     if value.startswith("xagent:"):
@@ -388,8 +398,8 @@ def route(value):
             return "xagent", XAGENT["agent_spec"](value.removeprefix("xagent:"))
         except argparse.ArgumentTypeError:
             return None
-    # inherit-parent and auto omit the native dispatch's model field.
-    return "native", None if value in ("inherit-parent", "auto") else value
+    # A native dispatch names no agent; inherit-parent and auto omit its model field.
+    return "native", (None, None if value in ("inherit-parent", "auto") else value)
 
 
 def expected_roles(effective):
@@ -400,11 +410,13 @@ def expected_roles(effective):
 
 @dataclass(frozen=True)
 class Attempt:
-    """One worker attempt from an xagent receipt or a native host dispatch, as the role checks see it."""
-    kind: str
-    worker: object  # (agent, model) for xagent, the requested model for a native dispatch
+    """One worker attempt from an xagent receipt or a native host dispatch, as the role and ownership checks see it."""
+    kind: str  # xagent or native
+    worker: tuple[str | None, str | None]  # (agent, model); a native dispatch names no agent
+    owner: tuple[str | None, ...]  # (mode, agent, model) for xagent, so its retries share a worktree; the dispatch id for native
     terminal: bool
-    roles: frozenset  # rw: a usable writer result; ro: a review of the final version
+    checkouts: frozenset[Path]  # the checkouts it worked in, each of which may belong to one owner only
+    roles: frozenset[str]  # rw: a usable writer result; ro: a review of the final version
 
 
 def _final_version(checkout, final_stats, test_file):
@@ -424,56 +436,54 @@ def _reviewed_final_version(receipt, workdir, final_stats, test_file):
         return False
 
 
-def _checkouts_named(paths, run_scope, parent):
-    """Return the git checkouts under the run, other than the parent, that paths name directly or through a named file such as a brief."""
-    def in_run(raw):
-        try:
-            path = Path(raw.rstrip(".,:")).resolve()
-        except (OSError, RuntimeError, ValueError):
-            return None
-        return path if path.is_relative_to(run_scope) else None
-
-    named = [path for path in map(in_run, paths) if path]
-    for path in list(named):
-        if path.is_file() and path.stat().st_size <= 1_000_000:
-            named += [found for found in map(in_run, ABSOLUTE_PATH.findall(path.read_text(errors="replace"))) if found]
+def _checkouts_touched(paths, run_scope, parent):
+    """Return the git checkouts under the run, other than the parent, that hold an existing path a subagent's tool calls used."""
     checkouts = set()
-    for path in set(named):
-        while not path.exists() and path != run_scope:
-            path = path.parent
+    for raw in paths:
+        if not Path(raw).is_absolute():
+            continue
+        path = Path(raw).resolve()
+        if not path.exists() or not path.is_relative_to(run_scope):
+            continue
         top = _git_output(path if path.is_dir() else path.parent, "rev-parse", "--show-toplevel")
-        if top and Path(top).resolve().is_relative_to(run_scope) and Path(top).resolve() != parent:
+        if top and Path(top).resolve() != parent and Path(top).resolve().is_relative_to(run_scope):
             checkouts.add(Path(top).resolve())
     return checkouts
 
 
-def _xagent_attempt(receipt, workdir, final_stats, test_file):
+def _xagent_attempt(receipt, validated, final_stats, test_file):
     if not isinstance(receipt, dict):
-        return Attempt("xagent", None, False, frozenset())
+        return Attempt("xagent", (None, None), (None,), False, frozenset(), frozenset())
+    workdir, owner = validated or (None, (None,))
     terminal = receipt.get("completed") is True and receipt.get("status") in ("PASS", "ISSUES", "BLOCKED", "DROPOUT")
     # ISSUES may carry a usable patch or review; final parent checks and reviews remain mandatory.
     usable = (workdir is not None and terminal and receipt.get("status") in ("PASS", "ISSUES")
               and type(receipt.get("exit")) is int and receipt.get("exit") == 0)
     if usable and receipt.get("mode") == "ro":
         usable = _reviewed_final_version(receipt, workdir, final_stats, test_file)
-    return Attempt("xagent", (receipt.get("agent"), receipt.get("model")), terminal, frozenset({receipt.get("mode")} if usable else ()))
+    return Attempt("xagent", (receipt.get("agent"), receipt.get("model")), owner, terminal,
+                   frozenset({workdir} if workdir else ()), frozenset({receipt.get("mode")} if usable else ()))
 
 
 def _native_attempt(dispatch, run_scope, parent, base, parent_common, final_stats, test_file):
-    """A native dispatch can write; it counts as a review only when every checkout it names is the final version at the base."""
+    """A native dispatch writes when its subagent worked in exactly one checkout, and reviews when that checkout is the final version at the base."""
     if not isinstance(dispatch, dict):
-        return Attempt("native", None, False, frozenset())
+        return Attempt("native", (None, None), ("native", None), False, frozenset(), frozenset())
+    worker, owner = (None, dispatch.get("requested")), ("native", dispatch.get("id"))
+    terminal = dispatch.get("status") in ("completed", "failed")
+    if dispatch.get("usable") is not True:
+        return Attempt("native", worker, owner, terminal, frozenset(), frozenset())
+    try:
+        checkouts = frozenset(_checkouts_touched(dispatch.get("paths_touched") or [], run_scope, parent))
+    except (OSError, RuntimeError, TypeError, ValueError):
+        checkouts = frozenset()
     roles = set()
-    if dispatch.get("usable") is True:
+    if len(checkouts) == 1:
+        (checkout,) = checkouts
         roles.add("rw")
-        try:
-            checkouts = _checkouts_named(dispatch.get("paths_named") or [], run_scope, parent)
-        except (OSError, RuntimeError, TypeError, ValueError):
-            checkouts = set()
-        if checkouts and all(_linked_worktree_at_base(checkout, run_scope, parent, base, parent_common)
-                             and _final_version(checkout, final_stats, test_file) for checkout in checkouts):
+        if _linked_worktree_at_base(checkout, run_scope, parent, base, parent_common) and _final_version(checkout, final_stats, test_file):
             roles.add("ro")
-    return Attempt("native", dispatch.get("requested"), dispatch.get("status") in ("completed", "failed"), frozenset(roles))
+    return Attempt("native", worker, owner, terminal, checkouts, frozenset(roles))
 
 
 def validate_receipts(receipts, run_scope, parent, base, expected_writer, expected_reviewers, final_stats, test_file, native_dispatches=()):
@@ -484,18 +494,16 @@ def validate_receipts(receipts, run_scope, parent, base, expected_writer, expect
         parent_top = _git_output(parent, "rev-parse", "--show-toplevel")
         if not parent_top or Path(parent_top).resolve() != parent:
             parent_common = None
-        attempts, owners = [], {}
-        workspaces_valid = parent_common is not None
-        for receipt in receipts:
-            validated = _valid_linked_worktree(receipt, run_scope, parent, base, parent_common)
-            workdir = None
-            if validated is None:
-                workspaces_valid = False
-            else:
-                workdir, owner = validated
-                workspaces_valid = owners.setdefault(workdir, owner) == owner and workspaces_valid
-            attempts.append(_xagent_attempt(receipt, workdir, final_stats, test_file))
+        attempts = [_xagent_attempt(receipt, _valid_linked_worktree(receipt, run_scope, parent, base, parent_common), final_stats, test_file)
+                    for receipt in receipts]
         attempts += [_native_attempt(dispatch, run_scope, parent, base, parent_common, final_stats, test_file) for dispatch in native_dispatches]
+        # Every xagent receipt needs its own linked worktree, and each checkout belongs to one owner across all attempts.
+        workspaces_valid, claims = parent_common is not None, {}
+        for attempt in attempts:
+            if attempt.kind == "xagent" and not attempt.checkouts:
+                workspaces_valid = False
+            for checkout in attempt.checkouts:
+                workspaces_valid = claims.setdefault(checkout, attempt.owner) == attempt.owner and workspaces_valid
         pool = list(attempts)
 
         def take(value, mode):
@@ -503,7 +511,7 @@ def validate_receipts(receipts, run_scope, parent, base, expected_writer, expect
             fitting = [index for index, attempt in enumerate(pool) if wanted == (attempt.kind, attempt.worker) and mode in attempt.roles]
             if not fitting:
                 return False
-            # Spend the attempt that can fill the fewest roles, so a writer leaves reviews for the review slots.
+            # Among attempts of the same worker, spend the one that can fill the fewest roles, leaving reviews for review slots.
             del pool[min(fitting, key=lambda index: len(pool[index].roles))]
             return True
 
@@ -539,19 +547,19 @@ def _save_claude_reply(directory, host_log):
 
 @dataclass(frozen=True)
 class HostAdapter:
-    command: object  # (parent checkout, run directory) -> argv; the prompt goes through stdin
-    env: dict
-    save_reply: object  # (run directory, host log lines) -> None; leaves the final reply in result.md
-    dispatches: object  # host log lines -> (native dispatches, gap)
+    command: Callable[[Path, Path], list[str]]  # (parent checkout, run directory) -> argv; the prompt goes through stdin
+    env: dict[str, str]
+    save_reply: Callable[[Path, list[str]], None]  # leaves the host's final reply in the run directory's result.md
+    dispatches: Callable[[list[str]], tuple[list[dict], str | None]]  # host log lines -> (native dispatches, gap)
 
 
 HOSTS = {
     # --allowedTools is variadic, so the prompt cannot follow it on the command line.
     "claude": HostAdapter(
         command=lambda work, directory: ["claude", "-p", "--no-session-persistence", "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits", "--plugin-dir", str(ROOT), "--allowedTools", "Agent", "Bash", "Read", "Write", "Edit", "Glob", "Grep"],
-        # Claude Code caps a Bash call at 10 minutes by default. One foreground wait must outlast an attempt and its
-        # termination grace; the prompt runs a retry in a new call, so it need not cover two attempts.
-        env={"BASH_MAX_TIMEOUT_MS": str((WORKER_LIMIT_SECONDS + 300) * 1000)},
+        # Claude Code caps a Bash call at 10 minutes by default. One foreground wait must outlast a whole attempt;
+        # the prompt runs a retry in a new call, so it need not cover two.
+        env={"BASH_MAX_TIMEOUT_MS": str(ATTEMPT_SECONDS * 1000)},
         save_reply=_save_claude_reply,
         dispatches=claude_native_dispatches,
     ),
@@ -689,8 +697,8 @@ with no unresolved reproduced violation of the stated contract; otherwise PSTACK
     if native_gap:
         print(f"GAP {host}: native dispatch evidence unavailable: {native_gap}", flush=True)
     for dispatch in native:
-        if not dispatch.get("paths_named"):
-            print(f"GAP {host}: native dispatch {dispatch.get('id')} names no checkout, so it cannot count as a review", flush=True)
+        if not dispatch.get("paths_touched"):
+            print(f"GAP {host}: native dispatch {dispatch.get('id')} used no path, so it cannot fill a role", flush=True)
     for path in ignored_meta:
         print(f"IGNORED {host}: {path} was not written by xagent", flush=True)
     return all(checks.values())
