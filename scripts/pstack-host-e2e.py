@@ -5,17 +5,15 @@ from __future__ import annotations
 import argparse
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 import hashlib
 import json
 import math
 import os
 from pathlib import Path
-import re
 import runpy
 import subprocess
 import sys
-from urllib.parse import unquote, urlparse
 
 ROOT = Path(__file__).resolve().parents[1]
 RUN_CHECK = runpy.run_path(str(ROOT / "scripts/e2e-process.py"))["run_check"]
@@ -40,6 +38,11 @@ class MeanTest(unittest.TestCase):
 XAGENT = runpy.run_path(str(ROOT / "bin/xagent"))
 CLASSIFY = XAGENT["classify"]
 SNAPSHOT = XAGENT["snapshot"]
+NATIVE = runpy.run_path(str(ROOT / "scripts/e2e-native-evidence.py"))
+NativeDispatch = NATIVE["NativeDispatch"]
+claude_native_dispatches = NATIVE["claude_native_dispatches"]
+codex_native_dispatches = NATIVE["codex_native_dispatches"]
+checkouts_touched = NATIVE["checkouts_touched"]
 # Each worker attempt gets xagent's own default limit and at most one retry; the retry is not doubled.
 WORKER_LIMIT_SECONDS = XAGENT["DEFAULT_TIMEOUT"]
 # Per attempt, on top of its limit and xagent's termination grace: process start-up and xagent's before/after snapshots.
@@ -223,168 +226,6 @@ def collect_xagent_receipts(evidence):
     return receipts, ignored
 
 
-# An absolute path as it appears in a prompt or shell command.
-ABSOLUTE_PATH = re.compile(r"/[^\s'\"`<>()\[\]{},;|\\]+")
-
-
-def _json_events(lines):
-    for line in lines:
-        try:
-            event = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(event, dict):
-            yield event
-
-
-# Claude Code's file-edit tools; a writer changes its checkout with them, a reviewer never does.
-CLAUDE_EDIT_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
-
-
-def claude_native_dispatches(lines):
-    """Return the host's Agent dispatches from `claude -p --output-format stream-json --verbose` output."""
-    events = list(_json_events(lines))
-    if not any(event.get("type") == "system" and event.get("subtype") == "init" for event in events):
-        return [], "claude stream-json log has no init event"
-    dispatches = {}
-    for event in events:
-        content = event["message"].get("content") if isinstance(event.get("message"), dict) else None
-        blocks = [block for block in content if isinstance(block, dict)] if isinstance(content, list) else []
-        if event.get("type") == "assistant" and event.get("parent_tool_use_id") is None:
-            for block in blocks:
-                if block.get("type") == "tool_use" and block.get("name") in ("Agent", "Task"):
-                    arguments = block.get("input") if isinstance(block.get("input"), dict) else {}
-                    dispatches[block.get("id")] = {"id": block.get("id"), "requested": arguments.get("model"), "effort": arguments.get("effort"),
-                                                   "resolved": None, "status": "pending", "paths_touched": set(), "paths_edited": set()}
-        elif event.get("type") == "assistant" and event.get("parent_tool_use_id") in dispatches:
-            # The subagent's own tool calls stream under its Agent call, for background agents too.
-            dispatch = dispatches[event["parent_tool_use_id"]]
-            for block in blocks:
-                arguments = block.get("input") if block.get("type") == "tool_use" and isinstance(block.get("input"), dict) else {}
-                paths = {value for key in ("file_path", "notebook_path", "path") if isinstance(value := arguments.get(key), str)}
-                dispatch["paths_touched"].update(paths)
-                if block.get("name") in CLAUDE_EDIT_TOOLS:
-                    dispatch["paths_edited"].update(paths)
-                if isinstance(arguments.get("command"), str):
-                    dispatch["paths_touched"].update(ABSOLUTE_PATH.findall(arguments["command"]))
-        elif event.get("type") == "user":
-            results = [block for block in blocks if block.get("type") == "tool_result" and block.get("tool_use_id") in dispatches]
-            # tool_use_result describes the event's single tool result; an ambiguous event stays pending.
-            if len(results) != 1:
-                continue
-            dispatch, result = dispatches[results[0]["tool_use_id"]], event.get("tool_use_result")
-            if not isinstance(result, dict):
-                dispatch["status"] = "failed"
-                continue
-            dispatch["resolved"] = result.get("resolvedModel")
-            if result.get("status") == "completed":
-                dispatch["status"] = "completed"
-            elif result.get("status") != "async_launched":
-                dispatch["status"] = "failed"
-        elif event.get("type") == "system" and event.get("subtype") == "task_notification":
-            # Background agents finish here; Bash tasks also notify, so only Agent tool_use ids count.
-            dispatch = dispatches.get(event.get("tool_use_id"))
-            if dispatch is not None:
-                dispatch["status"] = "completed" if event.get("status") == "completed" else "failed"
-    for dispatch in dispatches.values():
-        dispatch["paths_touched"], dispatch["paths_edited"] = sorted(dispatch["paths_touched"]), sorted(dispatch["paths_edited"])
-        requested, resolved = dispatch["requested"], dispatch["resolved"]
-        # Claude resolves an alias such as opus to claude-opus-<version>; an omitted model inherits the parent's.
-        dispatch["usable"] = dispatch["status"] == "completed" and isinstance(resolved, str) and bool(resolved) and (
-            requested is None or resolved == requested or resolved.startswith(f"claude-{requested}-"))
-    return list(dispatches.values()), None
-
-
-def codex_native_dispatches(lines, codex_home):
-    """Return the host's spawn_agent dispatches from the session rollouts named by `codex exec --json` output.
-
-    The --json stream omits collaboration calls, so the parent rollout supplies each requested model
-    and the child rollout's turn_context the model that actually ran.
-    """
-    try:
-        return _codex_native_dispatches(lines, codex_home)
-    except OSError as error:
-        return [], f"cannot read Codex rollouts: {error}"
-
-
-ROLLOUT_NAME = re.compile(r"rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-(.+)\.jsonl")
-
-
-def _codex_native_dispatches(lines, codex_home):
-    thread = next((event["thread_id"] for event in _json_events(lines)
-                   if event.get("type") == "thread.started" and isinstance(event.get("thread_id"), str)), None)
-    if not thread:
-        return [], "codex --json log has no thread.started thread_id"
-    sessions = Path(codex_home) / "sessions"
-    rollouts = {}
-    for path in sorted(sessions.rglob("rollout-*.jsonl")):
-        match = ROLLOUT_NAME.fullmatch(path.name)
-        if match:
-            rollouts.setdefault(match.group(1), path)
-
-    def payloads(path):
-        for event in _json_events(path.read_text(errors="replace").splitlines()):
-            if isinstance(event.get("payload"), dict):
-                yield event.get("type"), event["payload"]
-
-    if thread not in rollouts:
-        return [], f"no Codex rollout for thread {thread} under {sessions}"
-    requested, efforts, returned, started, finished = {}, {}, set(), {}, set()
-    for _, payload in payloads(rollouts[thread]):
-        if payload.get("type") == "function_call" and payload.get("name") == "spawn_agent":
-            try:
-                arguments = json.loads(payload.get("arguments") or "{}")
-            except (TypeError, ValueError):
-                arguments = {}
-            arguments = arguments if isinstance(arguments, dict) else {}
-            requested[payload.get("call_id")], efforts[payload.get("call_id")] = arguments.get("model"), arguments.get("reasoning_effort")
-        elif payload.get("type") == "function_call_output":
-            returned.add(payload.get("call_id"))
-        elif payload.get("type") == "item_completed" and isinstance(payload.get("item"), dict):
-            item = payload["item"]
-            if item.get("type") == "SubAgentActivity" and item.get("kind") == "started":
-                started[item.get("id")] = item.get("agent_thread_id")
-            elif item.get("type") == "SubAgentActivity" and item.get("kind") == "completed":
-                finished.add(item.get("agent_thread_id"))
-    dispatches = []
-    for call, model in requested.items():
-        child = started.get(call)
-        child_rollout = rollouts.get(child) if isinstance(child, str) else None
-        linked, models, complete, aborted, touched, edited = False, [], False, False, set(), set()
-        for kind, payload in payloads(child_rollout) if child_rollout else ():
-            item = payload.get("item") if payload.get("type") == "item_completed" and isinstance(payload.get("item"), dict) else {}
-            if kind == "session_meta":
-                linked = payload.get("parent_thread_id") == thread
-            elif kind == "turn_context":
-                models.append(payload.get("model"))
-            elif item.get("type") == "CommandExecution":
-                # The task payload is encrypted, so the child's own commands show which checkout it worked in.
-                command = item.get("command")
-                touched.update(ABSOLUTE_PATH.findall(" ".join(command) if isinstance(command, list) else str(command or "")))
-                if isinstance(item.get("cwd"), str):
-                    touched.add(unquote(urlparse(item["cwd"]).path))
-            elif item.get("type") == "FileChange" and item.get("status") == "completed" and isinstance(item.get("changes"), dict):
-                touched.update(item["changes"])
-                edited.update(item["changes"])
-            elif kind == "event_msg":
-                complete = complete or payload.get("type") == "task_complete"
-                aborted = aborted or payload.get("type") == "turn_aborted"
-        if linked and complete and not aborted:
-            status = "completed"
-        elif (linked and aborted) or (child is not None and child in finished) or (child is None and call in returned):
-            status = "failed"
-        else:
-            status = "pending"
-        resolved = models[0] if linked and models and len(set(models)) == 1 else None
-        dispatches.append({
-            "id": call, "thread": child, "rollout": str(child_rollout) if linked else None, "requested": model, "effort": efforts.get(call),
-            "resolved": resolved, "status": status, "paths_touched": sorted(touched) if linked else [], "paths_edited": sorted(edited) if linked else [],
-            # Codex reports the model it ran; an omitted model inherits the parent's.
-            "usable": status == "completed" and isinstance(resolved, str) and bool(resolved) and model in (None, resolved),
-        })
-    return dispatches, None
-
-
 def validate_parent_verification(directory, parent):
     try:
         directory = Path(directory).resolve()
@@ -455,21 +296,6 @@ def _reviewed_final_version(receipt, workdir, final_stats, test_file):
         return False
 
 
-def _checkouts_touched(paths, run_scope, parent):
-    """Return the git checkouts under the run, other than the parent, that hold an existing path a subagent's tool calls used."""
-    checkouts = set()
-    for raw in paths:
-        if not Path(raw).is_absolute():
-            continue
-        path = Path(raw).resolve()
-        if not path.exists() or not path.is_relative_to(run_scope):
-            continue
-        top = _git_output(path if path.is_dir() else path.parent, "rev-parse", "--show-toplevel")
-        if top and Path(top).resolve() != parent and Path(top).resolve().is_relative_to(run_scope):
-            checkouts.add(Path(top).resolve())
-    return checkouts
-
-
 def _xagent_attempt(receipt, validated, final_stats, test_file, effort_required):
     if not isinstance(receipt, dict):
         return Attempt("xagent", (None, None), (None,), False, frozenset(), None)
@@ -488,19 +314,19 @@ def _xagent_attempt(receipt, validated, final_stats, test_file, effort_required)
 def _native_attempt(dispatch, run_scope, parent, base, parent_common, final_stats, test_file, effort_required):
     """A native dispatch whose subagent worked in exactly one checkout writes if it edited that checkout, and
     otherwise reviews if the checkout is the final version at the base."""
-    if not isinstance(dispatch, dict):
+    if not isinstance(dispatch, NativeDispatch):
         return Attempt("native", (None, None), ("native", None), False, frozenset(), None)
-    worker, owner = (None, dispatch.get("requested")), ("native", dispatch.get("id"))
-    terminal = dispatch.get("status") in ("completed", "failed")
-    if dispatch.get("usable") is not True:
+    worker, owner = (None, dispatch.requested), ("native", dispatch.id)
+    terminal = dispatch.status in ("completed", "failed")
+    if dispatch.usable is not True:
         return Attempt("native", worker, owner, terminal, frozenset(), None)
     try:
-        checkouts = frozenset(_checkouts_touched(dispatch.get("paths_touched") or [], run_scope, parent))
-        edited = _checkouts_touched(dispatch.get("paths_edited") or [], run_scope, parent)
+        checkouts = frozenset(checkouts_touched(dispatch.paths_touched, run_scope, parent))
+        edited = checkouts_touched(dispatch.paths_edited, run_scope, parent)
     except (OSError, RuntimeError, TypeError, ValueError):
         checkouts, edited = frozenset(), set()
     role = None
-    if len(checkouts) == 1 and (not effort_required or dispatch.get("effort") in XAGENT["EFFORTS"]):
+    if len(checkouts) == 1 and (not effort_required or dispatch.effort in XAGENT["EFFORTS"]):
         (checkout,) = checkouts
         if checkout in edited:
             role = "rw"
@@ -566,7 +392,7 @@ def git(work, *args):
 
 
 def _save_claude_reply(directory, host_log):
-    for event in _json_events(host_log):
+    for event in NATIVE["json_events"](host_log):
         if event.get("type") == "result" and isinstance(event.get("result"), str):
             (directory / "result.md").write_text(event["result"])
 
@@ -576,7 +402,7 @@ class HostAdapter:
     command: Callable[[Path, Path], list[str]]  # (parent checkout, run directory) -> argv; the prompt goes through stdin
     env: dict[str, str]
     save_reply: Callable[[Path, list[str]], None]  # leaves the host's final reply in the run directory's result.md
-    dispatches: Callable[[list[str]], tuple[list[dict], str | None]]  # host log lines -> (native dispatches, gap)
+    dispatches: Callable[[list[str]], tuple[list[NativeDispatch], str | None]]  # host log lines -> (native dispatches, gap)
 
 
 HOSTS = {
@@ -718,7 +544,7 @@ with no unresolved reproduced violation of the stated contract; otherwise PSTACK
     (directory / "contract-probe.log").write_text(contract.stdout + contract.stderr)
     checks["finite_number_contract_preserved"] = contract.returncode == 0
     report = {"host": host, "exit": finished.returncode, "base": base, "policy": policy["effective"], "checks": checks, "receipts": receipts,
-              "ignored_meta": ignored_meta, "native_evidence": {"gap": native_gap, "dispatches": native},
+              "ignored_meta": ignored_meta, "native_evidence": {"gap": native_gap, "dispatches": [asdict(dispatch) for dispatch in native]},
               "verification": {"tests_exit_code": verification.returncode, "contract_exit_code": contract.returncode, "timeout_seconds": check_timeout}}
     (directory / "checks.json").write_text(json.dumps(report, indent=2) + "\n")
     for name, passed in checks.items():
@@ -726,8 +552,8 @@ with no unresolved reproduced violation of the stated contract; otherwise PSTACK
     if native_gap:
         print(f"GAP {host}: native dispatch evidence unavailable: {native_gap}", flush=True)
     for dispatch in native:
-        if not dispatch.get("paths_touched"):
-            print(f"GAP {host}: native dispatch {dispatch.get('id')} used no path, so it cannot fill a role", flush=True)
+        if not dispatch.paths_touched:
+            print(f"GAP {host}: native dispatch {dispatch.id} used no path, so it cannot fill a role", flush=True)
     for path in ignored_meta:
         print(f"IGNORED {host}: {path} was not written by xagent", flush=True)
     return all(checks.values())
@@ -751,7 +577,8 @@ def main():
     run.mkdir(parents=True, exist_ok=True)
     if any(run.iterdir()):
         parser.error("use a new empty run directory")
-    sources = ["bin/xagent", "bin/xagent-pi-guard.ts", "references/runtime.md", "references/claude-runtime.md", "references/codex-runtime.md", "skills/xagent/SKILL.md", "skills/swarm/SKILL.md", "skills/interrogate/SKILL.md", "scripts/pstack-host-e2e.py", "scripts/pstack-host-e2e.test.py", "scripts/e2e-process.py"]
+    sources = ["bin/xagent", "bin/xagent-pi-guard.ts", "references/runtime.md", "references/claude-runtime.md", "references/codex-runtime.md", "skills/xagent/SKILL.md", "skills/swarm/SKILL.md", "skills/interrogate/SKILL.md", "scripts/pstack-host-e2e.py", "scripts/pstack-host-e2e.test.py", "scripts/pstack-host-e2e-native.test.py",
+               "scripts/pstack-host-e2e-fixtures.py", "scripts/e2e-native-evidence.py", "scripts/e2e-process.py"]
     (run / "source-hashes.json").write_text(json.dumps({name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest() for name in sources}, indent=2) + "\n")
     hosts = options.host or list(HOSTS)
     with ThreadPoolExecutor(max_workers=len(hosts)) as pool:
