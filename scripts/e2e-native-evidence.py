@@ -13,6 +13,16 @@ ABSOLUTE_PATH = re.compile(r"/[^\s'\"`<>()\[\]{},;|\\]+")
 # Claude Code's file-edit tools; a writer changes its checkout with them, a reviewer never does.
 CLAUDE_EDIT_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
 ROLLOUT_NAME = re.compile(r"rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-(.+)\.jsonl")
+# Enough of a command's output to hold a snapshot line, without copying whole file listings into checks.json.
+OUTPUT_LIMIT = 2000
+
+
+@dataclass
+class ShellCommand:
+    """One shell command a subagent ran itself, with the paths it named and the start of its output."""
+    command: str
+    paths: list[str]
+    output: str | None = None
 
 
 @dataclass
@@ -26,6 +36,7 @@ class NativeDispatch:
     usable: bool = False  # completed and ran the requested model
     paths_touched: list[str] = field(default_factory=list)  # paths the subagent's own tool calls used
     paths_edited: list[str] = field(default_factory=list)  # paths it changed with its host's file-edit tool
+    commands: list[ShellCommand] = field(default_factory=list)  # its own shell commands, in order
     thread: str | None = None  # the Codex child thread
     rollout: str | None = None  # the Codex child rollout
 
@@ -45,7 +56,7 @@ def claude_native_dispatches(lines):
     events = list(json_events(lines))
     if not any(event.get("type") == "system" and event.get("subtype") == "init" for event in events):
         return [], "claude stream-json log has no init event"
-    dispatches, touched, edited, edits = {}, {}, {}, {}
+    dispatches, touched, edited, edits, shells = {}, {}, {}, {}, {}
     for event in events:
         content = event["message"].get("content") if isinstance(event.get("message"), dict) else None
         blocks = [block for block in content if isinstance(block, dict)] if isinstance(content, list) else []
@@ -65,7 +76,10 @@ def claude_native_dispatches(lines):
                 if block.get("name") in CLAUDE_EDIT_TOOLS:
                     edits[block.get("id")] = parent, paths
                 if isinstance(arguments.get("command"), str):
-                    touched[parent].update(ABSOLUTE_PATH.findall(arguments["command"]))
+                    command = ShellCommand(arguments["command"], ABSOLUTE_PATH.findall(arguments["command"]))
+                    touched[parent].update(command.paths)
+                    dispatches[parent].commands.append(command)
+                    shells[block.get("id")] = command
         elif event.get("type") == "user":
             # An edit counts once its tool_result reports success, as Codex records only completed FileChanges.
             for block in blocks:
@@ -73,6 +87,8 @@ def claude_native_dispatches(lines):
                     parent, paths = edits.pop(block["tool_use_id"])
                     if not block.get("is_error"):
                         edited[parent].update(paths)
+                if block.get("type") == "tool_result" and block.get("tool_use_id") in shells:
+                    shells.pop(block["tool_use_id"]).output = _text(block.get("content"))
             results = [block for block in blocks if block.get("type") == "tool_result" and block.get("tool_use_id") in dispatches]
             # tool_use_result describes the event's single tool result; an ambiguous event stays pending.
             if len(results) != 1:
@@ -98,6 +114,12 @@ def claude_native_dispatches(lines):
         dispatch.usable = dispatch.status == "completed" and isinstance(resolved, str) and bool(resolved) and (
             requested is None or resolved == requested or resolved.startswith(f"claude-{requested}-"))
     return list(dispatches.values()), None
+
+
+def _text(content):
+    if isinstance(content, list):
+        content = "\n".join(part.get("text", "") for part in content if isinstance(part, dict))
+    return content[:OUTPUT_LIMIT] if isinstance(content, str) else None
 
 
 def codex_native_dispatches(lines, codex_home):
@@ -152,7 +174,7 @@ def _codex_native_dispatches(lines, codex_home):
     for call, model in requested.items():
         child = started.get(call)
         child_rollout = rollouts.get(child) if isinstance(child, str) else None
-        linked, models, complete, aborted, touched, edited = False, [], False, False, set(), set()
+        linked, models, complete, aborted, touched, edited, commands = False, [], False, False, set(), set(), []
         for kind, payload in payloads(child_rollout) if child_rollout else ():
             item = payload.get("item") if payload.get("type") == "item_completed" and isinstance(payload.get("item"), dict) else {}
             if kind == "session_meta":
@@ -162,9 +184,13 @@ def _codex_native_dispatches(lines, codex_home):
             elif item.get("type") == "CommandExecution":
                 # The task payload is encrypted, so the child's own commands show which checkout it worked in.
                 command = item.get("command")
-                touched.update(ABSOLUTE_PATH.findall(" ".join(command) if isinstance(command, list) else str(command or "")))
+                # Codex runs each command as [shell, -lc, script].
+                script = str(command[-1]) if isinstance(command, list) and command else str(command or "")
+                paths = ABSOLUTE_PATH.findall(" ".join(map(str, command)) if isinstance(command, list) else script)
                 if isinstance(item.get("cwd"), str):
-                    touched.add(unquote(urlparse(item["cwd"]).path))
+                    paths.append(unquote(urlparse(item["cwd"]).path))
+                touched.update(paths)
+                commands.append(ShellCommand(script, paths, _text(item.get("aggregated_output", item.get("stdout")))))
             elif item.get("type") == "FileChange" and item.get("status") == "completed" and isinstance(item.get("changes"), dict):
                 touched.update(item["changes"])
                 edited.update(item["changes"])
@@ -182,7 +208,7 @@ def _codex_native_dispatches(lines, codex_home):
             call, model, efforts.get(call), resolved, status,
             # Codex reports the model it ran; an omitted model inherits the parent's.
             usable=status == "completed" and isinstance(resolved, str) and bool(resolved) and model in (None, resolved),
-            paths_touched=sorted(touched) if linked else [], paths_edited=sorted(edited) if linked else [],
+            paths_touched=sorted(touched) if linked else [], paths_edited=sorted(edited) if linked else [], commands=commands if linked else [],
             thread=child, rollout=str(child_rollout) if linked else None,
         ))
     return dispatches, None

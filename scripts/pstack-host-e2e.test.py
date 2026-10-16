@@ -135,14 +135,20 @@ class HostHarnessAcceptanceTest(FIXTURES["HarnessFixture"]):
         self.assertTrue((self.parent / ".test-ran").exists())
         self.assertFalse(validate_parent_verification(self.scope, self.parent))
 
-    def test_given_two_configured_reviewers_of_one_agent_sharing_a_worktree_when_checked_then_only_one_review_counts(self):
-        # Third review round, scenario H: every configured reviewer needs its own worktree, as native reviews do.
-        writer, shared = self.final_checkout("writer"), self.final_checkout("review-grok")
+    def test_given_one_reviewer_entry_twice_when_both_receipts_share_a_worktree_then_only_one_review_counts(self):
+        # Third review round, scenario H, and Codex's review of fc4805e: each review slot needs a worktree of its own.
+        writer = self.final_checkout("writer")
         self.write_final_parent()
-        receipts = [self.receipt("codex", "rw", writer), self.receipt("grok", "ro", shared, name="ro-grok-1"), self.receipt("grok", "ro", shared, name="ro-grok-2")]
-        checks = self.valid_receipts(receipts, reviewers=("xagent:grok", "xagent:grok"))
-        self.assertTrue(checks["configured_writer_dispatched"])
-        self.assertFalse(checks["configured_reviewers_dispatched"])
+        written = self.receipt("codex", "rw", writer)
+        for agent in ("grok", "claude"):
+            with self.subTest(agent):
+                shared = self.final_checkout(f"review-{agent}")
+                first, second = (self.receipt(agent, "ro", shared, name=f"ro-{agent}-{index}") for index in (1, 2))
+                checks = self.valid_receipts([written, first, second], reviewers=(f"xagent:{agent}",) * 2)
+                self.assertEqual((checks["receipt_workspaces_owned"], checks["configured_reviewers_dispatched"]), (True, False))
+                # A retry of the same reviewer for one slot may reuse its worktree.
+                dropout = self.receipt(agent, "ro", shared, name=f"ro-{agent}-dropout", status="DROPOUT", exit=3)
+                self.assertEqual(self.valid_receipts([written, dropout, first], reviewers=(f"xagent:{agent}",)), ALL_CHECKS_PASS)
 
     def test_given_writer_and_reviewers_share_one_worktree_when_receipts_are_checked_then_it_fails(self):
         shared = self.add_worktree("shared")

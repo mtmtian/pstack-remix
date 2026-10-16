@@ -11,7 +11,9 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import runpy
+import shlex
 import subprocess
 import sys
 
@@ -43,6 +45,9 @@ NativeDispatch = NATIVE["NativeDispatch"]
 claude_native_dispatches = NATIVE["claude_native_dispatches"]
 codex_native_dispatches = NATIVE["codex_native_dispatches"]
 checkouts_touched = NATIVE["checkouts_touched"]
+# A native reviewer brackets its work with this command, as xagent records snapshot_before and snapshot_after.
+SNAPSHOT_TOOL = ROOT / "scripts/e2e-snapshot.py"
+SNAPSHOT_LINE = re.compile(r"^PSTACK_E2E_SNAPSHOT ([0-9a-f]{64}) (.+)$", re.MULTILINE)
 # Each worker attempt gets xagent's own default limit and at most one retry; the retry is not doubled.
 WORKER_LIMIT_SECONDS = XAGENT["DEFAULT_TIMEOUT"]
 # Per attempt, on top of its limit and xagent's termination grace: process start-up and xagent's before/after snapshots.
@@ -314,9 +319,38 @@ def _xagent_attempt(receipt, workdir, final_stats, test_file):
                    frozenset({workdir} if workdir else ()), mode if usable else None)
 
 
+def _snapshot_printed(command):
+    """Return (checkout, digest) when command is the bare snapshot command and printed its line, else None."""
+    try:
+        words = shlex.split(command.command)
+    except ValueError:
+        return None
+    if len(words) != 4 or words[:2] != ["python3", "-B"] or Path(words[2]).resolve() != SNAPSHOT_TOOL:
+        return None
+    match = SNAPSHOT_LINE.search(command.output or "")
+    return (Path(match.group(2)).resolve(), match.group(1)) if match and Path(match.group(2)).resolve() == Path(words[3]).resolve() else None
+
+
+def _reviewed_unchanged(dispatch, checkout, run_scope, parent):
+    """Whether the subagent's own shell commands in checkout sit between its snapshots of it, all matching its state now."""
+    try:
+        now, marks, between = SNAPSHOT(checkout, checkout.parent), [], []
+        for index, command in enumerate(dispatch.commands):
+            printed = _snapshot_printed(command)
+            if printed and printed[0] == checkout:
+                marks.append((index, printed[1]))
+            elif checkout in checkouts_touched(command.paths, run_scope, parent):
+                between.append(index)
+        return (len(marks) >= 2 and all(digest == now for _, digest in marks)
+                and all(marks[0][0] < index < marks[-1][0] for index in between))
+    except (OSError, ValueError, subprocess.CalledProcessError):
+        return False
+
+
 def _native_attempt(dispatch, run_scope, parent, base, parent_common, final_stats, test_file):
     """A native dispatch writes when its subagent edited the one checkout it used, and reviews when it edited nothing
-    there; either way the checkout must be a linked worktree at the fixture base, and a review must hold the final version."""
+    there; either way the checkout must be a linked worktree at the fixture base, and a review must hold the final
+    version, bracketed by the subagent's own matching snapshots of it."""
     if not isinstance(dispatch, NativeDispatch):
         return Attempt("native", None, (None, None), None, False, frozenset(), None)
     try:
@@ -329,7 +363,8 @@ def _native_attempt(dispatch, run_scope, parent, base, parent_common, final_stat
     role = None
     if dispatch.usable and len(checkouts) == 1:
         (checkout,) = checkouts
-        if _linked_worktree_at_base(checkout, run_scope, parent, base, parent_common) and (mode == "rw" or _final_version(checkout, final_stats, test_file)):
+        if _linked_worktree_at_base(checkout, run_scope, parent, base, parent_common) and (
+                mode == "rw" or (_final_version(checkout, final_stats, test_file) and _reviewed_unchanged(dispatch, checkout, run_scope, parent))):
             role = mode
     return Attempt("native", mode, (None, dispatch.requested), dispatch.effort, dispatch.status in ("completed", "failed"), checkouts, role)
 
@@ -494,7 +529,9 @@ No extra confirmation is needed for those calls. Do not push, publish, change gl
 Workers must remain leaves. Do not replace configured external agents with native workers.
 A policy entry without the xagent: prefix is a native worker: dispatch it with your host's own subagent tool and
 pass that exact model, omitting the model only for inherit-parent or auto. A native writer changes files only with its
-host's file-edit tool (Write or Edit in Claude Code, apply_patch in Codex); a native reviewer changes no files.
+host's file-edit tool (Write or Edit in Claude Code, apply_patch in Codex); a native reviewer changes no files and runs
+python3 -B {SNAPSHOT_TOOL} <its worktree> as its first and as its last shell command in that worktree,
+each as a command of its own.
 When the effective policy sets reasoning_effort, pass an effort to every worker, native or xagent.
 Report the resolved routes, actual worker receipt paths, findings, your own test output, and any gaps.
 End with PSTACK_E2E: PASS only if the repair, all configured reviews and your independent tests are complete,
@@ -581,7 +618,7 @@ def main():
     if any(run.iterdir()):
         parser.error("use a new empty run directory")
     sources = ["bin/xagent", "bin/xagent-pi-guard.ts", "references/runtime.md", "references/claude-runtime.md", "references/codex-runtime.md", "skills/xagent/SKILL.md", "skills/swarm/SKILL.md", "skills/interrogate/SKILL.md", "scripts/pstack-host-e2e.py", "scripts/pstack-host-e2e.test.py", "scripts/pstack-host-e2e-native.test.py",
-               "scripts/pstack-host-e2e-fixtures.py", "scripts/e2e-native-evidence.py", "scripts/e2e-process.py"]
+               "scripts/pstack-host-e2e-fixtures.py", "scripts/e2e-native-evidence.py", "scripts/e2e-snapshot.py", "scripts/e2e-process.py"]
     (run / "source-hashes.json").write_text(json.dumps({name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest() for name in sources}, indent=2) + "\n")
     hosts = options.host or list(HOSTS)
     with ThreadPoolExecutor(max_workers=len(hosts)) as pool:
