@@ -32,8 +32,8 @@ class MeanTest(unittest.TestCase):
         self.assertEqual(mean([-3, -1, 4]), 0)
 '''
 XAGENT = runpy.run_path(str(ROOT / "bin/xagent"))
-# Each worker attempt gets this limit and at most one retry.
-WORKER_LIMIT_SECONDS = 600
+# Each worker attempt gets xagent's own default limit and at most one retry; the retry is not doubled.
+WORKER_LIMIT_SECONDS = 900
 # The writer, review and post-fix re-review rounds run in sequence, and each can need an attempt plus its retry.
 HOST_TIMEOUT_SECONDS = 3 * 2 * WORKER_LIMIT_SECONDS
 CLASSIFY = XAGENT["classify"]

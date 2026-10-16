@@ -598,8 +598,8 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
                 report = json.loads((run / host / "checks.json").read_text())
                 # Reviewer receipts only count at the fixture base against the final source, so the brief must say so.
                 prompt = " ".join(launch["prompt"].split())
-                # A 240-second cap timed out every grok-4.7 final review in a live run.
-                self.assertIn("Limit each worker to 600 seconds and at most one retry", prompt)
+                # Live grok-4.7 reviews took 409 to over 900 seconds, so the cap matches xagent's 900-second default.
+                self.assertIn("Limit each worker to 900 seconds and at most one retry", prompt)
                 self.assertIn(f"exclusive worktree checked out at fixture base {report['base']}, with the proposed patch applied as uncommitted changes", prompt)
                 self.assertIn("every configured reviewer must review the final version again", prompt)
                 if host == "claude":
