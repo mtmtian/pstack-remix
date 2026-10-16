@@ -2,11 +2,13 @@
 """Exercise real swarm -> interrogate policy routing from Claude and Codex on a synthetic repo."""
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 import hashlib
 import json
 import math
 import os
 from pathlib import Path
+import re
 import runpy
 import subprocess
 import sys
@@ -33,7 +35,7 @@ class MeanTest(unittest.TestCase):
 '''
 XAGENT = runpy.run_path(str(ROOT / "bin/xagent"))
 # Each worker attempt gets xagent's own default limit and at most one retry; the retry is not doubled.
-WORKER_LIMIT_SECONDS = 900
+WORKER_LIMIT_SECONDS = XAGENT["DEFAULT_TIMEOUT"]
 # The writer, review and post-fix re-review rounds run in sequence, and each can need an attempt plus its retry.
 HOST_TIMEOUT_SECONDS = 3 * 2 * WORKER_LIMIT_SECONDS
 CLASSIFY = XAGENT["classify"]
@@ -182,38 +184,30 @@ def _valid_linked_worktree(receipt, run_scope, parent, base, parent_common):
                 listed_paths.append(Path(line.removeprefix("worktree ")).resolve())
         if workdir not in listed_paths:
             return None
-        mode, agent = receipt.get("mode"), receipt.get("agent")
-        if mode not in ("rw", "ro") or not isinstance(agent, str) or not agent:
+        mode, agent, model = receipt.get("mode"), receipt.get("agent"), receipt.get("model")
+        if mode not in ("rw", "ro") or not isinstance(agent, str) or not agent or not isinstance(model, (str, type(None))):
             return None
-        return workdir, (mode, agent)
+        return workdir, (mode, agent, model)
     except (OSError, RuntimeError, TypeError, ValueError):
         return None
-
-
-# Keys bin/xagent writes into every meta.json, from its first write on.
-XAGENT_RECEIPT_KEYS = frozenset((
-    "agent", "model", "effort", "mode", "workdir", "exit", "timed_out", "cancelled", "seconds", "status",
-    "changed_workdir", "snapshot_before", "snapshot_after", "completed", "reason",
-))
 
 
 def collect_xagent_receipts(evidence):
     """Return the meta.json receipts bin/xagent wrote under evidence, and the paths of other meta.json files.
 
-    xagent requires an empty out_dir and creates prompt.md and agent.log there before its first meta.json,
-    and only it writes its full key set; a file with either mark counts, so an unreadable receipt in an
-    xagent out_dir still fails. A host's own notes, such as records of its native workers, have neither.
+    xagent requires an empty out_dir and creates its OUT_FILES there before its first meta.json, so only a
+    meta.json beside them counts: an unreadable one still fails, while a host's own notes on its native
+    workers, or a receipt copied elsewhere, are ignored.
     """
     receipts, ignored = [], []
     for file in sorted(Path(evidence).rglob("meta.json")):
+        if not all((file.parent / name).is_file() for name in XAGENT["OUT_FILES"]):
+            ignored.append(str(file))
+            continue
         try:
             receipt = json.loads(file.read_text())
         except (OSError, UnicodeError, ValueError):
             receipt = None
-        in_out_dir = all((file.parent / name).is_file() for name in ("prompt.md", "agent.log"))
-        if not in_out_dir and not (isinstance(receipt, dict) and XAGENT_RECEIPT_KEYS <= receipt.keys()):
-            ignored.append(str(file))
-            continue
         receipts.append({**receipt, "path": str(file)} if isinstance(receipt, dict) else None)
     return receipts, ignored
 
@@ -261,6 +255,11 @@ def claude_native_dispatches(lines):
             dispatch = dispatches.get(event.get("tool_use_id"))
             if dispatch is not None:
                 dispatch["status"] = "completed" if event.get("status") == "completed" else "failed"
+    for dispatch in dispatches.values():
+        requested, resolved = dispatch["requested"], dispatch["resolved"]
+        # Claude resolves an alias such as opus to claude-opus-<version>; an omitted model inherits the parent's.
+        dispatch["usable"] = dispatch["status"] == "completed" and isinstance(resolved, str) and bool(resolved) and (
+            requested is None or resolved == requested or resolved.startswith(f"claude-{requested}-"))
     return list(dispatches.values()), None
 
 
@@ -276,26 +275,30 @@ def codex_native_dispatches(lines, codex_home):
         return [], f"cannot read Codex rollouts: {error}"
 
 
+ROLLOUT_NAME = re.compile(r"rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-(.+)\.jsonl")
+
+
 def _codex_native_dispatches(lines, codex_home):
     thread = next((event["thread_id"] for event in _json_events(lines)
                    if event.get("type") == "thread.started" and isinstance(event.get("thread_id"), str)), None)
     if not thread:
         return [], "codex --json log has no thread.started thread_id"
     sessions = Path(codex_home) / "sessions"
-
-    def rollout(thread_id):
-        return next(iter(sorted(sessions.rglob(f"rollout-*-{thread_id}.jsonl"))), None)
+    rollouts = {}
+    for path in sorted(sessions.rglob("rollout-*.jsonl")):
+        match = ROLLOUT_NAME.fullmatch(path.name)
+        if match:
+            rollouts.setdefault(match.group(1), path)
 
     def payloads(path):
         for event in _json_events(path.read_text(errors="replace").splitlines()):
             if isinstance(event.get("payload"), dict):
                 yield event.get("type"), event["payload"]
 
-    parent = rollout(thread)
-    if parent is None:
+    if thread not in rollouts:
         return [], f"no Codex rollout for thread {thread} under {sessions}"
     requested, returned, started, finished = {}, set(), {}, set()
-    for _, payload in payloads(parent):
+    for _, payload in payloads(rollouts[thread]):
         if payload.get("type") == "function_call" and payload.get("name") == "spawn_agent":
             try:
                 arguments = json.loads(payload.get("arguments") or "{}")
@@ -313,29 +316,29 @@ def _codex_native_dispatches(lines, codex_home):
     dispatches = []
     for call, model in requested.items():
         child = started.get(call)
-        dispatch = {"id": call, "thread": child, "rollout": None, "requested": model, "resolved": None,
-                    "status": "failed" if call in returned else "pending"}
-        child_rollout = rollout(child) if isinstance(child, str) and child else None
-        if child is not None:
-            dispatch["status"] = "failed" if child in finished else "pending"
-        if child_rollout is not None:
-            linked, models, complete, aborted = False, [], False, False
-            for kind, payload in payloads(child_rollout):
-                if kind == "session_meta":
-                    linked = payload.get("parent_thread_id") == thread
-                elif kind == "turn_context":
-                    models.append(payload.get("model"))
-                elif kind == "event_msg":
-                    complete = complete or payload.get("type") == "task_complete"
-                    aborted = aborted or payload.get("type") == "turn_aborted"
-            if linked:
-                dispatch["rollout"] = str(child_rollout)
-                dispatch["resolved"] = models[0] if models and len(set(models)) == 1 else None
-                if complete and not aborted:
-                    dispatch["status"] = "completed"
-                elif aborted:
-                    dispatch["status"] = "failed"
-        dispatches.append(dispatch)
+        child_rollout = rollouts.get(child) if isinstance(child, str) else None
+        linked, models, complete, aborted = False, [], False, False
+        for kind, payload in payloads(child_rollout) if child_rollout else ():
+            if kind == "session_meta":
+                linked = payload.get("parent_thread_id") == thread
+            elif kind == "turn_context":
+                models.append(payload.get("model"))
+            elif kind == "event_msg":
+                complete = complete or payload.get("type") == "task_complete"
+                aborted = aborted or payload.get("type") == "turn_aborted"
+        if linked and complete and not aborted:
+            status = "completed"
+        elif linked and aborted or child is not None and child in finished or child is None and call in returned:
+            status = "failed"
+        else:
+            status = "pending"
+        resolved = models[0] if linked and models and len(set(models)) == 1 else None
+        dispatches.append({
+            "id": call, "thread": child, "rollout": str(child_rollout) if linked else None, "requested": model,
+            "resolved": resolved, "status": status,
+            # Codex reports the model it ran; an omitted model inherits the parent's.
+            "usable": status == "completed" and isinstance(resolved, str) and bool(resolved) and model in (None, resolved),
+        })
     return dispatches, None
 
 
@@ -362,124 +365,102 @@ def validate_parent_verification(directory, parent):
         return False
 
 
-def validate_receipts(receipts, run_scope, parent, base, expected_writer, expected_reviewers, final_stats, test_file, native_dispatches=()):
-    """Validate xagent receipts and native host dispatches, workspace ownership, and reviewer version evidence."""
+def route(value):
+    """Return ("xagent", (agent, model)) or ("native", model) for a policy entry, or None when it names no worker."""
+    if not isinstance(value, str) or not value:
+        return None
+    if value.startswith("xagent:"):
+        try:
+            return "xagent", XAGENT["agent_spec"](value.removeprefix("xagent:"))
+        except argparse.ArgumentTypeError:
+            return None
+    # inherit-parent and auto omit the native dispatch's model field.
+    return "native", None if value in ("inherit-parent", "auto") else value
+
+
+def expected_roles(effective):
+    """Return the configured swarm writer and interrogate reviewers, falling back to the helper's own defaults."""
+    return (effective["roles"].get("swarm workers", effective["defaultModel"]),
+            effective["panels"].get("interrogate reviewers", effective["defaultPanel"]))
+
+
+@dataclass(frozen=True)
+class Attempt:
+    """One worker attempt from an xagent receipt or a native host dispatch, as the role checks see it."""
+    kind: str
+    worker: object  # (agent, model) for xagent, the requested model for a native dispatch
+    mode: object  # ro or rw for xagent; None for a native dispatch, whose role the host log does not record
+    terminal: bool
+    usable: bool  # finished with a result its role may count
+    workdir: object = None
+
+
+def _reviewed_final_version(receipt, workdir, final_stats, test_file):
     try:
-        receipts, native_dispatches = list(receipts), list(native_dispatches)
-        all_terminal = bool(receipts) and all(
-            isinstance(receipt, dict) and receipt.get("completed") is True
-            and receipt.get("status") in ("PASS", "ISSUES", "BLOCKED", "DROPOUT")
-            for receipt in receipts
-        ) and all(
-            isinstance(dispatch, dict) and dispatch.get("status") in ("completed", "failed")
-            for dispatch in native_dispatches
-        )
+        before, after = receipt.get("snapshot_before"), receipt.get("snapshot_after")
+        return (receipt.get("changed_workdir") is False and isinstance(before, str) and before == after
+                and SNAPSHOT(workdir, Path(receipt["path"]).parent.resolve()) == after
+                and (workdir / "stats.py").read_bytes() == final_stats
+                and (workdir / "test_stats.py").read_bytes() == test_file)
+    except (OSError, ValueError, KeyError, subprocess.CalledProcessError):
+        return False
+
+
+def _xagent_attempt(receipt, workdir, final_stats, test_file):
+    if not isinstance(receipt, dict):
+        return Attempt("xagent", None, None, False, False)
+    terminal = receipt.get("completed") is True and receipt.get("status") in ("PASS", "ISSUES", "BLOCKED", "DROPOUT")
+    # ISSUES may carry a usable patch or review; final parent checks and reviews remain mandatory.
+    usable = (workdir is not None and terminal and receipt.get("status") in ("PASS", "ISSUES")
+              and type(receipt.get("exit")) is int and receipt.get("exit") == 0)
+    if usable and receipt.get("mode") == "ro":
+        usable = _reviewed_final_version(receipt, workdir, final_stats, test_file)
+    return Attempt("xagent", (receipt.get("agent"), receipt.get("model")), receipt.get("mode"), terminal, usable, workdir)
+
+
+def _native_attempt(dispatch):
+    if not isinstance(dispatch, dict):
+        return Attempt("native", None, None, False, False)
+    return Attempt("native", dispatch.get("requested"), None, dispatch.get("status") in ("completed", "failed"), dispatch.get("usable") is True)
+
+
+def validate_receipts(receipts, run_scope, parent, base, expected_writer, expected_reviewers, final_stats, test_file, native_dispatches=()):
+    """Check that every attempt finished, each configured role consumed a usable attempt, and xagent worktrees are owned."""
+    try:
         run_scope, parent = Path(run_scope).resolve(), Path(parent).resolve()
         parent_common = _git_path(parent, "--git-common-dir")
         parent_top = _git_output(parent, "rev-parse", "--show-toplevel")
         if not parent_top or Path(parent_top).resolve() != parent:
             parent_common = None
-        valid_workdirs = {}
-        owners = {}
-        workspaces_valid = bool(receipts) and parent_common is not None
-        for index, receipt in enumerate(receipts):
+        attempts, owners = [], {}
+        workspaces_valid = parent_common is not None
+        for receipt in receipts:
             validated = _valid_linked_worktree(receipt, run_scope, parent, base, parent_common)
+            workdir = None
             if validated is None:
                 workspaces_valid = False
-                continue
-            workdir, owner = validated
-            prior_owner = owners.get(workdir)
-            if prior_owner is not None and prior_owner != owner:
-                workspaces_valid = False
-            owners[workdir] = owner
-            valid_workdirs[index] = workdir
+            else:
+                workdir, owner = validated
+                workspaces_valid = owners.setdefault(workdir, owner) == owner and workspaces_valid
+            attempts.append(_xagent_attempt(receipt, workdir, final_stats, test_file))
+        attempts += [_native_attempt(dispatch) for dispatch in native_dispatches]
+        pool = list(attempts)
 
-        def route(value):
-            # xagent:<agent>[/<model>] names the receipt's agent and the model it was asked to run.
-            # Any other entry is a host model for a native dispatch; inherit-parent and auto omit its model.
-            if not isinstance(value, str) or not value:
-                return None
-            if value.startswith("xagent:"):
-                agent, _, model = value.removeprefix("xagent:").partition("/")
-                return "xagent", (agent, model or None)
-            return "native", None if value in ("inherit-parent", "auto") else value
-
-        native_available = set(range(len(native_dispatches)))
-
-        def take_native(model):
-            for index in sorted(native_available):
-                dispatch = native_dispatches[index]
-                if not isinstance(dispatch, dict) or dispatch.get("status") != "completed" or dispatch.get("requested") != model:
-                    continue
-                resolved = dispatch.get("resolved")
-                if not isinstance(resolved, str) or not resolved:
-                    continue
-                # Claude resolves an alias such as opus to claude-opus-<version>; Codex reports the requested ID.
-                if model is not None and resolved != model and not resolved.startswith(f"claude-{model}-"):
-                    continue
-                native_available.remove(index)
-                return True
+        def take(value, mode):
+            wanted = route(value)
+            for index, attempt in enumerate(pool):
+                if wanted == (attempt.kind, attempt.worker) and attempt.mode in (None, mode) and attempt.usable:
+                    del pool[index]
+                    return True
             return False
 
-        def matches(receipt, spec, mode, allowed_statuses):
-            if not isinstance(receipt, dict):
-                return False
-            if (receipt.get("agent"), receipt.get("model")) != spec or receipt.get("mode") != mode:
-                return False
-            if receipt.get("completed") is not True or receipt.get("status") not in allowed_statuses:
-                return False
-            if type(receipt.get("exit")) is not int or receipt.get("exit") != 0:
-                return False
-            return True
-
-        writer_route = route(expected_writer)
-        if writer_route and writer_route[0] == "native":
-            writer_ok = take_native(writer_route[1])
-        else:
-            # ISSUES may carry a usable patch; final parent checks and reviews remain mandatory.
-            writer_ok = bool(writer_route) and any(
-                index in valid_workdirs and matches(receipt, writer_route[1], "rw", ("PASS", "ISSUES"))
-                for index, receipt in enumerate(receipts)
-            )
-
-        reviewer_routes = []
-        if isinstance(expected_reviewers, list):
-            reviewer_routes = [route(value) for value in expected_reviewers]
-        reviewer_ok = bool(reviewer_routes) and all(reviewer_routes)
-        available = set(range(len(receipts)))
-        for kind, spec in filter(None, reviewer_routes):
-            if kind == "native":
-                reviewer_ok = take_native(spec) and reviewer_ok
-                continue
-            matching_index = None
-            for index in sorted(available):
-                receipt = receipts[index]
-                workdir = valid_workdirs.get(index)
-                if workdir is None or not matches(receipt, spec, "ro", ("PASS", "ISSUES")):
-                    continue
-                if receipt.get("changed_workdir") is not False:
-                    continue
-                try:
-                    before, after = receipt.get("snapshot_before"), receipt.get("snapshot_after")
-                    if not isinstance(before, str) or before != after:
-                        continue
-                    if SNAPSHOT(workdir, Path(receipt["path"]).parent.resolve()) != after:
-                        continue
-                    if (workdir / "stats.py").read_bytes() != final_stats:
-                        continue
-                    if (workdir / "test_stats.py").read_bytes() != test_file:
-                        continue
-                except (OSError, ValueError, KeyError, subprocess.CalledProcessError):
-                    continue
-                matching_index = index
-                break
-            if matching_index is None:
-                reviewer_ok = False
-            else:
-                available.remove(matching_index)
-
+        writer_ok = take(expected_writer, "rw")
+        reviewers = expected_reviewers if isinstance(expected_reviewers, list) else []
+        reviewer_ok = bool(reviewers)
+        for value in reviewers:
+            reviewer_ok = take(value, "ro") and reviewer_ok
         return {
-            "all_attempts_terminal": all_terminal,
+            "all_attempts_terminal": bool(attempts) and all(attempt.terminal for attempt in attempts),
             "configured_writer_dispatched": writer_ok,
             "configured_reviewers_dispatched": reviewer_ok,
             "receipt_workspaces_owned": workspaces_valid,
@@ -495,6 +476,40 @@ def validate_receipts(receipts, run_scope, parent, base, expected_writer, expect
 
 def git(work, *args):
     return subprocess.run(["git", "-C", str(work), *args], check=True, text=True, capture_output=True).stdout.strip()
+
+
+def _save_claude_reply(directory, host_log):
+    for event in _json_events(host_log):
+        if event.get("type") == "result" and isinstance(event.get("result"), str):
+            (directory / "result.md").write_text(event["result"])
+
+
+@dataclass(frozen=True)
+class HostAdapter:
+    command: object  # (parent checkout, run directory) -> argv; the prompt goes through stdin
+    env: dict
+    save_reply: object  # (run directory, host log lines) -> None; leaves the final reply in result.md
+    dispatches: object  # host log lines -> (native dispatches, gap)
+
+
+HOSTS = {
+    # --allowedTools is variadic, so the prompt cannot follow it on the command line.
+    "claude": HostAdapter(
+        command=lambda work, directory: ["claude", "-p", "--no-session-persistence", "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits", "--plugin-dir", str(ROOT), "--allowedTools", "Agent", "Bash", "Read", "Write", "Edit", "Glob", "Grep"],
+        # Claude Code caps a Bash call at 10 minutes by default. One foreground wait must outlast an attempt and its
+        # termination grace; the prompt runs a retry in a new call, so it need not cover two attempts.
+        env={"BASH_MAX_TIMEOUT_MS": str((WORKER_LIMIT_SECONDS + 300) * 1000)},
+        save_reply=_save_claude_reply,
+        dispatches=claude_native_dispatches,
+    ),
+    # Not --ephemeral: spawn_agent evidence for native workers exists only in the persisted session rollout.
+    "codex": HostAdapter(
+        command=lambda work, directory: ["codex", "exec", "--skip-git-repo-check", "--json", "-C", str(work), "-c", 'shell_environment_policy.set.XAGENT_EPHEMERAL="1"', "-o", str(directory / "result.md"), "-"],
+        env={},
+        save_reply=lambda directory, host_log: None,
+        dispatches=lambda host_log: codex_native_dispatches(host_log, os.environ.get("CODEX_HOME") or Path.home() / ".codex"),
+    ),
+}
 
 
 def exercise(host, run, host_timeout, check_timeout=30):
@@ -544,8 +559,8 @@ prepared the same way; a review of an earlier version does not count.
 Both host controllers run one-shot/headless. Do not send the final reply until every external command and reviewer
 has completed and you have inspected its terminal output and receipt. When running xagent commands in parallel,
 start them with & in one foreground Bash call, capture every PID, and wait for every PID; give the call a timeout
-longer than the {WORKER_LIMIT_SECONDS}-second attempt limit plus termination grace and enough time for the allowed retry. Do not
-promise later notifications, rely on Monitor or shell sentinels, or use TaskOutput (it is not an available tool).
+longer than the {WORKER_LIMIT_SECONDS}-second attempt limit plus termination grace. Inspect each receipt, then run an allowed
+retry in a new call. Do not promise later notifications, rely on Monitor or shell sentinels, or use TaskOutput (it is not an available tool).
 Follow the host adapter's supported tools and wait behavior.
 
 After all integrations, fixes, and configured reviews are complete, personally run the final parent verification
@@ -568,39 +583,20 @@ End with PSTACK_E2E: PASS only if the repair, all configured reviews and your in
 with no unresolved reproduced violation of the stated contract; otherwise PSTACK_E2E: FAIL.
 '''
     (directory / "prompt.md").write_text(prompt)
-    if host == "codex":
-        # Not --ephemeral: spawn_agent evidence for native workers exists only in the persisted session rollout.
-        args = ["codex", "exec", "--skip-git-repo-check", "--json", "-C", str(work), "-c", 'shell_environment_policy.set.XAGENT_EPHEMERAL="1"', "-o", str(directory / "result.md"), "-"]
-    else:
-        # --allowedTools is variadic, so the prompt goes through stdin.
-        args = ["claude", "-p", "--no-session-persistence", "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits", "--plugin-dir", str(ROOT), "--allowedTools", "Agent", "Bash", "Read", "Write", "Edit", "Glob", "Grep"]
-    env = {**os.environ, "XAGENT_EPHEMERAL": "1"}
+    adapter = HOSTS[host]
+    env = {**os.environ, "XAGENT_EPHEMERAL": "1", **adapter.env}
     env.pop("XAGENT_DEPTH", None)
-    if host == "claude":
-        # Claude Code caps a Bash call at 10 minutes by default; one foreground wait must outlast an attempt and its grace.
-        env["BASH_MAX_TIMEOUT_MS"] = str((WORKER_LIMIT_SECONDS + 300) * 1000)
     with (directory / "host.log").open("w") as log:
-        finished = subprocess.run(["timeout", "-k", "5", str(host_timeout), *args], cwd=work, env=env, input=prompt, text=True, stdout=log, stderr=subprocess.STDOUT)
+        finished = subprocess.run(["timeout", "-k", "5", str(host_timeout), *adapter.command(work, directory)], cwd=work, env=env, input=prompt, text=True, stdout=log, stderr=subprocess.STDOUT)
     host_log = (directory / "host.log").read_text(errors="replace").splitlines()
-    if host == "claude":
-        for line in host_log:
-            try:
-                event = json.loads(line)
-            except ValueError:
-                continue
-            if isinstance(event, dict) and event.get("type") == "result" and isinstance(event.get("result"), str):
-                (directory / "result.md").write_text(event["result"])
+    adapter.save_reply(directory, host_log)
     try:
         reply = (directory / "result.md").read_text()
     except (OSError, UnicodeError):
         reply = ""
     receipts, ignored_meta = collect_xagent_receipts(evidence)
-    if host == "claude":
-        native, native_gap = claude_native_dispatches(host_log)
-    else:
-        native, native_gap = codex_native_dispatches(host_log, os.environ.get("CODEX_HOME") or Path.home() / ".codex")
-    expected_writer = policy["effective"]["roles"].get("swarm workers", "inherit-parent")
-    expected_reviewers = policy["effective"]["panels"].get("interrogate reviewers", [])
+    native, native_gap = adapter.dispatches(host_log)
+    expected_writer, expected_reviewers = expected_roles(policy["effective"])
     try:
         test_file_preserved = (work / "test_stats.py").read_text() == TEST
     except (OSError, UnicodeError):
@@ -647,7 +643,7 @@ with no unresolved reproduced violation of the stated contract; otherwise PSTACK
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("run_dir", type=Path)
-    parser.add_argument("--host", choices=("claude", "codex"), action="append")
+    parser.add_argument("--host", choices=tuple(HOSTS), action="append")
     parser.add_argument("--host-timeout", type=int, default=HOST_TIMEOUT_SECONDS, help=(
         f"outer host deadline in seconds (default: {HOST_TIMEOUT_SECONDS}, enough for writer, review and post-fix "
         f"re-review rounds that each need a {WORKER_LIMIT_SECONDS}-second attempt plus one retry)"))
@@ -663,7 +659,7 @@ def main():
         parser.error("use a new empty run directory")
     sources = ["bin/xagent", "bin/xagent-pi-guard.ts", "references/runtime.md", "references/claude-runtime.md", "references/codex-runtime.md", "skills/xagent/SKILL.md", "skills/swarm/SKILL.md", "skills/interrogate/SKILL.md", "scripts/pstack-host-e2e.py", "scripts/pstack-host-e2e.test.py", "scripts/e2e-process.py"]
     (run / "source-hashes.json").write_text(json.dumps({name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest() for name in sources}, indent=2) + "\n")
-    hosts = options.host or ["claude", "codex"]
+    hosts = options.host or list(HOSTS)
     with ThreadPoolExecutor(max_workers=len(hosts)) as pool:
         results = list(pool.map(lambda host: exercise(host, run, options.host_timeout, options.check_timeout), hosts))
     return 0 if all(results) else 1

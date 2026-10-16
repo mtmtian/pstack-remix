@@ -18,7 +18,9 @@ codex_native_dispatches = HARNESS["codex_native_dispatches"]
 validate_parent_verification = HARNESS["validate_parent_verification"]
 validate_receipts = HARNESS["validate_receipts"]
 write_parent_verifier = HARNESS["write_parent_verifier"]
-snapshot = runpy.run_path(str(ROOT / "bin/xagent"))["snapshot"]
+XAGENT = runpy.run_path(str(ROOT / "bin/xagent"))
+agent_spec = XAGENT["agent_spec"]
+snapshot = XAGENT["snapshot"]
 
 TEST_SOURCE = '''import unittest
 from stats import mean
@@ -166,7 +168,7 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
         receipt_path.write_text(json.dumps(result) + "\n")
         return result
 
-    def valid_receipts(self, receipts, writer="xagent:writer", reviewers=("xagent:review-a", "xagent:review-b"), native_dispatches=()):
+    def valid_receipts(self, receipts, writer="xagent:codex", reviewers=("xagent:claude", "xagent:grok"), native_dispatches=()):
         return validate_receipts(
             receipts,
             self.scope,
@@ -186,7 +188,7 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
         for value in reviewers:
             if not value.startswith("xagent:"):
                 continue
-            agent, _, model = value.removeprefix("xagent:").partition("/")
+            agent, model = agent_spec(value.removeprefix("xagent:"))
             checkout = self.add_worktree(f"review-{agent}")
             (checkout / "stats.py").write_text(FIXED_STATS)
             receipts.append(self.receipt(agent, "ro", checkout, model=model))
@@ -226,19 +228,19 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
             "receipt_workspaces_owned": True,
         })
 
-    def test_given_an_xagent_out_dir_with_an_unreadable_or_moved_receipt_when_collected_then_it_still_counts(self):
+    def test_given_an_unreadable_receipt_in_an_xagent_out_dir_and_a_copy_elsewhere_when_collected_then_only_the_copy_is_ignored(self):
         collect_xagent_receipts = HARNESS["collect_xagent_receipts"]
         written = self.xagent_reviews_for(CODEX_MIXED["reviewers"])
         Path(written[0]["path"]).write_text('{"agent": "claude", "mode": "ro"')
-        moved = self.evidence / "copied-receipt" / "meta.json"
-        moved.parent.mkdir()
-        moved.write_text(Path(written[1]["path"]).read_text())
+        copied = self.evidence / "copied-receipt" / "meta.json"
+        copied.parent.mkdir()
+        copied.write_text(Path(written[1]["path"]).read_text())
 
         receipts, ignored = collect_xagent_receipts(self.evidence)
 
-        self.assertEqual(ignored, [])
+        self.assertEqual(ignored, [str(copied)])
         self.assertIn(None, receipts)
-        self.assertIn(str(moved), [receipt["path"] for receipt in receipts if receipt])
+        self.assertEqual(len(receipts), len(written))
         checks = self.valid_receipts(receipts, **CODEX_MIXED)
         self.assertFalse(checks["all_attempts_terminal"])
         self.assertFalse(checks["receipt_workspaces_owned"])
@@ -268,6 +270,57 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
         self.assertIsNone(gap)
         self.assertEqual([(d["requested"], d["resolved"], d["status"]) for d in native], [("gpt-6.1-sol", "gpt-6.1-sol", "completed")] * 2)
         self.assertTrue(all(self.valid_receipts(receipts, native_dispatches=native, **CODEX_MIXED).values()))
+
+    def test_given_an_all_native_policy_when_every_agent_call_completes_then_no_xagent_receipt_is_required(self):
+        self.write_final_parent()
+        native, gap = claude_native_dispatches(claude_stream(*(agent_call(f"toolu_{index}", "opus", "claude-opus-5-5") for index in range(3))))
+        self.assertIsNone(gap)
+        self.assertEqual(self.valid_receipts([], native_dispatches=native, writer="opus", reviewers=("opus", "opus")), {
+            "all_attempts_terminal": True,
+            "configured_writer_dispatched": True,
+            "configured_reviewers_dispatched": True,
+            "receipt_workspaces_owned": True,
+        })
+
+    def test_given_one_agent_with_two_models_sharing_a_reviewer_worktree_when_checked_then_ownership_fails(self):
+        shared = self.add_worktree("shared-claude")
+        (shared / "stats.py").write_text(FIXED_STATS)
+        self.write_final_parent()
+        receipts = [
+            self.receipt("claude", "ro", shared, name="claude-default"),
+            self.receipt("claude", "ro", shared, name="claude-opus", model="opus"),
+        ]
+        native, _ = claude_native_dispatches(claude_stream(agent_call("toolu_writer", "opus", "claude-opus-5-5")))
+        checks = self.valid_receipts(receipts, native_dispatches=native, writer="opus", reviewers=("xagent:claude", "xagent:claude/opus"))
+        self.assertTrue(checks["configured_reviewers_dispatched"], checks)
+        self.assertFalse(checks["receipt_workspaces_owned"])
+
+    def test_given_entries_xagent_would_reject_when_checked_then_they_fill_no_role(self):
+        writer = self.add_worktree("writer")
+        reviewer = self.add_worktree("review-grok")
+        for checkout in (writer, reviewer):
+            (checkout / "stats.py").write_text(FIXED_STATS)
+        self.write_final_parent()
+        review = self.receipt("grok", "ro", reviewer)
+        for index, (entry, agent, model) in enumerate((("xagent:nobody", "nobody", None), ("xagent:claude/-bad", "claude", "-bad"))):
+            with self.subTest(entry):
+                receipts = [self.receipt(agent, "rw", writer, name=f"rw-{index}", model=model), review]
+                self.assertFalse(self.valid_receipts(receipts, writer=entry, reviewers=("xagent:grok",))["configured_writer_dispatched"])
+
+    def test_given_codex_reports_a_claude_style_model_id_when_checked_then_only_claude_resolves_aliases(self):
+        self.write_final_parent()
+        home = self.root / "codex-home"
+        codex, gap = codex_native_dispatches(write_codex_rollouts(home, "thread-alias", [("call-writer", "opus", "thread-alias-w", "claude-opus-5-5", True)]), home)
+        self.assertIsNone(gap)
+        claude, _ = claude_native_dispatches(claude_stream(agent_call("toolu_writer", "opus", "claude-opus-5-5")))
+        self.assertFalse(self.valid_receipts([], native_dispatches=codex, writer="opus", reviewers=())["configured_writer_dispatched"])
+        self.assertTrue(self.valid_receipts([], native_dispatches=claude, writer="opus", reviewers=())["configured_writer_dispatched"])
+
+    def test_given_a_policy_without_swarm_or_interrogate_entries_when_roles_resolve_then_the_helper_defaults_apply(self):
+        shown = json.loads(subprocess.check_output(
+            ["node", str(ROOT / "bin/config.mjs"), "show", "--host", "claude", "--config", str(self.root / "absent.json")], text=True))
+        effective = shown["effective"]
+        self.assertEqual(HARNESS["expected_roles"](effective), (effective["defaultModel"], effective["defaultPanel"]))
 
     def test_given_mixed_policy_when_a_native_dispatch_is_missing_unfinished_or_denied_then_its_role_fails(self):
         receipts = self.xagent_reviews_for(CLAUDE_MIXED["reviewers"])
@@ -352,17 +405,17 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
             (checkout / "stats.py").write_text(FIXED_STATS)
         final_hash = self.write_final_parent()
         self.write_verifier_receipt(final_hash)
-        policy = dict(writer="xagent:writer/vendor/model-w", reviewers=("xagent:review-a/model-a", "xagent:review-b"))
+        policy = dict(writer="xagent:codex/vendor/model-w", reviewers=("xagent:claude/model-a", "xagent:grok"))
         pinned = [
-            self.receipt("writer", "rw", writer, model="vendor/model-w"),
-            self.receipt("review-a", "ro", reviewer_a, model="model-a"),
-            self.receipt("review-b", "ro", reviewer_b),
+            self.receipt("codex", "rw", writer, model="vendor/model-w"),
+            self.receipt("claude", "ro", reviewer_a, model="model-a"),
+            self.receipt("grok", "ro", reviewer_b),
         ]
         self.assertTrue(all(self.valid_receipts(pinned, **policy).values()))
         unpinned = [
-            self.receipt("writer", "rw", writer, name="writer-default"),
-            self.receipt("review-a", "ro", reviewer_a, name="review-a-default"),
-            self.receipt("review-b", "ro", reviewer_b, name="review-b-pinned", model="model-b"),
+            self.receipt("codex", "rw", writer, name="writer-default"),
+            self.receipt("claude", "ro", reviewer_a, name="review-a-default"),
+            self.receipt("grok", "ro", reviewer_b, name="review-b-pinned", model="model-b"),
         ]
         checks = self.valid_receipts(unpinned, **policy)
         self.assertTrue(checks["all_attempts_terminal"] and checks["receipt_workspaces_owned"], checks)
@@ -414,9 +467,9 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
         final_hash = self.write_final_parent()
         self.write_verifier_receipt(final_hash)
         receipts = [
-            self.receipt("writer", "rw", shared),
-            self.receipt("review-a", "ro", shared),
-            self.receipt("review-b", "ro", shared),
+            self.receipt("codex", "rw", shared),
+            self.receipt("claude", "ro", shared),
+            self.receipt("grok", "ro", shared),
         ]
         self.assertTrue(all(Path(r["workdir"]).resolve().is_relative_to(self.scope.resolve()) and Path(r["workdir"]).resolve() != self.parent.resolve() for r in receipts))
         checks = self.valid_receipts(receipts)
@@ -430,9 +483,9 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
         final_hash = self.write_final_parent()
         self.write_verifier_receipt(final_hash)
         receipts = [
-            self.receipt("writer", "rw", writer),
-            self.receipt("review-a", "ro", reviewer_a),
-            self.receipt("review-b", "ro", reviewer_b),
+            self.receipt("codex", "rw", writer),
+            self.receipt("claude", "ro", reviewer_a),
+            self.receipt("grok", "ro", reviewer_b),
         ]
         self.assertTrue(all(r["mode"] == "ro" and r["completed"] and r["status"] in ("PASS", "ISSUES") and r["changed_workdir"] is False for r in receipts[1:]))
         checks = self.valid_receipts(receipts)
@@ -448,10 +501,10 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
         final_hash = self.write_final_parent()
         self.write_verifier_receipt(final_hash)
         receipts = [
-            self.receipt("writer", "rw", writer),
-            self.receipt("writer", "rw", writer, name="writer-retry", status="DROPOUT", exit=3),
-            self.receipt("review-a", "ro", reviewer_a),
-            self.receipt("review-b", "ro", reviewer_b),
+            self.receipt("codex", "rw", writer),
+            self.receipt("codex", "rw", writer, name="writer-retry", status="DROPOUT", exit=3),
+            self.receipt("claude", "ro", reviewer_a),
+            self.receipt("grok", "ro", reviewer_b),
         ]
         checks = self.valid_receipts(receipts)
         self.assertEqual(checks, {
@@ -468,9 +521,9 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
         reviewer_a = self.add_worktree("review-a")
         reviewer_b = self.add_worktree("review-b")
         receipts = [
-            self.receipt("writer", "rw", writer),
-            self.receipt("review-a", "ro", reviewer_a),
-            self.receipt("review-b", "ro", reviewer_b),
+            self.receipt("codex", "rw", writer),
+            self.receipt("claude", "ro", reviewer_a),
+            self.receipt("grok", "ro", reviewer_b),
         ]
         for checkout in (reviewer_a, reviewer_b):
             (checkout / "stats.py").write_text(FIXED_STATS)
@@ -600,6 +653,8 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
                 prompt = " ".join(launch["prompt"].split())
                 # Live grok-4.7 reviews took 409 to over 900 seconds, so the cap matches xagent's 900-second default.
                 self.assertIn("Limit each worker to 900 seconds and at most one retry", prompt)
+                # A foreground wait covers one attempt, so the retry has to start in a call of its own.
+                self.assertIn("then run an allowed retry in a new call", prompt)
                 self.assertIn(f"exclusive worktree checked out at fixture base {report['base']}, with the proposed patch applied as uncommitted changes", prompt)
                 self.assertIn("every configured reviewer must review the final version again", prompt)
                 if host == "claude":
@@ -655,7 +710,7 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
     def final_handoff_receipts(self):
         self.write_final_parent()
         receipts = []
-        for agent, mode in (("writer", "rw"), ("review-a", "ro"), ("review-b", "ro")):
+        for agent, mode in (("codex", "rw"), ("claude", "ro"), ("grok", "ro")):
             checkout = self.add_worktree(agent)
             (checkout / "stats.py").write_text(FIXED_STATS)
             receipts.append(self.receipt(agent, mode, checkout))
@@ -691,7 +746,7 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
     def test_given_a_valid_handoff_but_pending_retry_then_workflow_is_not_terminal(self):
         receipts = self.final_handoff_receipts()
         retry = self.receipt(
-            "writer", "rw", Path(receipts[0]["workdir"]), name="pending-retry",
+            "codex", "rw", Path(receipts[0]["workdir"]), name="pending-retry",
             completed=False, status="DROPOUT", exit=None,
         )
         checks = self.valid_receipts([*receipts, retry])
