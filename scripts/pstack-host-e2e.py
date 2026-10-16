@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Exercise real swarm -> interrogate policy routing from Claude and Codex on a synthetic repo."""
+from __future__ import annotations
+
 import argparse
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
