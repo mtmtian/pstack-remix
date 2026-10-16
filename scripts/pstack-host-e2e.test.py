@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import py_compile
+import re
 import runpy
 import subprocess
 import sys
@@ -42,13 +43,15 @@ def mean(xs):
     return sum(value / len(xs) for value in xs)
 '''
 
+STALE_STATS = "def mean(xs):\n    return sum(xs) / len(xs)\n"
+
 CLAUDE_MIXED = dict(writer="opus", reviewers=("opus", "xagent:codex/gpt-6.1-sol", "xagent:grok/magpie/likecode-grok/grok-4.7"))
 CODEX_MIXED = dict(writer="gpt-6.1-sol", reviewers=("gpt-6.1-sol", "xagent:claude/opus", "xagent:grok/magpie/likecode-grok/grok-4.7"))
 
 
-def agent_call(tool_id, requested, resolved, background=False, finished=True, denied=False):
+def agent_call(tool_id, requested, resolved, background=False, finished=True, denied=False, prompt="brief"):
     """Claude stream-json events for one Agent dispatch, shaped like a real `claude -p --verbose` run."""
-    arguments = {"description": tool_id, "subagent_type": "general-purpose", "prompt": "brief", "run_in_background": background}
+    arguments = {"description": tool_id, "subagent_type": "general-purpose", "prompt": prompt, "run_in_background": background}
     if requested is not None:
         arguments["model"] = requested
     events = [{"type": "assistant", "parent_tool_use_id": None, "message": {"model": "claude-opus-5-5", "content": [
@@ -76,11 +79,14 @@ def claude_stream(*calls):
 
 
 def write_codex_rollouts(home, thread, spawns, parent_rollout=True):
-    """Write rollouts shaped like `codex exec` sessions; return the matching `--json` host log."""
+    """Write rollouts shaped like `codex exec` sessions; return the matching `--json` host log.
+
+    Each spawn is (call, requested model, child thread, model the child ran, finished, *commands the child ran).
+    """
     day = home / "sessions" / "2026" / "10" / "16"
     day.mkdir(parents=True, exist_ok=True)
     parent = [{"type": "session_meta", "payload": {"id": thread}}, {"type": "turn_context", "payload": {"model": "gpt-6-astra"}}]
-    for call, requested, child, actual, finished in spawns:
+    for call, requested, child, actual, finished, *commands in spawns:
         arguments = {"task_name": call, "fork_turns": "none", "message": "brief"}
         if requested is not None:
             arguments["model"] = requested
@@ -94,6 +100,9 @@ def write_codex_rollouts(home, thread, spawns, parent_rollout=True):
             continue
         events = [{"type": "session_meta", "payload": {"id": child, "parent_thread_id": thread}},
                   {"type": "turn_context", "payload": {"model": actual}}]
+        events += [{"type": "response_item", "payload": {"type": "custom_tool_call", "name": "exec", "call_id": f"{child}-{index}",
+                                                         "input": f"text(await tools.exec_command({{cmd:{json.dumps(command)}}}))"}}
+                   for index, command in enumerate(commands)]
         if finished:
             events.append({"type": "event_msg", "payload": {"type": "task_complete", "last_agent_message": "done"}})
             parent.append({"type": "event_msg", "payload": {"type": "item_completed", "item": {
@@ -181,6 +190,12 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
             native_dispatches,
         )
 
+    def final_checkout(self, name, stats=FIXED_STATS):
+        """A reviewer worktree at the fixture base with stats.py changed but uncommitted."""
+        checkout = self.add_worktree(name)
+        (checkout / "stats.py").write_text(stats)
+        return checkout
+
     def xagent_reviews_for(self, reviewers):
         """Final-code receipts for the policy's xagent reviewers; native entries get none."""
         self.write_final_parent()
@@ -213,7 +228,7 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
         home = self.root / "codex-home"
         native, _ = codex_native_dispatches(write_codex_rollouts(home, "thread-third-run", [
             ("call-writer", "gpt-6.1-sol", "thread-writer", "gpt-6.1-sol", True),
-            ("call-review", "gpt-6.1-sol", "thread-review", "gpt-6.1-sol", True),
+            ("call-review", "gpt-6.1-sol", "thread-review", "gpt-6.1-sol", True, f"cat {self.final_checkout('reviewer-native-r1')}/stats.py"),
         ]), home)
 
         receipts, ignored = collect_xagent_receipts(self.evidence)
@@ -249,7 +264,7 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
         receipts = self.xagent_reviews_for(CLAUDE_MIXED["reviewers"])
         native, gap = claude_native_dispatches(claude_stream(
             agent_call("toolu_writer", "opus", "claude-opus-5-5"),
-            agent_call("toolu_review", "opus", "claude-opus-5-5", background=True),
+            agent_call("toolu_review", "opus", "claude-opus-5-5", background=True, prompt=f"Review the patch in {self.final_checkout('review-native')}"),
         ))
         self.assertIsNone(gap)
         self.assertEqual(self.valid_receipts(receipts, native_dispatches=native, **CLAUDE_MIXED), {
@@ -264,7 +279,7 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
         home = self.root / "codex-home"
         log = write_codex_rollouts(home, "thread-host", [
             ("call-writer", "gpt-6.1-sol", "thread-writer", "gpt-6.1-sol", True),
-            ("call-review", "gpt-6.1-sol", "thread-review", "gpt-6.1-sol", True),
+            ("call-review", "gpt-6.1-sol", "thread-review", "gpt-6.1-sol", True, f"git -C {self.final_checkout('review-native')} diff"),
         ])
         native, gap = codex_native_dispatches(log, home)
         self.assertIsNone(gap)
@@ -273,7 +288,8 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
 
     def test_given_an_all_native_policy_when_every_agent_call_completes_then_no_xagent_receipt_is_required(self):
         self.write_final_parent()
-        native, gap = claude_native_dispatches(claude_stream(*(agent_call(f"toolu_{index}", "opus", "claude-opus-5-5") for index in range(3))))
+        native, gap = claude_native_dispatches(claude_stream(agent_call("toolu_writer", "opus", "claude-opus-5-5"), *(
+            agent_call(f"toolu_review_{index}", "opus", "claude-opus-5-5", prompt=f"Review {self.final_checkout(f'review-{index}')}") for index in range(2))))
         self.assertIsNone(gap)
         self.assertEqual(self.valid_receipts([], native_dispatches=native, writer="opus", reviewers=("opus", "opus")), {
             "all_attempts_terminal": True,
@@ -321,6 +337,70 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
             ["node", str(ROOT / "bin/config.mjs"), "show", "--host", "claude", "--config", str(self.root / "absent.json")], text=True))
         effective = shown["effective"]
         self.assertEqual(HARNESS["expected_roles"](effective), (effective["defaultModel"], effective["defaultPanel"]))
+
+    def test_given_claude_native_reviews_when_their_prompts_name_checkouts_then_only_a_final_version_at_the_base_counts(self):
+        self.write_final_parent()
+        final = self.final_checkout("review-final")
+        stale = self.final_checkout("review-stale", stats=STALE_STATS)
+        committed = self.final_checkout("review-committed")
+        self.git(committed, "-c", "user.name=fixture", "-c", "user.email=fixture@local", "-c", "commit.gpgsign=false", "commit", "-qam", "writer commit")
+        brief = self.scope / "briefs" / "review.md"
+        brief.parent.mkdir()
+        brief.write_text(f"Your exclusive read-only worktree: {final}\n")
+        writer = agent_call("toolu_writer", "opus", "claude-opus-5-5", prompt="Fix stats.py.")
+        for name, prompt, counted in (
+            ("final checkout", f"Review the uncommitted patch in {final}.", True),
+            ("brief naming the final checkout", f"Read {brief} and follow it.", True),
+            ("final checkout beside the parent", f"Do not touch {self.parent}; review {final}", True),
+            ("checkout reviewed before the last change", f"Review {stale}/stats.py.", False),
+            ("checkout moved off the fixture base", f"Review {committed}", False),
+            ("final and stale checkouts", f"Review {final} and compare {stale}", False),
+            ("no checkout", "Review the change.", False),
+        ):
+            with self.subTest(name):
+                native, _ = claude_native_dispatches(claude_stream(writer, agent_call("toolu_review", "opus", "claude-opus-5-5", prompt=prompt)))
+                checks = self.valid_receipts([], native_dispatches=native, writer="opus", reviewers=("opus",))
+                self.assertTrue(checks["configured_writer_dispatched"])
+                self.assertEqual(checks["configured_reviewers_dispatched"], counted)
+
+    def test_given_codex_native_reviews_when_their_own_commands_name_checkouts_then_only_a_final_version_counts(self):
+        # Codex encrypts the task payload in both rollouts, so the child's own commands show where it reviewed.
+        self.write_final_parent()
+        final = self.final_checkout("review-final")
+        stale = self.final_checkout("review-stale", stats=STALE_STATS)
+        home = self.root / "codex-home"
+        for index, (name, commands, counted) in enumerate((
+            ("final checkout", [f"git -C {final} diff"], True),
+            ("checkout reviewed before the last change", [f"sed -n 1,40p {stale}/stats.py"], False),
+            ("no command", [], False),
+        )):
+            with self.subTest(name):
+                thread = f"thread-bind-{index}"
+                # The review comes first, so the writer must not take the only attempt that can review.
+                native, gap = codex_native_dispatches(write_codex_rollouts(home, thread, [
+                    (f"{thread}-review", "gpt-6.1-sol", f"{thread}-r", "gpt-6.1-sol", True, *commands),
+                    (f"{thread}-writer", "gpt-6.1-sol", f"{thread}-w", "gpt-6.1-sol", True),
+                ]), home)
+                self.assertIsNone(gap)
+                checks = self.valid_receipts([], native_dispatches=native, writer="gpt-6.1-sol", reviewers=("gpt-6.1-sol",))
+                self.assertTrue(checks["configured_writer_dispatched"])
+                self.assertEqual(checks["configured_reviewers_dispatched"], counted)
+
+    def test_given_default_limits_when_the_host_deadline_is_chosen_then_six_full_attempts_and_the_parent_checks_fit(self):
+        result = subprocess.run([sys.executable, "-B", str(ROOT / "scripts/pstack-host-e2e.py"), "--help"], capture_output=True, text=True, timeout=30)
+        default = int(re.search(r"default: (\d+)", " ".join(result.stdout.split())).group(1))
+        # Writer, review and re-review rounds may each retry once; every attempt can run to its limit plus xagent's grace.
+        attempts = 3 * 2 * (XAGENT["DEFAULT_TIMEOUT"] + XAGENT["TERMINATION_GRACE"])
+        self.assertGreater(default, attempts + 2 * 30)
+
+    def test_given_an_xagent_out_dir_missing_one_marker_when_collected_then_its_broken_receipt_still_fails(self):
+        out = self.evidence / "interrupted-attempt"
+        out.mkdir()
+        (out / "prompt.md").write_text("brief\n")
+        (out / "meta.json").write_text('{"agent": "grok", "mode": "ro", "completed": fal')
+        receipts, ignored = HARNESS["collect_xagent_receipts"](self.evidence)
+        self.assertEqual((receipts, ignored), ([None], []))
+        self.assertFalse(self.valid_receipts(receipts, writer="opus", reviewers=("opus",))["all_attempts_terminal"])
 
     def test_given_mixed_policy_when_a_native_dispatch_is_missing_unfinished_or_denied_then_its_role_fails(self):
         receipts = self.xagent_reviews_for(CLAUDE_MIXED["reviewers"])

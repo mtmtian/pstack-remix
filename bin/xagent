@@ -24,8 +24,12 @@ SELECTION_FLAGS = {
     "grok": ("-m", "--reasoning-effort", "{}"), "gemini": ("--model", "--effort", "{}"), "pi": ("--model", "--thinking", "{}"),
 }
 DEFAULT_TIMEOUT = 900
-# Created in every out_dir before its first meta.json, so readers can tell xagent's receipts from other files.
-OUT_FILES = ("prompt.md", "result.md", "agent.log")
+# Seconds a timed-out or cancelled agent gets after SIGTERM before its process group is killed.
+TERMINATION_GRACE = 1
+# Created in every out_dir before its first meta.json. result.md is a common name elsewhere, so only the
+# first two mark an xagent attempt.
+OUT_FILES = ("prompt.md", "agent.log", "result.md")
+RECEIPT_MARKERS = OUT_FILES[:2]
 VERDICT = re.compile(r"(?:STATUS: (PASS|ISSUES|BLOCKED)|\*\*STATUS: (PASS|ISSUES|BLOCKED)\*\*)")
 
 
@@ -160,7 +164,7 @@ def run_process(args, workdir, out, stdout_path, timeout, env):
             if cancelled or timed_out:
                 kill_group(process.pid, signal.SIGTERM)
                 try:
-                    process.wait(timeout=1)
+                    process.wait(timeout=TERMINATION_GRACE)
                 except subprocess.TimeoutExpired:
                     pass
             return (128 + cancelled if cancelled else 124 if timed_out else process.returncode), timed_out, bool(cancelled)
