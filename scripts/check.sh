@@ -21,7 +21,7 @@ if [[ "$suite" != build ]]; then
   timeout -k 1 1 true
   node --test scripts/*.test.mjs
   bash scripts/xagent-classify.test.sh
-  for test in scripts/xagent.test.py scripts/xagent-e2e-verify.test.py scripts/e2e-process.test.py scripts/pstack-host-e2e.test.py; do
+  for test in scripts/xagent.test.py scripts/xagent-e2e-verify.test.py scripts/e2e-process.test.py scripts/pstack-host-e2e.test.py scripts/pstack-host-e2e-native.test.py; do
     printf '\nRunning %s\n' "$test"
     python3 -B "$test"
   done

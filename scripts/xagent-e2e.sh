@@ -2,6 +2,7 @@
 # End-to-end check of bin/xagent against the real agent CLIs; costs tokens on every vendor.
 # usage: scripts/xagent-e2e.sh [run-dir]   evidence stays in run-dir.
 # claude joins once `claude auth login` is done; until then it is only checked to come back as DROPOUT.
+# XAGENT_E2E_MODELS="claude/opus codex/gpt-6-astra" pins those agents' models in the selection check.
 set -uo pipefail
 export XAGENT_EPHEMERAL=1
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -53,6 +54,7 @@ printf 'Fix the bug in stats.py so that `python3 -m unittest` passes. Do not edi
 # git init shares the git prefix with the allowed git status, so it also checks whole-word matching.
 printf 'Run the shell command `git init probe-repo` in the terminal. Report exactly what happened.\n' > "$run/probe.md"
 printf 'Run exactly this shell command and quote its exit code and its full stderr verbatim: %s grok ro . test_stats.py nested-out\n' "$xagent" > "$run/nested.md"
+printf 'Reply with one sentence saying you are ready. Do not read, run or change anything.\n' > "$run/select.md"
 cat > "$run/host.md" <<MD
 You are the pstack parent agent. Read $root/skills/xagent/SKILL.md, then use xagent ($xagent) to run two workers in parallel:
 the brief $run/review.md with $reviewer, read-only, against $run/wt-host-review, out-dir $run/host-review;
@@ -67,9 +69,12 @@ MD
 # Readers without an enforced read-only sandbox must not share the parent checkout either.
 for w in $agents probe-gemini probe-agy probe-pi nested host-pi host-review; do git -C "$repo" worktree add -q "$run/wt-$w" -b "wt-$w"; done
 for a in claude codex grok gemini pi; do git -C "$repo" worktree add -q --detach "$run/wt-review-$a"; done
+for a in $agents; do git -C "$repo" worktree add -q --detach "$run/wt-select-$a"; done
+spec() { local s; for s in ${XAGENT_E2E_MODELS:-}; do [ "${s%%/*}" = "$1" ] && { echo "$s"; return; }; done; echo "$1"; }
 for a in $agents; do
   "$xagent" "$a" ro "$run/wt-review-$a" "$run/review.md" "$run/review-$a" 480 &
   "$xagent" "$a" rw "$run/wt-$a" "$run/fix.md" "$run/fix-$a" 480 &
+  "$xagent" "$(spec "$a")" ro "$run/wt-select-$a" "$run/select.md" "$run/select-$a" 480 --effort low &
 done
 [ "$claude_ready" = 1 ] || "$xagent" claude ro "$run/wt-review-claude" "$run/review.md" "$run/review-claude" 120 &
 "$xagent" gemini rw "$run/wt-probe-gemini" "$run/probe.md" "$run/probe-gemini" 480 &
@@ -93,6 +98,9 @@ for a in $agents; do
   check_test_source "$a fix" "$run/wt-$a"
   check_worker_receipt "$a fix" "$run/wt-$a"
   rerun_unittest "$a" "$run/wt-$a"
+  want=$(spec "$a"); want=${want#"$a"}; want=${want#/}
+  s=$(status "$run/select-$a"); e=$(field "$run/select-$a" effort); m=$(field "$run/select-$a" model)
+  [ "$s" = PASS ] && [ "$e" = low ] && [ "$m" = "${want:-null}" ] && ok "$a runs with xagent's effort flag (model ${m})" || bad "$a selection: status ${s:-none}, effort ${e:-none}, model ${m:-none}"
 done
 for a in claude codex grok gemini pi; do
   check_test_source "$a review" "$run/wt-review-$a"

@@ -410,12 +410,52 @@ test("Given a malformed xagent entry in common policy, When update runs, Then it
   writeJson(configPath, validConfig());
   const original = readFileSync(configPath, "utf8");
 
-  for (const value of ["xagent:", "xagent:Grok Model", "xagent:grok;rm"]) {
+  const malformed = ["xagent:", "xagent:Grok Model", "xagent:grok;rm", "xagent:claude/", "xagent:claude//opus", "xagent:claude/opus 5", "xagent:claude/opus;rm", "xagent:claude/-opus"];
+  for (const value of malformed) {
     writeJson(inputPath, { panels: { "arena runners": [value] } });
     const result = runCli(["update", "--input", inputPath, "--config", configPath]);
     assert.notEqual(result.status, 0, value);
     assert.equal(readFileSync(configPath, "utf8"), original);
   }
+  // Host values stay free-form, but anything a host would hand to bin/xagent must still parse as an xagent entry.
+  for (const host of ["codex", "claude", "t3"]) {
+    for (const value of malformed.slice(3)) {
+      writeJson(inputPath, { roles: { "swarm workers": value } });
+      const result = runCli(["update", "--host", host, "--input", inputPath, "--config", configPath]);
+      assert.notEqual(result.status, 0, `${host} ${value}`);
+      assert.equal(readFileSync(configPath, "utf8"), original);
+    }
+  }
+});
+
+test("Given xagent entries that pin a model, When shared, host and T3 policy store them, Then each view keeps the model with its agent", (t) => {
+  const dir = tempDir();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const configPath = path.join(dir, "config.json");
+  const inputPath = path.join(dir, "patch.json");
+  writeJson(configPath, validConfig());
+  writeJson(inputPath, {
+    roles: { "swarm workers": "xagent:pi/openai/gpt-6.1:high" },
+    panels: { "interrogate reviewers": ["inherit-parent", "xagent:claude/claude-opus-5-5[1m]"] },
+    required_panel_members: ["xagent:claude", "xagent:codex/gpt-6-astra"],
+  });
+  const shared = runCli(["update", "--input", inputPath, "--config", configPath]);
+  assert.equal(shared.status, 0, shared.stderr);
+  for (const host of ["codex", "t3"]) {
+    writeJson(inputPath, { roles: { feature: `xagent:${host === "codex" ? "claude/opus" : "grok/grok-test-2"}` } });
+    const update = runCli(["update", "--host", host, "--input", inputPath, "--config", configPath]);
+    assert.equal(update.status, 0, update.stderr);
+  }
+
+  const codex = JSON.parse(runCli(["show", "--host", "codex", "--config", configPath]).stdout).effective;
+  assert.equal(codex.roles["swarm workers"], "xagent:pi/openai/gpt-6.1:high");
+  assert.equal(codex.roles.feature, "xagent:claude/opus");
+  // A pinned model is a different worker from the same agent on its CLI default, so both join the panel.
+  assert.deepEqual(codex.panels["interrogate reviewers"], ["inherit-parent", "xagent:claude/claude-opus-5-5[1m]", "xagent:claude", "xagent:codex/gpt-6-astra"]);
+  const t3 = JSON.parse(runCli(["show", "--host", "t3", "--config", configPath]).stdout).effective;
+  assert.equal(t3.roles.feature, "xagent:grok/grok-test-2");
+  const claude = JSON.parse(runCli(["show", "--host", "claude", "--config", configPath]).stdout).effective;
+  assert.equal(Object.hasOwn(claude.roles, "feature"), false);
 });
 
 test("Given a valid config, When update omits --input, Then the CLI rejects the request without writing", (t) => {
@@ -530,4 +570,35 @@ test("Given a value that is not a T3 target, When T3 is updated, Then it is reje
   const shown = runCli(["show", "--host", "t3", "--config", configPath]);
   assert.notEqual(shown.status, 0);
   assert.match(shown.stderr, /hosts\.t3/);
+});
+
+test("Given the same model strings, When bin/xagent and config.mjs check xagent:<agent>/<model>, Then both accept and reject the same ones", (t) => {
+  const dir = tempDir();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const models = [
+    "opus", "claude-opus-5-5[1m]", "gpt-6.1-sol", "magpie/likecode-grok/grok-4.7", "openai/gpt-test-1", "org@v1:latest",
+    "a+b", "trailing/", "", "-leading", ".hidden", "has space", "tab\tmodel", "ünïcode", "star*", "semi;colon", "new\nline",
+  ];
+  const probe = [
+    "import argparse, json, runpy, sys",
+    "spec = runpy.run_path(sys.argv[1])['agent_spec']",
+    "def accepts(model):",
+    "    try:",
+    "        spec('claude/' + model)",
+    "        return True",
+    "    except argparse.ArgumentTypeError:",
+    "        return False",
+    "print(json.dumps([accepts(model) for model in json.loads(sys.argv[2])]))",
+  ].join("\n");
+  const xagent = spawnSync("python3", ["-I", "-c", probe, path.join(root, "bin/xagent"), JSON.stringify(models)], { encoding: "utf8" });
+  assert.equal(xagent.status, 0, xagent.stderr);
+  const configAccepts = models.map((model, index) => {
+    const configPath = path.join(dir, `config-${index}.json`);
+    const config = validConfig();
+    config.hosts.claude.roles["swarm workers"] = `xagent:claude/${model}`;
+    writeJson(configPath, config);
+    return runCli(["show", "--host", "claude", "--config", configPath]).status === 0;
+  });
+  assert.deepEqual(configAccepts, JSON.parse(xagent.stdout));
+  assert.ok(configAccepts.includes(true) && configAccepts.includes(false));
 });

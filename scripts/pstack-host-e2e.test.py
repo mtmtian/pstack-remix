@@ -3,108 +3,98 @@ import json
 import os
 from pathlib import Path
 import py_compile
+import re
 import runpy
 import subprocess
 import sys
-import tempfile
 import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-HARNESS = runpy.run_path(str(ROOT / "scripts/pstack-host-e2e.py"))
+FIXTURES = runpy.run_path(str(ROOT / "scripts/pstack-host-e2e-fixtures.py"))
+HARNESS, XAGENT = FIXTURES["HARNESS"], FIXTURES["XAGENT"]
+FIXED_STATS, ALL_CHECKS_PASS, CODEX_MIXED = FIXTURES["FIXED_STATS"], FIXTURES["ALL_CHECKS_PASS"], FIXTURES["CODEX_MIXED"]
 classify_host_reply = HARNESS["classify_host_reply"]
 validate_parent_verification = HARNESS["validate_parent_verification"]
-validate_receipts = HARNESS["validate_receipts"]
 write_parent_verifier = HARNESS["write_parent_verifier"]
-snapshot = runpy.run_path(str(ROOT / "bin/xagent"))["snapshot"]
-
-TEST_SOURCE = '''import unittest
-from stats import mean
-
-class MeanTest(unittest.TestCase):
-    def test_mean(self):
-        with open(".test-ran", "a") as receipt:
-            receipt.write("ran\\n")
-        self.assertEqual(mean([2, 4, 6]), 4)
-        self.assertEqual(mean([5]), 5)
-        self.assertEqual(mean([-3, -1, 4]), 0)
-'''
-
-FIXED_STATS = '''from fractions import Fraction
-
-def mean(xs):
-    if all(isinstance(value, int) for value in xs):
-        return Fraction(sum(xs), len(xs))
-    return sum(value / len(xs) for value in xs)
-'''
 
 
-class HostHarnessAcceptanceTest(unittest.TestCase):
-    def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(prefix="pstack-host-e2e-test-")
-        self.root = Path(self.temp.name)
-        self.scope = self.root / "run" / "claude"
-        self.parent = self.scope / "repo"
-        self.parent.mkdir(parents=True)
-        self.evidence = self.scope / "evidence"
-        self.evidence.mkdir()
-        (self.parent / "stats.py").write_text("def mean(xs): return sum(xs) / (len(xs) - 1)\n")
-        (self.parent / "test_stats.py").write_text(TEST_SOURCE)
-        (self.parent / ".gitignore").write_text(".test-ran\n__pycache__/\n")
-        self.git(self.parent, "init", "-q", "--initial-branch=main")
-        self.git(self.parent, "add", ".")
-        self.git(self.parent, "-c", "user.name=fixture", "-c", "user.email=fixture@local", "-c", "commit.gpgsign=false", "commit", "-qm", "fixture")
-        self.base = self.git(self.parent, "rev-parse", "HEAD")
+class HostHarnessAcceptanceTest(FIXTURES["HarnessFixture"]):
+    def test_given_an_unreadable_receipt_in_an_xagent_out_dir_and_a_copy_elsewhere_when_collected_then_only_the_copy_is_ignored(self):
+        collect_xagent_receipts = HARNESS["collect_xagent_receipts"]
+        written = self.xagent_reviews_for(CODEX_MIXED["reviewers"])
+        Path(written[0]["path"]).write_text('{"agent": "claude", "mode": "ro"')
+        copied = self.evidence / "copied-receipt" / "meta.json"
+        copied.parent.mkdir()
+        copied.write_text(Path(written[1]["path"]).read_text())
 
-    def tearDown(self):
-        self.temp.cleanup()
+        receipts, ignored = collect_xagent_receipts(self.evidence)
 
-    def git(self, cwd, *args):
-        return subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True, text=True).stdout.strip()
+        self.assertEqual(ignored, [str(copied)])
+        self.assertIn(None, receipts)
+        self.assertEqual(len(receipts), len(written))
+        checks = self.valid_receipts(receipts, **CODEX_MIXED)
+        self.assertFalse(checks["all_attempts_terminal"])
+        self.assertFalse(checks["receipt_workspaces_owned"])
 
-    def add_worktree(self, name):
-        path = self.evidence / name / "repo"
-        path.parent.mkdir(parents=True)
-        self.git(self.parent, "worktree", "add", "--detach", str(path), self.base)
-        return path
+    def test_given_entries_xagent_would_reject_when_checked_then_they_fill_no_role(self):
+        writer = self.add_worktree("writer")
+        reviewer = self.add_worktree("review-grok")
+        for checkout in (writer, reviewer):
+            (checkout / "stats.py").write_text(FIXED_STATS)
+        self.write_final_parent()
+        review = self.receipt("grok", "ro", reviewer)
+        for index, (entry, agent, model) in enumerate((("xagent:nobody", "nobody", None), ("xagent:claude/-bad", "claude", "-bad"))):
+            with self.subTest(entry):
+                receipts = [self.receipt(agent, "rw", writer, name=f"rw-{index}", model=model), review]
+                self.assertFalse(self.valid_receipts(receipts, writer=entry, reviewers=("xagent:grok",))["configured_writer_dispatched"])
 
-    def write_final_parent(self):
-        (self.parent / "stats.py").write_text(FIXED_STATS)
-        return hashlib.sha256((self.parent / "stats.py").read_bytes()).hexdigest()
+    def test_given_a_policy_without_swarm_or_interrogate_entries_when_roles_resolve_then_the_helper_defaults_apply(self):
+        shown = json.loads(subprocess.check_output(
+            ["node", str(ROOT / "bin/config.mjs"), "show", "--host", "claude", "--config", str(self.root / "absent.json")], text=True))
+        effective = shown["effective"]
+        self.assertEqual(HARNESS["expected_roles"](effective), (effective["defaultModel"], effective["defaultPanel"]))
 
-    def receipt(self, agent, mode, workdir, name=None, **overrides):
-        receipt_path = self.evidence / (name or f"{mode}-{agent}") / "meta.json"
-        receipt_path.parent.mkdir(parents=True, exist_ok=True)
-        result = {
-            "path": str(receipt_path),
-            "agent": agent,
-            "mode": mode,
-            "workdir": str(workdir),
-            "exit": 0,
-            "timed_out": False,
-            "cancelled": False,
-            "status": "PASS",
-            "changed_workdir": False if mode == "ro" else None,
-            "completed": True,
-        }
-        if mode == "ro":
-            digest = snapshot(workdir.resolve(), receipt_path.parent.resolve())
-            result.update(snapshot_before=digest, snapshot_after=digest)
-        result.update(overrides)
-        receipt_path.write_text(json.dumps(result) + "\n")
-        return result
+    def test_given_default_limits_when_the_host_deadline_is_chosen_then_six_full_attempts_and_the_parent_checks_fit(self):
+        result = subprocess.run([sys.executable, "-B", str(ROOT / "scripts/pstack-host-e2e.py"), "--help"], capture_output=True, text=True, timeout=30)
+        default = int(re.search(r"default: (\d+)", " ".join(result.stdout.split())).group(1))
+        # Writer, review and re-review rounds may each retry once; every attempt can run to its limit plus xagent's grace.
+        attempts = 3 * 2 * (XAGENT["DEFAULT_TIMEOUT"] + XAGENT["TERMINATION_GRACE"])
+        self.assertGreater(default, attempts + 2 * 30)
 
-    def valid_receipts(self, receipts):
-        return validate_receipts(
-            receipts,
-            self.scope,
-            self.parent,
-            self.base,
-            "xagent:writer",
-            ["xagent:review-a", "xagent:review-b"],
-            (self.parent / "stats.py").read_bytes(),
-            TEST_SOURCE.encode(),
-        )
+    def test_given_an_xagent_out_dir_missing_one_marker_when_collected_then_its_broken_receipt_still_fails(self):
+        out = self.evidence / "interrupted-attempt"
+        out.mkdir()
+        (out / "prompt.md").write_text("brief\n")
+        (out / "meta.json").write_text('{"agent": "grok", "mode": "ro", "completed": fal')
+        receipts, ignored = HARNESS["collect_xagent_receipts"](self.evidence)
+        self.assertEqual((receipts, ignored), ([None], []))
+        self.assertFalse(self.valid_receipts(receipts, writer="opus", reviewers=("opus",))["all_attempts_terminal"])
+
+    def test_given_policy_pins_worker_models_when_receipts_are_checked_then_each_receipt_must_carry_its_model(self):
+        writer = self.add_worktree("writer")
+        reviewer_a = self.add_worktree("review-a")
+        reviewer_b = self.add_worktree("review-b")
+        for checkout in (writer, reviewer_a, reviewer_b):
+            (checkout / "stats.py").write_text(FIXED_STATS)
+        final_hash = self.write_final_parent()
+        self.write_verifier_receipt(final_hash)
+        policy = dict(writer="xagent:codex/vendor/model-w", reviewers=("xagent:claude/model-a", "xagent:grok"))
+        pinned = [
+            self.receipt("codex", "rw", writer, model="vendor/model-w"),
+            self.receipt("claude", "ro", reviewer_a, model="model-a"),
+            self.receipt("grok", "ro", reviewer_b),
+        ]
+        self.assertTrue(all(self.valid_receipts(pinned, **policy).values()))
+        unpinned = [
+            self.receipt("codex", "rw", writer, name="writer-default"),
+            self.receipt("claude", "ro", reviewer_a, name="review-a-default"),
+            self.receipt("grok", "ro", reviewer_b, name="review-b-pinned", model="model-b"),
+        ]
+        checks = self.valid_receipts(unpinned, **policy)
+        self.assertTrue(checks["all_attempts_terminal"] and checks["receipt_workspaces_owned"], checks)
+        self.assertFalse(checks["configured_writer_dispatched"])
+        self.assertFalse(checks["configured_reviewers_dispatched"])
 
     def test_given_misleading_or_nonterminal_pass_when_classified_then_it_is_rejected(self):
         legacy_false_positives = (
@@ -145,15 +135,30 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
         self.assertTrue((self.parent / ".test-ran").exists())
         self.assertFalse(validate_parent_verification(self.scope, self.parent))
 
+    def test_given_one_reviewer_entry_twice_when_both_receipts_share_a_worktree_then_only_one_review_counts(self):
+        # Third review round, scenario H, and Codex's review of fc4805e: each review slot needs a worktree of its own.
+        writer = self.final_checkout("writer")
+        self.write_final_parent()
+        written = self.receipt("codex", "rw", writer)
+        for agent in ("grok", "claude"):
+            with self.subTest(agent):
+                shared = self.final_checkout(f"review-{agent}")
+                first, second = (self.receipt(agent, "ro", shared, name=f"ro-{agent}-{index}") for index in (1, 2))
+                checks = self.valid_receipts([written, first, second], reviewers=(f"xagent:{agent}",) * 2)
+                self.assertEqual((checks["receipt_workspaces_owned"], checks["configured_reviewers_dispatched"]), (True, False))
+                # A retry of the same reviewer for one slot may reuse its worktree.
+                dropout = self.receipt(agent, "ro", shared, name=f"ro-{agent}-dropout", status="DROPOUT", exit=3)
+                self.assertEqual(self.valid_receipts([written, dropout, first], reviewers=(f"xagent:{agent}",)), ALL_CHECKS_PASS)
+
     def test_given_writer_and_reviewers_share_one_worktree_when_receipts_are_checked_then_it_fails(self):
         shared = self.add_worktree("shared")
         (shared / "stats.py").write_text(FIXED_STATS)
         final_hash = self.write_final_parent()
         self.write_verifier_receipt(final_hash)
         receipts = [
-            self.receipt("writer", "rw", shared),
-            self.receipt("review-a", "ro", shared),
-            self.receipt("review-b", "ro", shared),
+            self.receipt("codex", "rw", shared),
+            self.receipt("claude", "ro", shared),
+            self.receipt("grok", "ro", shared),
         ]
         self.assertTrue(all(Path(r["workdir"]).resolve().is_relative_to(self.scope.resolve()) and Path(r["workdir"]).resolve() != self.parent.resolve() for r in receipts))
         checks = self.valid_receipts(receipts)
@@ -167,9 +172,9 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
         final_hash = self.write_final_parent()
         self.write_verifier_receipt(final_hash)
         receipts = [
-            self.receipt("writer", "rw", writer),
-            self.receipt("review-a", "ro", reviewer_a),
-            self.receipt("review-b", "ro", reviewer_b),
+            self.receipt("codex", "rw", writer),
+            self.receipt("claude", "ro", reviewer_a),
+            self.receipt("grok", "ro", reviewer_b),
         ]
         self.assertTrue(all(r["mode"] == "ro" and r["completed"] and r["status"] in ("PASS", "ISSUES") and r["changed_workdir"] is False for r in receipts[1:]))
         checks = self.valid_receipts(receipts)
@@ -185,18 +190,13 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
         final_hash = self.write_final_parent()
         self.write_verifier_receipt(final_hash)
         receipts = [
-            self.receipt("writer", "rw", writer),
-            self.receipt("writer", "rw", writer, name="writer-retry", status="DROPOUT", exit=3),
-            self.receipt("review-a", "ro", reviewer_a),
-            self.receipt("review-b", "ro", reviewer_b),
+            self.receipt("codex", "rw", writer),
+            self.receipt("codex", "rw", writer, name="writer-retry", status="DROPOUT", exit=3),
+            self.receipt("claude", "ro", reviewer_a),
+            self.receipt("grok", "ro", reviewer_b),
         ]
         checks = self.valid_receipts(receipts)
-        self.assertEqual(checks, {
-            "all_attempts_terminal": True,
-            "configured_writer_dispatched": True,
-            "configured_reviewers_dispatched": True,
-            "receipt_workspaces_owned": True,
-        })
+        self.assertEqual(checks, ALL_CHECKS_PASS)
         self.assertTrue(validate_parent_verification(self.scope, self.parent))
 
     def test_given_reviewed_worktrees_are_changed_after_review_then_stale_receipts_cannot_pass(self):
@@ -205,9 +205,9 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
         reviewer_a = self.add_worktree("review-a")
         reviewer_b = self.add_worktree("review-b")
         receipts = [
-            self.receipt("writer", "rw", writer),
-            self.receipt("review-a", "ro", reviewer_a),
-            self.receipt("review-b", "ro", reviewer_b),
+            self.receipt("codex", "rw", writer),
+            self.receipt("claude", "ro", reviewer_a),
+            self.receipt("grok", "ro", reviewer_b),
         ]
         for checkout in (reviewer_a, reviewer_b):
             (checkout / "stats.py").write_text(FIXED_STATS)
@@ -289,48 +289,6 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
         self.assertNotEqual(independent.returncode, 0)
         self.assertIn("AssertionError", independent.stderr)
 
-    def test_given_disposable_hosts_then_they_and_their_workers_disable_session_persistence(self):
-        binaries = self.root / "bin"
-        binaries.mkdir()
-        for host in ("claude", "codex"):
-            stub = binaries / host
-            stub.write_text(
-                "#!/usr/bin/env python3\n"
-                "from pathlib import Path\nimport json, os, sys\n"
-                "capture = {'argv': sys.argv[1:], 'ephemeral': os.environ.get('XAGENT_EPHEMERAL')}\n"
-                "Path(os.environ['PSTACK_TEST_HOST_CAPTURE']).write_text(json.dumps(capture))\n"
-                "reply = 'PSTACK_E2E: FAIL'\n"
-                "if Path(sys.argv[0]).name == 'codex':\n"
-                "    Path(sys.argv[sys.argv.index('-o') + 1]).write_text(reply)\n"
-                "else:\n"
-                "    print(json.dumps({'type': 'result', 'result': reply}))\n"
-            )
-            stub.chmod(0o755)
-        command = (
-            "import runpy,sys;from pathlib import Path;"
-            "h=runpy.run_path(sys.argv[1]);"
-            "h['exercise'](sys.argv[3],Path(sys.argv[2]),5,check_timeout=1)"
-        )
-        for host in ("claude", "codex"):
-            with self.subTest(host=host):
-                captured = self.root / f"{host}-command.json"
-                run = self.root / f"{host}-disposable-run"
-                result = subprocess.run(
-                    [sys.executable, "-B", "-c", command, str(ROOT / "scripts/pstack-host-e2e.py"), str(run), host],
-                    env={**os.environ, "PATH": str(binaries) + os.pathsep + os.environ["PATH"],
-                         "XAGENT_EPHEMERAL": "0", "PSTACK_TEST_HOST_CAPTURE": str(captured)},
-                    capture_output=True, text=True, timeout=15,
-                )
-                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                launch = json.loads(captured.read_text())
-                self.assertEqual(launch["ephemeral"], "1")
-                if host == "claude":
-                    self.assertIn("-p", launch["argv"])
-                    self.assertIn("--no-session-persistence", launch["argv"])
-                else:
-                    self.assertIn("--ephemeral", launch["argv"])
-                    self.assertIn('shell_environment_policy.set.XAGENT_EPHEMERAL="1"', launch["argv"])
-
     def test_given_host_leaves_nonterminating_code_when_independently_verified_then_harness_finishes_failed(self):
         binaries = self.root / "bin"
         binaries.mkdir()
@@ -366,7 +324,7 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
     def final_handoff_receipts(self):
         self.write_final_parent()
         receipts = []
-        for agent, mode in (("writer", "rw"), ("review-a", "ro"), ("review-b", "ro")):
+        for agent, mode in (("codex", "rw"), ("claude", "ro"), ("grok", "ro")):
             checkout = self.add_worktree(agent)
             (checkout / "stats.py").write_text(FIXED_STATS)
             receipts.append(self.receipt(agent, mode, checkout))
@@ -402,23 +360,12 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
     def test_given_a_valid_handoff_but_pending_retry_then_workflow_is_not_terminal(self):
         receipts = self.final_handoff_receipts()
         retry = self.receipt(
-            "writer", "rw", Path(receipts[0]["workdir"]), name="pending-retry",
+            "codex", "rw", Path(receipts[0]["workdir"]), name="pending-retry",
             completed=False, status="DROPOUT", exit=None,
         )
         checks = self.valid_receipts([*receipts, retry])
         self.assertTrue(checks["configured_writer_dispatched"])
         self.assertIs(checks.get("all_attempts_terminal"), False)
-
-    def write_verifier_receipt(self, final_hash):
-        (self.scope / "parent-verification.json").write_text(json.dumps({
-            "cwd": str(self.parent.resolve()),
-            "parent": str(self.parent.resolve()),
-            "stats_sha256_before": final_hash,
-            "stats_sha256_after": final_hash,
-            "tests_exit_code": 0,
-            "contract_exit_code": 0,
-            "passed": True,
-        }) + "\n")
 
 
 if __name__ == "__main__":

@@ -10,7 +10,7 @@ Apply it only when the current session exposes T3's orchestration tools `orchest
 
 Run `node <plugin-root>/bin/config.mjs show --host t3`. The T3 view is common policy plus the optional `hosts.t3` section. It never reads `hosts.codex` or `hosts.claude`, whichever host runs the thread, because those hold host-native IDs. Update it with `update --host t3`, through [setup](../skills/setup-pstack/SKILL.md).
 
-A T3 entry is `inherit-parent`, `auto`, `xagent:<agent>`, or a T3 target `<providerInstanceId>/<modelId>`. Split a target at the first `/`; model IDs may contain more slashes.
+A T3 entry is `inherit-parent`, `auto`, `xagent:<agent>[/<model>]`, or a T3 target `<providerInstanceId>/<modelId>`. Split a target at the first `/`; model IDs may contain more slashes. An entry that starts with `xagent:` is never a T3 target, even with a model.
 
 Call `orchestrator_capabilities` once before the first dispatch of a task and check every target it will use: the provider instance is listed, `canRunChildTask` is true, `canRunCrossProviderChildTask` is true when the provider differs from `inheritedProviderInstanceId`, and the model is in that provider's `models`. A failed check is an unresolved choice under the shared rules. Report the entry with the provider's `constraints` text. Do not substitute another model, provider, or `xagent:<agent>` unless the user says so.
 
@@ -18,7 +18,7 @@ Call `orchestrator_capabilities` once before the first dispatch of a task and ch
 | --- | --- |
 | `inherit-parent`, `auto` | Omit `target`. T3 inherits the thread's provider, model, and options. T3 has no automatic router, so `auto` inherits too |
 | `<providerInstanceId>/<modelId>` | `{"providerInstanceId": "<id>", "model": "<model>"}` |
-| `xagent:<agent>` | Not a T3 target. Run it with `bin/xagent` as the shared runtime specifies |
+| `xagent:<agent>[/<model>]` | Not a T3 target. Run it with `bin/xagent` as the shared runtime specifies, with the same adjusted effort as `--effort` |
 
 Start from the effective `reasoning_effort`, apply poteto-mode's per-job adjustment, and map the result to the target model's own option: the listed select option with id `effort`, `reasoningEffort`, or `thinking`, only when the value is one of its choices. Pass it as `target.options`, for example `{"effort": "high"}` for `claudeAgent`, `{"reasoningEffort": "high"}` for `codex` and `grok`, or `{"thinking": "high"}` for `pi`; an inherited entry passes only `options`. Otherwise omit it and disclose that the model ran at its default. A target with no effort option otherwise runs at the provider default, which can be low, so set `reasoning_effort` in `hosts.t3` for review panels. Do not set other options, such as service tier or fast mode, unless the user asked.
 

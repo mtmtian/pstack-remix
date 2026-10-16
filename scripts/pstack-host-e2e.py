@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
 """Exercise real swarm -> interrogate policy routing from Claude and Codex on a synthetic repo."""
+from __future__ import annotations
+
 import argparse
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import asdict, dataclass, fields
 import hashlib
 import json
 import math
 import os
 from pathlib import Path
+import re
 import runpy
+import shlex
 import subprocess
 import sys
 
@@ -34,6 +40,33 @@ class MeanTest(unittest.TestCase):
 XAGENT = runpy.run_path(str(ROOT / "bin/xagent"))
 CLASSIFY = XAGENT["classify"]
 SNAPSHOT = XAGENT["snapshot"]
+NATIVE = runpy.run_path(str(ROOT / "scripts/e2e-native-evidence.py"))
+NativeDispatch = NATIVE["NativeDispatch"]
+claude_native_dispatches = NATIVE["claude_native_dispatches"]
+codex_native_dispatches = NATIVE["codex_native_dispatches"]
+checkouts_touched = NATIVE["checkouts_touched"]
+# The fields the role checks read; another runpy load of the module makes an equal dispatch of a different class.
+NATIVE_FIELDS = tuple(field.name for field in fields(NativeDispatch))
+# A native reviewer brackets its work with this command, as xagent records snapshot_before and snapshot_after.
+SNAPSHOT_TOOL = ROOT / "scripts/e2e-snapshot.py"
+SNAPSHOT_LINE = re.compile(r"^PSTACK_E2E_SNAPSHOT ([0-9a-f]{64}) (.+)$", re.MULTILINE)
+# Each worker attempt gets xagent's own default limit and at most one retry; the retry is not doubled.
+WORKER_LIMIT_SECONDS = XAGENT["DEFAULT_TIMEOUT"]
+# Per attempt, on top of its limit and xagent's termination grace: process start-up and xagent's before/after snapshots.
+ATTEMPT_OVERHEAD_SECONDS = 30
+# The longest one attempt can take, so one foreground wait in the host must outlast it.
+ATTEMPT_SECONDS = WORKER_LIMIT_SECONDS + XAGENT["TERMINATION_GRACE"] + ATTEMPT_OVERHEAD_SECONDS
+# Worst case: the writer, review and post-fix re-review rounds run in sequence, each an attempt plus one retry.
+WORST_CASE_ATTEMPTS = 3 * 2
+# The host's own start-up, patch integration and reasoning between rounds.
+HOST_WORK_SECONDS = 600
+DEFAULT_CHECK_TIMEOUT = 30
+
+
+def default_host_timeout(check_timeout):
+    """Every worst-case attempt run to its limit, plus the host's own work and its two final verification checks."""
+    return math.ceil(WORST_CASE_ATTEMPTS * ATTEMPT_SECONDS + HOST_WORK_SECONDS + 2 * check_timeout)
+
 
 PARENT_VERIFIER_TEMPLATE = r'''#!/usr/bin/env python3
 import hashlib
@@ -144,46 +177,58 @@ def _git_path(workdir, option):
         return None
 
 
-def _valid_linked_worktree(receipt, run_scope, parent, base, parent_common):
+def _linked_worktree_at_base(workdir, run_scope, parent, base, parent_common):
+    """Whether workdir is a linked worktree of the parent, under the run, checked out at the fixture base."""
     try:
-        if not isinstance(receipt, dict):
-            return None
-        raw_workdir = receipt.get("workdir")
-        if not isinstance(raw_workdir, str) or not raw_workdir:
-            return None
-        workdir = Path(raw_workdir).resolve()
-        scope = Path(run_scope).resolve()
-        parent = Path(parent).resolve()
+        workdir, scope, parent = Path(workdir).resolve(), Path(run_scope).resolve(), Path(parent).resolve()
         if workdir == parent or not workdir.is_relative_to(scope):
-            return None
+            return False
         top = _git_output(workdir, "rev-parse", "--show-toplevel")
         head = _git_output(workdir, "rev-parse", "HEAD")
         common = _git_path(workdir, "--git-common-dir")
         git_dir = _git_path(workdir, "--git-dir")
         if not top or Path(top).resolve() != workdir or head != base:
-            return None
+            return False
         if not parent_common or common != parent_common or not git_dir or git_dir == common:
-            return None
-        if not git_dir.is_relative_to(parent_common / "worktrees"):
-            return None
-        git_marker = workdir / ".git"
-        if not git_marker.is_file():
-            return None
+            return False
+        if not git_dir.is_relative_to(parent_common / "worktrees") or not (workdir / ".git").is_file():
+            return False
         worktree_list = _git_output(parent, "worktree", "list", "--porcelain")
-        if worktree_list is None:
-            return None
-        listed_paths = []
-        for line in worktree_list.splitlines():
-            if line.startswith("worktree "):
-                listed_paths.append(Path(line.removeprefix("worktree ")).resolve())
-        if workdir not in listed_paths:
-            return None
-        mode, agent = receipt.get("mode"), receipt.get("agent")
-        if mode not in ("rw", "ro") or not isinstance(agent, str) or not agent:
-            return None
-        return workdir, (mode, agent)
+        listed = [Path(line.removeprefix("worktree ")).resolve() for line in (worktree_list or "").splitlines() if line.startswith("worktree ")]
+        return workdir in listed
     except (OSError, RuntimeError, TypeError, ValueError):
+        return False
+
+
+def _valid_linked_worktree(receipt, run_scope, parent, base, parent_common):
+    """Return the receipt's linked worktree at the fixture base, or None when it or the receipt's worker is invalid."""
+    if not isinstance(receipt, dict) or not isinstance(receipt.get("workdir"), str) or not receipt["workdir"]:
         return None
+    mode, agent, model = receipt.get("mode"), receipt.get("agent"), receipt.get("model")
+    if mode not in ("rw", "ro") or not isinstance(agent, str) or not agent or not isinstance(model, (str, type(None))):
+        return None
+    workdir = Path(receipt["workdir"]).resolve()
+    return workdir if _linked_worktree_at_base(workdir, run_scope, parent, base, parent_common) else None
+
+
+def collect_xagent_receipts(evidence):
+    """Return the meta.json receipts bin/xagent wrote under evidence, and the paths of other meta.json files.
+
+    xagent requires an empty out_dir and creates its RECEIPT_MARKERS there before its first meta.json, so a
+    meta.json beside either marker is an xagent attempt even when it is unreadable or a marker is missing, and
+    fails as such. A host's own notes on its native workers, or a receipt copied elsewhere, are ignored.
+    """
+    receipts, ignored = [], []
+    for file in sorted(Path(evidence).rglob("meta.json")):
+        if not any((file.parent / name).is_file() for name in XAGENT["RECEIPT_MARKERS"]):
+            ignored.append(str(file))
+            continue
+        try:
+            receipt = json.loads(file.read_text())
+        except (OSError, UnicodeError, ValueError):
+            receipt = None
+        receipts.append({**receipt, "path": str(file)} if isinstance(receipt, dict) else None)
+    return receipts, ignored
 
 
 def validate_parent_verification(directory, parent):
@@ -209,91 +254,177 @@ def validate_parent_verification(directory, parent):
         return False
 
 
-def validate_receipts(receipts, run_scope, parent, base, expected_writer, expected_reviewers, final_stats, test_file):
-    """Validate dispatches, workspace ownership, and reviewer version evidence."""
+def route(value):
+    """Return (kind, (agent, model)) for a policy entry, or None when it names no worker."""
+    if not isinstance(value, str) or not value:
+        return None
+    if value.startswith("xagent:"):
+        try:
+            return "xagent", XAGENT["agent_spec"](value.removeprefix("xagent:"))
+        except argparse.ArgumentTypeError:
+            return None
+    # A native dispatch names no agent; inherit-parent and auto omit its model field.
+    return "native", (None, None if value in ("inherit-parent", "auto") else value)
+
+
+def expected_roles(effective):
+    """Return the configured swarm writer and interrogate reviewers, falling back to the helper's own defaults."""
+    return (effective["roles"].get("swarm workers", effective["defaultModel"]),
+            effective["panels"].get("interrogate reviewers", effective["defaultPanel"]))
+
+
+@dataclass(frozen=True)
+class Attempt:
+    """One worker attempt from an xagent receipt or a native host dispatch, as the role and ownership checks see it."""
+    kind: str  # xagent or native
+    mode: str | None  # rw or ro: an xagent receipt's mode, or whether a native subagent edited its checkout
+    worker: tuple[str | None, str | None]  # (agent, model); a native dispatch names no agent
+    effort: str | None
+    terminal: bool
+    checkouts: frozenset[Path]  # the checkouts it worked in
+    role: str | None  # the slot it can fill, its mode, when the attempt is usable; otherwise None
+
+    @property
+    def owner(self):
+        # One worker in one mode, so retries and follow-up fixes may reuse a worktree that nobody else may use.
+        return self.kind, self.mode, self.worker
+
+
+def _final_version(checkout, final_stats, test_file):
     try:
-        receipts = list(receipts)
-        all_terminal = bool(receipts) and all(
-            isinstance(receipt, dict) and receipt.get("completed") is True
-            and receipt.get("status") in ("PASS", "ISSUES", "BLOCKED", "DROPOUT")
-            for receipt in receipts
-        )
+        return (checkout / "stats.py").read_bytes() == final_stats and (checkout / "test_stats.py").read_bytes() == test_file
+    except OSError:
+        return False
+
+
+def _reviewed_final_version(receipt, workdir, final_stats, test_file):
+    try:
+        before, after = receipt.get("snapshot_before"), receipt.get("snapshot_after")
+        return (receipt.get("changed_workdir") is False and isinstance(before, str) and before == after
+                and SNAPSHOT(workdir, Path(receipt["path"]).parent.resolve()) == after
+                and _final_version(workdir, final_stats, test_file))
+    except (OSError, ValueError, KeyError, subprocess.CalledProcessError):
+        return False
+
+
+def _xagent_attempt(receipt, workdir, final_stats, test_file):
+    if not isinstance(receipt, dict):
+        return Attempt("xagent", None, (None, None), None, False, frozenset(), None)
+    mode = receipt.get("mode") if receipt.get("mode") in ("rw", "ro") else None
+    terminal = receipt.get("completed") is True and receipt.get("status") in ("PASS", "ISSUES", "BLOCKED", "DROPOUT")
+    # ISSUES may carry a usable patch or review; final parent checks and reviews remain mandatory.
+    usable = (workdir is not None and terminal and receipt.get("status") in ("PASS", "ISSUES")
+              and type(receipt.get("exit")) is int and receipt.get("exit") == 0)
+    if usable and mode == "ro":
+        usable = _reviewed_final_version(receipt, workdir, final_stats, test_file)
+    return Attempt("xagent", mode, (receipt.get("agent"), receipt.get("model")), receipt.get("effort"), terminal,
+                   frozenset({workdir} if workdir else ()), mode if usable else None)
+
+
+def _snapshot_printed(command):
+    """Return (checkout, digest) when command ran the snapshot tool and printed its line, else None.
+
+    The command may first cd somewhere and use any Python interpreter and flags, but nothing else may run before or
+    after the tool, so it can neither change the checkout nor print a line of its own. The checkout is the one the tool printed.
+    """
+    try:
+        lexer = shlex.shlex(command.command, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        words = list(lexer)
+    except ValueError:
+        return None
+    if words[:1] == ["cd"] and len(words) > 2 and words[2] in ("&&", ";"):
+        words = words[3:]
+    if not words or not re.fullmatch(r"python(3(\.\d+)?)?", Path(words[0]).name):
+        return None
+    # Every other word is an interpreter flag, so no second command shares the line.
+    arguments = [word for word in words[1:] if not word.startswith("-")]
+    if not 1 <= len(arguments) <= 2 or not Path(arguments[0]).is_absolute() or Path(arguments[0]).resolve() != SNAPSHOT_TOOL:
+        return None
+    match = SNAPSHOT_LINE.search(command.output or "")
+    return (Path(match.group(2)).resolve(), match.group(1)) if match and Path(match.group(2)).is_absolute() else None
+
+
+def _reviewed_unchanged(dispatch, checkout, run_scope, parent):
+    """Whether the subagent's own shell commands in checkout sit between its snapshots of it, all matching its state now."""
+    try:
+        now, marks, between = SNAPSHOT(checkout, checkout.parent), [], []
+        for index, command in enumerate(dispatch.commands):
+            printed = _snapshot_printed(command)
+            if printed and printed[0] == checkout:
+                marks.append((index, printed[1]))
+            elif checkout in checkouts_touched(command.paths, run_scope, parent):
+                between.append(index)
+        return (len(marks) >= 2 and all(digest == now for _, digest in marks)
+                and all(marks[0][0] < index < marks[-1][0] for index in between))
+    except (OSError, ValueError, subprocess.CalledProcessError):
+        return False
+
+
+def _native_attempt(dispatch, run_scope, parent, base, parent_common, final_stats, test_file):
+    """A native dispatch writes when its subagent edited the one checkout it used, and reviews when it edited nothing
+    there; either way the checkout must be a linked worktree at the fixture base, and a review must hold the final
+    version, bracketed by the subagent's own matching snapshots of it."""
+    if not all(hasattr(dispatch, name) for name in NATIVE_FIELDS):
+        return Attempt("native", None, (None, None), None, False, frozenset(), None)
+    try:
+        checkouts = frozenset(checkouts_touched(dispatch.paths_touched, run_scope, parent))
+        edited = checkouts_touched(dispatch.paths_edited, run_scope, parent)
+    except (OSError, RuntimeError, TypeError, ValueError):
+        checkouts, edited = frozenset(), set()
+    # Its own edits decide the mode whether or not it finished, as an xagent receipt records its mode up front.
+    mode = "rw" if edited else "ro"
+    role = None
+    if dispatch.usable and len(checkouts) == 1:
+        (checkout,) = checkouts
+        if _linked_worktree_at_base(checkout, run_scope, parent, base, parent_common) and (
+                mode == "rw" or (_final_version(checkout, final_stats, test_file) and _reviewed_unchanged(dispatch, checkout, run_scope, parent))):
+            role = mode
+    return Attempt("native", mode, (None, dispatch.requested), dispatch.effort, dispatch.status in ("completed", "failed"), checkouts, role)
+
+
+def validate_receipts(receipts, run_scope, parent, base, expected_writer, expected_reviewers, final_stats, test_file,
+                      native_dispatches=(), effort_required=False):
+    """Check that every attempt finished, each configured slot took a usable attempt in a checkout of its own, and each
+    checkout has one owner.
+
+    When the policy sets a reasoning effort, an attempt fills a slot only if it records one; poteto-mode adjusts the level per task.
+    """
+    try:
         run_scope, parent = Path(run_scope).resolve(), Path(parent).resolve()
         parent_common = _git_path(parent, "--git-common-dir")
         parent_top = _git_output(parent, "rev-parse", "--show-toplevel")
         if not parent_top or Path(parent_top).resolve() != parent:
             parent_common = None
-        valid_workdirs = {}
-        owners = {}
-        workspaces_valid = bool(receipts) and parent_common is not None
-        for index, receipt in enumerate(receipts):
-            validated = _valid_linked_worktree(receipt, run_scope, parent, base, parent_common)
-            if validated is None:
+        attempts = [_xagent_attempt(receipt, _valid_linked_worktree(receipt, run_scope, parent, base, parent_common), final_stats, test_file)
+                    for receipt in receipts]
+        attempts += [_native_attempt(dispatch, run_scope, parent, base, parent_common, final_stats, test_file) for dispatch in native_dispatches]
+        # Every xagent receipt needs its own linked worktree, and each checkout belongs to one owner across all attempts.
+        workspaces_valid, claims = parent_common is not None, {}
+        for attempt in attempts:
+            if attempt.kind == "xagent" and not attempt.checkouts:
                 workspaces_valid = False
-                continue
-            workdir, owner = validated
-            prior_owner = owners.get(workdir)
-            if prior_owner is not None and prior_owner != owner:
-                workspaces_valid = False
-            owners[workdir] = owner
-            valid_workdirs[index] = workdir
+            for checkout in attempt.checkouts:
+                workspaces_valid = claims.setdefault(checkout, attempt.owner) == attempt.owner and workspaces_valid
+        pool, taken = list(attempts), set()
 
-        def matches(receipt, agent, mode, allowed_statuses):
-            if not isinstance(receipt, dict):
-                return False
-            if receipt.get("agent") != agent or receipt.get("mode") != mode:
-                return False
-            if receipt.get("completed") is not True or receipt.get("status") not in allowed_statuses:
-                return False
-            if type(receipt.get("exit")) is not int or receipt.get("exit") != 0:
-                return False
-            return True
+        def take(value, mode):
+            # A slot cannot use a checkout another slot used, so every configured worker had a worktree of its own.
+            wanted = route(value)
+            for index, attempt in enumerate(pool):
+                if (wanted == (attempt.kind, attempt.worker) and attempt.role == mode and not attempt.checkouts & taken
+                        and (not effort_required or attempt.effort in XAGENT["EFFORTS"])):
+                    taken.update(pool.pop(index).checkouts)
+                    return True
+            return False
 
-        writer_agent = expected_writer.removeprefix("xagent:") if isinstance(expected_writer, str) and expected_writer.startswith("xagent:") else None
-        # ISSUES may carry a usable patch; final parent checks and reviews remain mandatory.
-        writer_ok = bool(writer_agent) and any(
-            index in valid_workdirs and matches(receipt, writer_agent, "rw", ("PASS", "ISSUES"))
-            for index, receipt in enumerate(receipts)
-        )
-
-        reviewer_agents = []
-        if isinstance(expected_reviewers, list):
-            reviewer_agents = [
-                value.removeprefix("xagent:") if isinstance(value, str) and value.startswith("xagent:") else None
-                for value in expected_reviewers
-            ]
-        reviewer_ok = bool(reviewer_agents) and all(reviewer_agents)
-        available = set(range(len(receipts)))
-        for agent in reviewer_agents:
-            matching_index = None
-            for index in sorted(available):
-                receipt = receipts[index]
-                workdir = valid_workdirs.get(index)
-                if workdir is None or not matches(receipt, agent, "ro", ("PASS", "ISSUES")):
-                    continue
-                if receipt.get("changed_workdir") is not False:
-                    continue
-                try:
-                    before, after = receipt.get("snapshot_before"), receipt.get("snapshot_after")
-                    if not isinstance(before, str) or before != after:
-                        continue
-                    if SNAPSHOT(workdir, Path(receipt["path"]).parent.resolve()) != after:
-                        continue
-                    if (workdir / "stats.py").read_bytes() != final_stats:
-                        continue
-                    if (workdir / "test_stats.py").read_bytes() != test_file:
-                        continue
-                except (OSError, ValueError, KeyError, subprocess.CalledProcessError):
-                    continue
-                matching_index = index
-                break
-            if matching_index is None:
-                reviewer_ok = False
-            else:
-                available.remove(matching_index)
-
+        writer_ok = take(expected_writer, "rw")
+        reviewers = expected_reviewers if isinstance(expected_reviewers, list) else []
+        reviewer_ok = bool(reviewers)
+        for value in reviewers:
+            reviewer_ok = take(value, "ro") and reviewer_ok
         return {
-            "all_attempts_terminal": all_terminal,
+            "all_attempts_terminal": bool(attempts) and all(attempt.terminal for attempt in attempts),
             "configured_writer_dispatched": writer_ok,
             "configured_reviewers_dispatched": reviewer_ok,
             "receipt_workspaces_owned": workspaces_valid,
@@ -309,6 +440,40 @@ def validate_receipts(receipts, run_scope, parent, base, expected_writer, expect
 
 def git(work, *args):
     return subprocess.run(["git", "-C", str(work), *args], check=True, text=True, capture_output=True).stdout.strip()
+
+
+def _save_claude_reply(directory, host_log):
+    for event in NATIVE["json_events"](host_log):
+        if event.get("type") == "result" and isinstance(event.get("result"), str):
+            (directory / "result.md").write_text(event["result"])
+
+
+@dataclass(frozen=True)
+class HostAdapter:
+    command: Callable[[Path, Path], list[str]]  # (parent checkout, run directory) -> argv; the prompt goes through stdin
+    env: dict[str, str]
+    save_reply: Callable[[Path, list[str]], None]  # leaves the host's final reply in the run directory's result.md
+    dispatches: Callable[[list[str]], tuple[list[NativeDispatch], str | None]]  # host log lines -> (native dispatches, gap)
+
+
+HOSTS = {
+    # --allowedTools is variadic, so the prompt cannot follow it on the command line.
+    "claude": HostAdapter(
+        command=lambda work, directory: ["claude", "-p", "--no-session-persistence", "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits", "--plugin-dir", str(ROOT), "--allowedTools", "Agent", "Bash", "Read", "Write", "Edit", "Glob", "Grep"],
+        # Claude Code caps a Bash call at 10 minutes by default. One foreground wait must outlast a whole attempt;
+        # the prompt runs a retry in a new call, so it need not cover two.
+        env={"BASH_MAX_TIMEOUT_MS": str(ATTEMPT_SECONDS * 1000)},
+        save_reply=_save_claude_reply,
+        dispatches=claude_native_dispatches,
+    ),
+    # Not --ephemeral: spawn_agent evidence for native workers exists only in the persisted session rollout.
+    "codex": HostAdapter(
+        command=lambda work, directory: ["codex", "exec", "--skip-git-repo-check", "--json", "-C", str(work), "-c", 'shell_environment_policy.set.XAGENT_EPHEMERAL="1"', "-o", str(directory / "result.md"), "-"],
+        env={},
+        save_reply=lambda directory, host_log: None,
+        dispatches=lambda host_log: codex_native_dispatches(host_log, os.environ.get("CODEX_HOME") or Path.home() / ".codex"),
+    ),
+}
 
 
 def exercise(host, run, host_timeout, check_timeout=30):
@@ -347,16 +512,20 @@ the mathematical mean cannot be represented as a finite float. The independent a
 Use swarm with one worker for this one-file repair. Select its agent from the effective policy, not by guessing.
 The writer can run python3 -m unittest -q from the shared allowlist. Do not require it to use -B or -c;
 the parent owns the contract probe and final verification commands below.
-Give the writer an exclusive worktree from fixture base {base}; keep all worktrees and outputs under {directory}.
+Give the writer an exclusive worktree at fixture base {base} and have it leave its change uncommitted there;
+keep all worktrees and outputs under {directory}.
 The parent checkout is {work}. Integrate the worker's patch locally, then run python3 -m unittest yourself.
 Use interrogate on the resulting change with all configured reviewers, selected from the effective policy.
-Reviewers get separate worktrees containing the proposed patch. Preserve parent and worker evidence.
+Give each reviewer its own exclusive worktree checked out at fixture base {base}, with the proposed patch applied
+as uncommitted changes; do not commit the patch or check out a writer commit. Preserve parent and worker evidence.
 Fix any real in-scope findings and rerun the affected check; do not count a dropout, cancelled run, or missing evidence as a pass.
+If stats.py changes after any review, every configured reviewer must review the final version again in a new worktree
+prepared the same way; a review of an earlier version does not count.
 Both host controllers run one-shot/headless. Do not send the final reply until every external command and reviewer
 has completed and you have inspected its terminal output and receipt. When running xagent commands in parallel,
 start them with & in one foreground Bash call, capture every PID, and wait for every PID; give the call a timeout
-longer than the 240-second attempt limit plus termination grace and enough time for the allowed retry. Do not
-promise later notifications, rely on Monitor or shell sentinels, or use TaskOutput (it is not an available tool).
+longer than the {WORKER_LIMIT_SECONDS}-second attempt limit plus termination grace. Inspect each receipt, then run an allowed
+retry in a new call. Do not promise later notifications, rely on Monitor or shell sentinels, or use TaskOutput (it is not an available tool).
 Follow the host adapter's supported tools and wait behavior.
 
 After all integrations, fixes, and configured reviews are complete, personally run the final parent verification
@@ -367,45 +536,36 @@ Each verification command has a {check_timeout:g}-second deadline and terminates
 Do not edit stats.py after running it. The harness checks that this receipt describes the final parent version,
 then independently reruns the tests and contract probe.
 
-Every xagent attempt must write to a new subdirectory under {evidence}. Limit each worker to 240 seconds and at most one retry.
+Every xagent attempt must write to a new subdirectory under {evidence}. Limit each worker to {WORKER_LIMIT_SECONDS} seconds and at most one retry.
 Use only this synthetic fixture and local candidate skill files. The human has authorized this real multi-vendor E2E,
 including sending this synthetic code and the standalone briefs to the locally configured agents.
 No extra confirmation is needed for those calls. Do not push, publish, change global settings, contact people, or edit the candidate plugin.
 Workers must remain leaves. Do not replace configured external agents with native workers.
+A policy entry without the xagent: prefix is a native worker: dispatch it with your host's own subagent tool and
+pass that exact model, omitting the model only for inherit-parent or auto. A native writer changes files only with its
+host's file-edit tool (Write or Edit in Claude Code, apply_patch in Codex); a native reviewer changes no files and runs
+python3 -B {SNAPSHOT_TOOL} <its worktree> as its first and as its last shell command in that worktree,
+each as a command of its own.
+When the effective policy sets reasoning_effort, pass an effort to every worker, native or xagent.
 Report the resolved routes, actual worker receipt paths, findings, your own test output, and any gaps.
 End with PSTACK_E2E: PASS only if the repair, all configured reviews and your independent tests are complete,
 with no unresolved reproduced violation of the stated contract; otherwise PSTACK_E2E: FAIL.
 '''
     (directory / "prompt.md").write_text(prompt)
-    if host == "codex":
-        args = ["codex", "exec", "--skip-git-repo-check", "--ephemeral", "--json", "-C", str(work), "-c", 'shell_environment_policy.set.XAGENT_EPHEMERAL="1"', "-o", str(directory / "result.md"), "-"]
-    else:
-        args = ["claude", "-p", "--no-session-persistence", "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits", "--plugin-dir", str(ROOT), "--allowedTools", "Bash", "Read", "Write", "Edit", "Glob", "Grep"]
-    env = {**os.environ, "XAGENT_EPHEMERAL": "1"}
+    adapter = HOSTS[host]
+    env = {**os.environ, "XAGENT_EPHEMERAL": "1", **adapter.env}
     env.pop("XAGENT_DEPTH", None)
     with (directory / "host.log").open("w") as log:
-        finished = subprocess.run(["timeout", "-k", "5", str(host_timeout), *args], cwd=work, env=env, input=prompt, text=True, stdout=log, stderr=subprocess.STDOUT)
-    if host == "claude":
-        for line in (directory / "host.log").read_text().splitlines():
-            try:
-                event = json.loads(line)
-            except ValueError:
-                continue
-            if isinstance(event, dict) and event.get("type") == "result" and isinstance(event.get("result"), str):
-                (directory / "result.md").write_text(event["result"])
+        finished = subprocess.run(["timeout", "-k", "5", str(host_timeout), *adapter.command(work, directory)], cwd=work, env=env, input=prompt, text=True, stdout=log, stderr=subprocess.STDOUT)
+    host_log = (directory / "host.log").read_text(errors="replace").splitlines()
+    adapter.save_reply(directory, host_log)
     try:
         reply = (directory / "result.md").read_text()
     except (OSError, UnicodeError):
         reply = ""
-    receipts = []
-    for file in sorted(evidence.rglob("meta.json")):
-        try:
-            receipt = json.loads(file.read_text())
-            receipts.append({**receipt, "path": str(file)} if isinstance(receipt, dict) else None)
-        except (OSError, UnicodeError, ValueError):
-            receipts.append(None)
-    expected_writer = policy["effective"]["roles"].get("swarm workers", "inherit-parent")
-    expected_reviewers = policy["effective"]["panels"].get("interrogate reviewers", [])
+    receipts, ignored_meta = collect_xagent_receipts(evidence)
+    native, native_gap = adapter.dispatches(host_log)
+    expected_writer, expected_reviewers = expected_roles(policy["effective"])
     try:
         test_file_preserved = (work / "test_stats.py").read_text() == TEST
     except (OSError, UnicodeError):
@@ -420,6 +580,8 @@ with no unresolved reproduced violation of the stated contract; otherwise PSTACK
         expected_reviewers,
         final_stats,
         TEST.encode(),
+        native,
+        policy["effective"].get("reasoning_effort") is not None,
     )
     parent_verification_valid = validate_parent_verification(directory, work)
     checks = {
@@ -436,21 +598,32 @@ with no unresolved reproduced violation of the stated contract; otherwise PSTACK
     (directory / "contract-probe.log").write_text(contract.stdout + contract.stderr)
     checks["finite_number_contract_preserved"] = contract.returncode == 0
     report = {"host": host, "exit": finished.returncode, "base": base, "policy": policy["effective"], "checks": checks, "receipts": receipts,
+              "ignored_meta": ignored_meta, "native_evidence": {"gap": native_gap, "dispatches": [asdict(dispatch) for dispatch in native]},
               "verification": {"tests_exit_code": verification.returncode, "contract_exit_code": contract.returncode, "timeout_seconds": check_timeout}}
     (directory / "checks.json").write_text(json.dumps(report, indent=2) + "\n")
     for name, passed in checks.items():
         print(f"{'ok' if passed else 'FAIL'} {host}: {name}", flush=True)
+    if native_gap:
+        print(f"GAP {host}: native dispatch evidence unavailable: {native_gap}", flush=True)
+    for dispatch in native:
+        if not dispatch.paths_touched:
+            print(f"GAP {host}: native dispatch {dispatch.id} used no path, so it cannot fill a role", flush=True)
+    for path in ignored_meta:
+        print(f"IGNORED {host}: {path} was not written by xagent", flush=True)
     return all(checks.values())
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("run_dir", type=Path)
-    parser.add_argument("--host", choices=("claude", "codex"), action="append")
-    parser.add_argument("--host-timeout", type=int, default=1200, help="outer host deadline in seconds (default: 1200)")
-    parser.add_argument("--check-timeout", type=float, default=30, help="deadline for each verification command (default: 30)")
+    parser.add_argument("--host", choices=tuple(HOSTS), action="append")
+    parser.add_argument("--host-timeout", type=int, help=(
+        f"outer host deadline in seconds (default: {default_host_timeout(DEFAULT_CHECK_TIMEOUT)} with the default check timeout, "
+        f"from {WORST_CASE_ATTEMPTS} attempts x ({WORKER_LIMIT_SECONDS} s limit + {XAGENT['TERMINATION_GRACE']} s grace + "
+        f"{ATTEMPT_OVERHEAD_SECONDS} s overhead) + {HOST_WORK_SECONDS} s host work + 2 x check timeout)"))
+    parser.add_argument("--check-timeout", type=float, default=DEFAULT_CHECK_TIMEOUT, help=f"deadline for each verification command (default: {DEFAULT_CHECK_TIMEOUT})")
     options = parser.parse_args()
-    if options.host_timeout <= 0:
+    if options.host_timeout is not None and options.host_timeout <= 0:
         parser.error("host-timeout must be positive")
     if not math.isfinite(options.check_timeout) or options.check_timeout <= 0:
         parser.error("check-timeout must be positive and finite")
@@ -458,11 +631,13 @@ def main():
     run.mkdir(parents=True, exist_ok=True)
     if any(run.iterdir()):
         parser.error("use a new empty run directory")
-    sources = ["bin/xagent", "bin/xagent-pi-guard.ts", "references/runtime.md", "references/claude-runtime.md", "references/codex-runtime.md", "skills/xagent/SKILL.md", "skills/swarm/SKILL.md", "skills/interrogate/SKILL.md", "scripts/pstack-host-e2e.py", "scripts/pstack-host-e2e.test.py", "scripts/e2e-process.py"]
+    sources = ["bin/xagent", "bin/xagent-pi-guard.ts", "references/runtime.md", "references/claude-runtime.md", "references/codex-runtime.md", "skills/xagent/SKILL.md", "skills/swarm/SKILL.md", "skills/interrogate/SKILL.md", "scripts/pstack-host-e2e.py", "scripts/pstack-host-e2e.test.py", "scripts/pstack-host-e2e-native.test.py",
+               "scripts/pstack-host-e2e-fixtures.py", "scripts/e2e-native-evidence.py", "scripts/e2e-snapshot.py", "scripts/e2e-process.py"]
     (run / "source-hashes.json").write_text(json.dumps({name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest() for name in sources}, indent=2) + "\n")
-    hosts = options.host or ["claude", "codex"]
+    hosts = options.host or list(HOSTS)
     with ThreadPoolExecutor(max_workers=len(hosts)) as pool:
-        results = list(pool.map(lambda host: exercise(host, run, options.host_timeout, options.check_timeout), hosts))
+        host_timeout = options.host_timeout or default_host_timeout(options.check_timeout)
+        results = list(pool.map(lambda host: exercise(host, run, host_timeout, options.check_timeout), hosts))
     return 0 if all(results) else 1
 
 

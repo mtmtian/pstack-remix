@@ -71,7 +71,7 @@ node bin/config.mjs show --host claude
 node bin/config.mjs show --host t3
 ```
 
-共享配置可以指定角色、评审组和推理强度。具体模型 ID 放在对应主控的配置中，由该主控的可用能力决定能否使用；`hosts.codex` 或 `hosts.claude` 的设置优先于共享设置。这样可以共用策略，又不把一家厂商的模型 ID 传给另一家。T3 Code 会话只读共享设置和可选的 `hosts.t3`，不读 `hosts.codex` 或 `hosts.claude`；`hosts.t3` 里可以写 T3 目标 `<providerInstanceId>/<modelId>`，例如 `codex/gpt-6.1-sol`。改 T3 的配置不影响原生 Claude、Codex 会话，反过来也一样。
+共享配置可以指定角色、评审组和推理强度。具体模型 ID 放在对应主控的配置中，由该主控的可用能力决定能否使用；`hosts.codex` 或 `hosts.claude` 的设置优先于共享设置。这样可以共用策略，又不把一家厂商的模型 ID 传给另一家。外部 Agent 自己的模型是例外，例如 `xagent:claude/claude-opus-5-5`：两个主控都会通过 xagent 把它交给同一个 CLI，所以可以写在共享配置里。T3 Code 会话只读共享设置和可选的 `hosts.t3`，不读 `hosts.codex` 或 `hosts.claude`；`hosts.t3` 里可以写 T3 目标 `<providerInstanceId>/<modelId>`，例如 `codex/gpt-6.1-sol`。改 T3 的配置不影响原生 Claude、Codex 会话，反过来也一样。
 
 需要修改偏好时调用 `setup-pstack`。已有选择会保留，除非你要求调整。源码仓库不包含个人配置、凭据、会话日志或插件缓存。详见[共享运行时约定](./references/runtime.md)。
 
@@ -188,7 +188,7 @@ pstack 本身不安装定时器；长任务流程也不保证会话退出或主�
 
 ## 跨厂商协作：xagent
 
-共享策略中的 `xagent:<agent>` 表示外部 Agent CLI，例如 `xagent:pi` 或 `xagent:codex`。它可以用于 worker 角色或评审组；它不是主控模型 ID，也不应作为原生子 Agent 的 `model` 参数传入。
+共享策略中的 `xagent:<agent>` 表示外部 Agent CLI，例如 `xagent:pi` 或 `xagent:codex`。写成 `xagent:<agent>/<model>` 时，会同时指定这个 CLI 自己的模型，例如 `xagent:claude/claude-opus-5-5`、`xagent:codex/gpt-6-astra`。它可以用于 worker 角色或评审组；它不是主控模型 ID，也不应作为原生子 Agent 的 `model` 参数传入。
 
 共享配置中的 `required_panel_members`（例如 `["xagent:grok", "xagent:gemini"]`）会把这些外部 Agent 追加到两个主控的每个评审组和默认评审组，单个评审组或主控覆盖都无法遗漏它们。评审组里的 `xagent:<agent>` 不会被替换成继承模型，也不会以 N-1 静默跳过；重试和失败报告规则见[运行时契约](./references/runtime.md)。
 
@@ -200,13 +200,17 @@ pstack 本身不安装定时器；长任务流程也不保证会话退出或主�
 | `xagent:gemini` | `agy` |
 | `xagent:pi` | `pi` |
 
-xagent 不传模型参数，各 Agent 使用自身 CLI 配置的默认模型和推理强度；要换模型，请改对应 CLI 的配置。
+主控会把 `xagent:` 后面的部分原样作为 agent 参数传给 xagent，`/` 后的模型交给对应 CLI 的模型参数。worker 的推理强度取生效的 `reasoning_effort`，经过 poteto-mode 按任务做的调整后，通过 `--effort` 传入，再映射为各 CLI 自己的参数：claude 和 agy 用 `--effort`，codex 用 `-c model_reasoning_effort`，grok 用 `--reasoning-effort`，pi 用 `--thinking`。没写模型或没有生效的推理强度时，沿用该 CLI 自己的默认配置。模型和推理强度由各 CLI 自行校验：不存在的模型或模型不支持的强度会让这次运行记为 `DROPOUT`，不会悄悄换成别的模型。`meta.json` 会记录请求的 `model` 和 `effort`。
+
+`xagent:claude` 和 `xagent:claude/opus` 是两个不同的 worker。所以即使评审组里已经有 `xagent:claude/opus`，必选成员 `xagent:claude` 仍会被追加进去。
 
 统一调用形式：
 
 ```text
-<plugin-root>/bin/xagent <claude|codex|grok|gemini|pi> <ro|rw> <workdir> <prompt-file> <out-dir> [timeout-sec]
+<plugin-root>/bin/xagent <claude|codex|grok|gemini|pi>[/<model>] <ro|rw> <workdir> <prompt-file> <out-dir> [timeout-sec] [--effort low|medium|high|xhigh|max]
 ```
+
+模型名里含 `[`、`]` 时（例如 `'claude/opus[1m]'`），在 shell 里要加引号。
 
 主控为每个外部 worker 准备独占 Git worktree 和独立 brief，评审者也遵循这一规则；每次尝试使用新的空输出目录。`xagent` 不会自行创建 worktree。审查、裁决和探索使用 `ro`，写入任务使用 `rw`。
 
