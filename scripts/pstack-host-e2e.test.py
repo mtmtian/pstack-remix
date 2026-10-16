@@ -55,11 +55,13 @@ CLAUDE_MIXED = dict(writer="opus", reviewers=("opus", "xagent:codex/gpt-6.1-sol"
 CODEX_MIXED = dict(writer="gpt-6.1-sol", reviewers=("gpt-6.1-sol", "xagent:claude/opus", "xagent:grok/magpie/likecode-grok/grok-4.7"))
 
 
-def agent_call(tool_id, requested, resolved, background=False, finished=True, denied=False, prompt="brief", tools=()):
+def agent_call(tool_id, requested, resolved, background=False, finished=True, denied=False, prompt="brief", tools=(), effort=None):
     """Claude stream-json events for one Agent dispatch, shaped like a real `claude -p --verbose` run."""
     arguments = {"description": tool_id, "subagent_type": "general-purpose", "prompt": prompt, "run_in_background": background}
     if requested is not None:
         arguments["model"] = requested
+    if effort is not None:
+        arguments["effort"] = effort
     events = [{"type": "assistant", "parent_tool_use_id": None, "message": {"model": "claude-opus-5-5", "content": [
         {"type": "tool_use", "id": tool_id, "name": "Agent", "input": arguments},
     ]}}]
@@ -80,8 +82,18 @@ def agent_call(tool_id, requested, resolved, background=False, finished=True, de
 
 
 def works_in(checkout):
-    """A subagent's own tool calls inside checkout."""
+    """A subagent's own read-only tool calls inside checkout."""
     return [("Bash", {"command": f"cd {checkout} && git diff"}), ("Read", {"file_path": f"{checkout}/stats.py"})]
+
+
+def writes_in(checkout):
+    """A subagent's tool calls that also edit a file in checkout."""
+    return [*works_in(checkout), ("Edit", {"file_path": f"{checkout}/stats.py"})]
+
+
+def edits(path):
+    """A Codex child's apply_patch on path, recorded as a FileChange item."""
+    return ("edit", str(path))
 
 
 def claude_stream(*calls):
@@ -92,18 +104,21 @@ def claude_stream(*calls):
     return [json.dumps(event) for event in events]
 
 
-def write_codex_rollouts(home, thread, spawns, parent_rollout=True):
+def write_codex_rollouts(home, thread, spawns, parent_rollout=True, effort=None):
     """Write rollouts shaped like `codex exec` sessions; return the matching `--json` host log.
 
-    Each spawn is (call, requested model, child thread, model the child ran, finished, *commands the child ran).
+    Each spawn is (call, requested model, child thread, model the child ran, finished, *actions), where an action
+    is a shell command the child ran or edits(path).
     """
     day = home / "sessions" / "2026" / "10" / "16"
     day.mkdir(parents=True, exist_ok=True)
     parent = [{"type": "session_meta", "payload": {"id": thread}}, {"type": "turn_context", "payload": {"model": "gpt-6-astra"}}]
-    for call, requested, child, actual, finished, *commands in spawns:
+    for call, requested, child, actual, finished, *actions in spawns:
         arguments = {"task_name": call, "fork_turns": "none", "message": "brief"}
         if requested is not None:
             arguments["model"] = requested
+        if effort is not None:
+            arguments["reasoning_effort"] = effort
         parent.append({"type": "response_item", "payload": {"type": "function_call", "name": "spawn_agent", "namespace": "collaboration",
                                                             "call_id": call, "arguments": json.dumps(arguments)}})
         parent.append({"type": "response_item", "payload": {"type": "function_call_output", "call_id": call,
@@ -114,9 +129,15 @@ def write_codex_rollouts(home, thread, spawns, parent_rollout=True):
             continue
         events = [{"type": "session_meta", "payload": {"id": child, "parent_thread_id": thread}},
                   {"type": "turn_context", "payload": {"model": actual}}]
-        events += [{"type": "response_item", "payload": {"type": "custom_tool_call", "name": "exec", "call_id": f"{child}-{index}",
-                                                         "input": f"text(await tools.exec_command({{cmd:{json.dumps(command)}}}))"}}
-                   for index, command in enumerate(commands)]
+        for index, action in enumerate(actions):
+            if isinstance(action, tuple):
+                events.append({"type": "event_msg", "payload": {"type": "item_completed", "item": {
+                    "type": "FileChange", "changes": {action[1]: {"type": "update", "unified_diff": "+fix"}}, "status": "completed"}}})
+                continue
+            events.append({"type": "response_item", "payload": {"type": "custom_tool_call", "name": "exec", "call_id": f"{child}-{index}",
+                                                                 "input": f"text(await tools.exec_command({{cmd:{json.dumps(action)}}}))"}})
+            events.append({"type": "event_msg", "payload": {"type": "item_completed", "item": {
+                "type": "CommandExecution", "command": ["/bin/zsh", "-lc", action], "status": "completed"}}})
         if finished:
             events.append({"type": "event_msg", "payload": {"type": "task_complete", "last_agent_message": "done"}})
             parent.append({"type": "event_msg", "payload": {"type": "item_completed", "item": {
@@ -191,7 +212,7 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
         receipt_path.write_text(json.dumps(result) + "\n")
         return result
 
-    def valid_receipts(self, receipts, writer="xagent:codex", reviewers=("xagent:claude", "xagent:grok"), native_dispatches=()):
+    def valid_receipts(self, receipts, writer="xagent:codex", reviewers=("xagent:claude", "xagent:grok"), native_dispatches=(), effort=None):
         return validate_receipts(
             receipts,
             self.scope,
@@ -202,6 +223,7 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
             (self.parent / "stats.py").read_bytes(),
             TEST_SOURCE.encode(),
             native_dispatches,
+            effort,
         )
 
     def final_checkout(self, name, stats=FIXED_STATS):
@@ -215,6 +237,9 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
         checkout = self.final_checkout(name)
         self.git(checkout, "-c", "user.name=fixture", "-c", "user.email=fixture@local", "-c", "commit.gpgsign=false", "commit", "-qam", "writer commit")
         return checkout
+
+    def codex_writes(self, checkout):
+        return (f"cd {checkout} && git diff", edits(checkout / "stats.py"))
 
     def xagent_reviews_for(self, reviewers):
         """Final-code receipts for the policy's xagent reviewers; native entries get none."""
@@ -247,7 +272,7 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
         notes = [self.native_note("native-writer-1", "/root/swarm_writer"), self.native_note("reviewer-native-r1-a1", "/root/interrogate_native_r1")]
         home = self.root / "codex-home"
         native, _ = codex_native_dispatches(write_codex_rollouts(home, "thread-third-run", [
-            ("call-writer", "gpt-6.1-sol", "thread-writer", "gpt-6.1-sol", True, f"cd {self.committed_checkout('writer-1')} && git diff"),
+            ("call-writer", "gpt-6.1-sol", "thread-writer", "gpt-6.1-sol", True, *self.codex_writes(self.committed_checkout("writer-1"))),
             ("call-review", "gpt-6.1-sol", "thread-review", "gpt-6.1-sol", True, f"cat {self.final_checkout('reviewer-native-r1')}/stats.py"),
         ]), home)
 
@@ -256,12 +281,7 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
         self.assertEqual(sorted(ignored), sorted(str(note) for note in notes))
         self.assertEqual(sorted(receipt["path"] for receipt in receipts), sorted(receipt["path"] for receipt in written))
         checks = self.valid_receipts(receipts, native_dispatches=native, **CODEX_MIXED)
-        self.assertEqual(checks, {
-            "all_attempts_terminal": True,
-            "configured_writer_dispatched": True,
-            "configured_reviewers_dispatched": True,
-            "receipt_workspaces_owned": True,
-        })
+        self.assertEqual(checks, ALL_CHECKS_PASS)
 
     def test_given_an_unreadable_receipt_in_an_xagent_out_dir_and_a_copy_elsewhere_when_collected_then_only_the_copy_is_ignored(self):
         collect_xagent_receipts = HARNESS["collect_xagent_receipts"]
@@ -287,18 +307,13 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
             agent_call("toolu_review", "opus", "claude-opus-5-5", background=True, tools=works_in(self.final_checkout("review-native"))),
         ))
         self.assertIsNone(gap)
-        self.assertEqual(self.valid_receipts(receipts, native_dispatches=native, **CLAUDE_MIXED), {
-            "all_attempts_terminal": True,
-            "configured_writer_dispatched": True,
-            "configured_reviewers_dispatched": True,
-            "receipt_workspaces_owned": True,
-        })
+        self.assertEqual(self.valid_receipts(receipts, native_dispatches=native, **CLAUDE_MIXED), ALL_CHECKS_PASS)
 
     def test_given_mixed_codex_policy_when_rollouts_show_native_dispatches_and_xagent_receipts_then_all_checks_pass(self):
         receipts = self.xagent_reviews_for(CODEX_MIXED["reviewers"])
         home = self.root / "codex-home"
         log = write_codex_rollouts(home, "thread-host", [
-            ("call-writer", "gpt-6.1-sol", "thread-writer", "gpt-6.1-sol", True, f"cd {self.committed_checkout('writer-native')} && git diff"),
+            ("call-writer", "gpt-6.1-sol", "thread-writer", "gpt-6.1-sol", True, *self.codex_writes(self.committed_checkout("writer-native"))),
             ("call-review", "gpt-6.1-sol", "thread-review", "gpt-6.1-sol", True, f"git -C {self.final_checkout('review-native')} diff"),
         ])
         native, gap = codex_native_dispatches(log, home)
@@ -311,12 +326,7 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
         native, gap = claude_native_dispatches(claude_stream(self.native_writer(self.committed_checkout("writer-native")), *(
             agent_call(f"toolu_review_{index}", "opus", "claude-opus-5-5", tools=works_in(self.final_checkout(f"review-{index}"))) for index in range(2))))
         self.assertIsNone(gap)
-        self.assertEqual(self.valid_receipts([], native_dispatches=native, writer="opus", reviewers=("opus", "opus")), {
-            "all_attempts_terminal": True,
-            "configured_writer_dispatched": True,
-            "configured_reviewers_dispatched": True,
-            "receipt_workspaces_owned": True,
-        })
+        self.assertEqual(self.valid_receipts([], native_dispatches=native, writer="opus", reviewers=("opus", "opus")), ALL_CHECKS_PASS)
 
     def test_given_one_agent_with_two_models_sharing_a_reviewer_worktree_when_checked_then_ownership_fails(self):
         shared = self.add_worktree("shared-claude")
@@ -348,7 +358,7 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
         home = self.root / "codex-home"
         writer_checkout = self.committed_checkout("writer-native")
         codex, gap = codex_native_dispatches(write_codex_rollouts(home, "thread-alias", [
-            ("call-writer", "opus", "thread-alias-w", "claude-opus-5-5", True, f"cd {writer_checkout} && git diff")]), home)
+            ("call-writer", "opus", "thread-alias-w", "claude-opus-5-5", True, *self.codex_writes(writer_checkout))]), home)
         self.assertIsNone(gap)
         claude, _ = claude_native_dispatches(claude_stream(self.native_writer(writer_checkout)))
         self.assertFalse(self.valid_receipts([], native_dispatches=codex, writer="opus", reviewers=())["configured_writer_dispatched"])
@@ -376,6 +386,7 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
             ("checkout reviewed before the last change", works_in(stale), False),
             ("checkout moved off the fixture base", works_in(committed), False),
             ("final and stale checkouts", [*works_in(final), *works_in(stale)], False),
+            ("final checkout it edited", writes_in(final), False),
             ("relative and missing paths only", [("Bash", {"command": "cat stats.py"}), ("Read", {"file_path": f"{final}/notes/missing.md"})], False),
         ):
             with self.subTest(name):
@@ -401,7 +412,7 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
                 # The review comes first, so the writer must not take the only attempt that can review.
                 native, gap = codex_native_dispatches(write_codex_rollouts(home, thread, [
                     (f"{thread}-review", "gpt-6.1-sol", f"{thread}-r", "gpt-6.1-sol", True, *commands),
-                    (f"{thread}-writer", "gpt-6.1-sol", f"{thread}-w", "gpt-6.1-sol", True, f"cd {writer_checkout} && git diff"),
+                    (f"{thread}-writer", "gpt-6.1-sol", f"{thread}-w", "gpt-6.1-sol", True, *self.codex_writes(writer_checkout)),
                 ]), home)
                 self.assertIsNone(gap)
                 checks = self.valid_receipts([], native_dispatches=native, writer="gpt-6.1-sol", reviewers=("gpt-6.1-sol",))
@@ -426,7 +437,7 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
 
     # Scenarios A-E from the second review round: a native review is bound by its subagent's own tool calls.
     def native_writer(self, checkout, prompt=None):
-        return agent_call("toolu_writer", "opus", "claude-opus-5-5", prompt=prompt or f"Fix stats.py in {checkout}.", tools=works_in(checkout))
+        return agent_call("toolu_writer", "opus", "claude-opus-5-5", prompt=prompt or f"Fix stats.py in {checkout}.", tools=writes_in(checkout))
 
     def test_given_a_native_writer_and_an_unrelated_agent_call_when_nothing_was_reviewed_then_the_review_slot_stays_empty(self):
         self.write_final_parent()
@@ -485,6 +496,47 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
         ))
         self.assertEqual(self.valid_receipts([], native_dispatches=native, writer="opus", reviewers=("opus",)), ALL_CHECKS_PASS)
 
+    def test_given_a_host_that_dispatched_only_reviews_when_checked_then_no_review_fills_the_writer_slot(self):
+        # Codex review of 78ecce9, P1: a writer slot needs a dispatch that edited its own checkout.
+        self.write_final_parent()
+        reviews = [self.final_checkout(f"review-{index}") for index in range(2)]
+        claude, _ = claude_native_dispatches(claude_stream(*(
+            agent_call(f"toolu_review_{index}", "opus", "claude-opus-5-5", tools=works_in(checkout)) for index, checkout in enumerate(reviews))))
+        home = self.root / "codex-home"
+        codex, _ = codex_native_dispatches(write_codex_rollouts(home, "thread-reviews-only", [
+            (f"call-review-{index}", "gpt-6.1-sol", f"thread-review-{index}", "gpt-6.1-sol", True, f"git -C {checkout} diff")
+            for index, checkout in enumerate(reviews)]), home)
+        for host, native, model in (("claude", claude, "opus"), ("codex", codex, "gpt-6.1-sol")):
+            with self.subTest(host):
+                checks = self.valid_receipts([], native_dispatches=native, writer=model, reviewers=(model,))
+                self.assertFalse(checks["configured_writer_dispatched"])
+                self.assertTrue(checks["configured_reviewers_dispatched"])
+
+    def test_given_a_policy_effort_when_a_worker_records_none_then_it_fills_no_role(self):
+        # Codex review of 78ecce9, P1: any level counts, since poteto-mode adjusts it per task, but it must be passed.
+        self.write_final_parent()
+        writer_checkout = self.committed_checkout("writer-native")
+        review_checkout = self.final_checkout("review-native")
+        home = self.root / "codex-home"
+        for index, (effort, policy, counted) in enumerate(((None, "xhigh", False), ("high", "xhigh", True), (None, None, True), ("turbo", "xhigh", False))):
+            with self.subTest(effort=effort, policy=policy):
+                writer = self.final_checkout(f"writer-codex-{index}")
+                review = self.final_checkout(f"review-grok-{index}")
+                receipts = [self.receipt("codex", "rw", writer, name=f"rw-codex-{index}", effort=effort),
+                            self.receipt("grok", "ro", review, name=f"ro-grok-{index}", effort=effort)]
+                checks = self.valid_receipts(receipts, reviewers=("xagent:grok",), effort=policy)
+                self.assertEqual((checks["configured_writer_dispatched"], checks["configured_reviewers_dispatched"]), (counted, counted))
+                claude, _ = claude_native_dispatches(claude_stream(
+                    agent_call("toolu_writer", "opus", "claude-opus-5-5", tools=writes_in(writer_checkout), effort=effort),
+                    agent_call("toolu_review", "opus", "claude-opus-5-5", tools=works_in(review_checkout), effort=effort)))
+                codex, _ = codex_native_dispatches(write_codex_rollouts(home, f"thread-effort-{index}", [
+                    (f"effort-{index}-writer", "gpt-6.1-sol", f"effort-{index}-w", "gpt-6.1-sol", True, *self.codex_writes(writer_checkout)),
+                    (f"effort-{index}-review", "gpt-6.1-sol", f"effort-{index}-r", "gpt-6.1-sol", True, f"git -C {review_checkout} diff"),
+                ], effort=effort), home)
+                for native, model in ((claude, "opus"), (codex, "gpt-6.1-sol")):
+                    checks = self.valid_receipts([], native_dispatches=native, writer=model, reviewers=(model,), effort=policy)
+                    self.assertEqual((checks["configured_writer_dispatched"], checks["configured_reviewers_dispatched"]), (counted, counted))
+
     def test_given_mixed_policy_when_a_native_dispatch_is_missing_unfinished_or_denied_then_its_role_fails(self):
         receipts = self.xagent_reviews_for(CLAUDE_MIXED["reviewers"])
         writer = self.native_writer(self.committed_checkout("writer-native"))
@@ -496,10 +548,10 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
                 claude_stream(writer, agent_call("toolu_review", "opus", "claude-opus-5-5", background=True, finished=False, tools=works_in(review_checkout))),
                 {"configured_reviewers_dispatched": False, "all_attempts_terminal": False},
             ),
-            # A completed review can also write, and the writer slot is filled first.
+            # A completed review cannot stand in for the denied writer.
             "Agent tool denied": (
                 claude_stream(agent_call("toolu_writer", "opus", None, denied=True), agent_call("toolu_review", "opus", "claude-opus-5-5", tools=works_in(review_checkout))),
-                {"configured_writer_dispatched": True, "configured_reviewers_dispatched": False, "all_attempts_terminal": True},
+                {"configured_writer_dispatched": False, "configured_reviewers_dispatched": True, "all_attempts_terminal": True},
             ),
         }
         for name, (log, expected) in cases.items():
@@ -554,7 +606,7 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
             with self.subTest(name):
                 thread = f"thread-mismatch-{index}"
                 log = write_codex_rollouts(home, thread, [
-                    (f"{thread}-writer", "gpt-6.1-sol", f"{thread}-w", "gpt-6.1-sol", True, f"cd {writer_checkout} && git diff"),
+                    (f"{thread}-writer", "gpt-6.1-sol", f"{thread}-w", "gpt-6.1-sol", True, *self.codex_writes(writer_checkout)),
                     (f"{thread}-review", requested, f"{thread}-r", actual, True, f"git -C {review_checkout} diff"),
                 ])
                 native, gap = codex_native_dispatches(log, home)
@@ -673,12 +725,7 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
             self.receipt("grok", "ro", reviewer_b),
         ]
         checks = self.valid_receipts(receipts)
-        self.assertEqual(checks, {
-            "all_attempts_terminal": True,
-            "configured_writer_dispatched": True,
-            "configured_reviewers_dispatched": True,
-            "receipt_workspaces_owned": True,
-        })
+        self.assertEqual(checks, ALL_CHECKS_PASS)
         self.assertTrue(validate_parent_verification(self.scope, self.parent))
 
     def test_given_reviewed_worktrees_are_changed_after_review_then_stale_receipts_cannot_pass(self):
@@ -823,6 +870,8 @@ class HostHarnessAcceptanceTest(unittest.TestCase):
                 self.assertIn("then run an allowed retry in a new call", prompt)
                 self.assertIn(f"exclusive worktree checked out at fixture base {report['base']}, with the proposed patch applied as uncommitted changes", prompt)
                 self.assertIn("every configured reviewer must review the final version again", prompt)
+                self.assertIn("A native writer changes files only with its host's file-edit tool", prompt)
+                self.assertIn("pass an effort to every worker, native or xagent", prompt)
                 if host == "claude":
                     self.assertIn("-p", launch["argv"])
                     self.assertIn("--no-session-persistence", launch["argv"])
