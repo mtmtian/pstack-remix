@@ -9,6 +9,32 @@ import { initConfig } from "../bin/config.mjs";
 const root = path.resolve(import.meta.dirname, "..");
 const cli = path.join(root, "bin/config.mjs");
 
+test("Given T3 candidate roles, When updated and removed, Then they round-trip atomically without changing native views", t => {
+  const dir = tempDir();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const configPath = path.join(dir, "config.json");
+  const inputPath = path.join(dir, "patch.json");
+  const config = validConfig();
+  config.roles["swarm workers"] = "xagent:pi";
+  writeJson(configPath, config);
+  const native = host => runCli(["show", "--host", host, "--config", configPath]).stdout;
+  const before = [native("codex"), native("claude"), native("antigravity")];
+  const value = { candidates: ["codex/gpt-sol@latest", "claudeAgent/claude-opus@latest"] };
+  writeJson(inputPath, { roles: { feature: value } });
+  assert.equal(runCli(["update", "--host", "t3", "--input", inputPath, "--config", configPath]).status, 0);
+  assert.deepEqual(JSON.parse(native("t3")).effective.roles.feature, value);
+  assert.deepEqual([native("codex"), native("claude"), native("antigravity")], before);
+  const saved = readFileSync(configPath, "utf8");
+  for (const host of [undefined, "codex", "claude"]) {
+    const result = runCli(["update", ...(host ? ["--host", host] : []), "--input", inputPath, "--config", configPath]);
+    assert.notEqual(result.status, 0);
+    assert.equal(readFileSync(configPath, "utf8"), saved);
+  }
+  writeJson(inputPath, { roles: { feature: null } });
+  assert.equal(runCli(["update", "--host", "t3", "--input", inputPath, "--config", configPath]).status, 0);
+  assert.equal(JSON.parse(native("t3")).effective.roles.feature, undefined);
+});
+
 function tempDir() {
   return mkdtempSync(path.join(os.tmpdir(), "pstack-config-test-"));
 }

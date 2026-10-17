@@ -37,6 +37,7 @@ bash scripts/check.sh build
 | Skills | a skill directory lacks `SKILL.md`, a frontmatter `name` differs from its directory or agent file name, a `description` is empty, or a `SKILL.md` has no link to `references/runtime.md` |
 | Links | a Markdown link outside code points at a missing file or leaves the repository |
 | Manifests | a manifest is not valid JSON or loses its name (`pstack`, or `pstack-codex` for Codex), or the root `plugin.json` references `agent-plugins.org`, whose `$schema` makes Codex truncate each skill to 8,000 bytes |
+| T3 contract | the T3 runtime loses the catalog-backed resolver, application-owned worktree isolation, completed status or available-result requirement |
 
 When the denylist fires after a sync, rewrite the sentence the way the adaptation guide records for that sync instead of swapping tokens. A file that names a pattern on purpose, such as an adapter listing the fields it forbids, goes in that rule's `allow` list in `scripts/check-fork.mjs`; `skills/poteto-help/SKILL.md` is the one allowed `disable-model-invocation`. An allowed file that stops matching fails as stale, so an allowance cannot outlive the sentence it excuses. `scripts/check-fork.test.mjs` plants each violation in a copy of the tree and checks that it is reported.
 
@@ -76,5 +77,9 @@ After the first successful GitHub run, select all three check names in branch pr
 ## Checks that still require a host
 
 PR CI does not call real model vendors or run a live host workflow. For changes to xagent or cross-agent routing, run the separately authorized [vendor and dual-host checks](../ADAPTATION.md#verification). Keep their receipts separate from offline test results.
+
+`scripts/t3-targets.test.mjs` exercises T3 role/panel preview through the public CLI, including exact model identity, effort option mapping, inherited parents, unavailable targets, required xagent members and read-only behavior. The [T3 live procedure](./t3-verification.md) checks application-owned child execution separately.
+
+The same CLI suite covers candidate roles, explicit provider choice, task-local latest-family resolution, numeric upgrades and excluded preview/snapshot/alias IDs. It verifies that a selected unavailable provider or newest release with unsupported effort fails rather than falling back. Configuration tests verify candidate update/removal and unchanged native views. Future version fixtures are synthetic; actual version delivery requires provider receipts.
 
 Plugin discovery and Skill behavior still require the package review described in [the adaptation guide](../ADAPTATION.md#verification); the fork guards check only text, frontmatter, links, and manifests. This workflow does not establish host discovery, model behavior, deployment, or restart persistence.

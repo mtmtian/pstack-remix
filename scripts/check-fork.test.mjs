@@ -4,7 +4,7 @@ import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } f
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { checkFork, scanDenylist, validateLinks, validateManifests, validateSkills } from "./check-fork.mjs";
+import { checkFork, scanDenylist, validateLinks, validateManifests, validateSkills, validateT3Contract } from "./check-fork.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
 const cli = path.join(root, "scripts/check-fork.mjs");
@@ -148,4 +148,19 @@ test("Given a clean copy, When the CLI runs on it, Then it exits 0", (t) => {
   const passed = spawnSync(process.execPath, [cli, dir], { encoding: "utf8" });
   assert.equal(passed.status, 0, passed.stderr);
   assert.match(passed.stdout, /^Fork guards passed/);
+});
+
+test("Given a prose sync that loses a T3 dispatch boundary, When guarded, Then the missing boundary is named", (t) => {
+  const dir = copyRepo(t);
+  const rel = "references/t3-runtime.md";
+  const original = readFileSync(path.join(dir, rel), "utf8");
+  for (const [token, boundary] of [
+    ["config.mjs resolve --host t3", "catalog-backed target preview"],
+    ['isolation: "worktree"', "application-owned worktree isolation"],
+    ["status: completed", "terminal task status"],
+    ["workState: result_available", "available terminal result"],
+  ]) {
+    writeFileSync(path.join(dir, rel), original.split(token).join("removed-by-sync"));
+    assert.deepEqual(validateT3Contract(dir), [`${rel}: missing ${boundary}`]);
+  }
 });

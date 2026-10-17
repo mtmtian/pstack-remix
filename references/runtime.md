@@ -37,6 +37,10 @@ Each worker brief carries the selected host, plugin root, configuration path, re
 
 The [setup skill](../skills/setup-pstack/SKILL.md) owns initialization, optional legacy import, and updates. Configuration is not a credentials store. Do not write keys or tokens there.
 
+On T3, use `config.mjs resolve --host t3` with this task's live catalog and the selected role or panel before dispatch. The [T3 overlay](./t3-runtime.md) defines the preview fields, application-owned isolation, and execution evidence. This command does not change the native host views or launch a worker.
+
+Only T3 policy supports candidate-role objects and explicit `@latest` family selectors. They resolve to concrete targets before dispatch; they are never native Agent model values. A shared difficulty rule does not imply shared model assignments: direct Claude Code still reads `hosts.claude` and an unconfigured role inherits its main conversation.
+
 ## Authorization and execution
 
 Installing or invoking pstack grants no additional authority. Continue authorized local work. Remote messages, PR writes, pushes, merges, publishing, resource creation, and destructive cleanup require authorization for that action and scope. An overnight request does not widen it. Preserve unrelated work and all named approval gates. A read-only assessment stays read-only; a plan is not authorization to execute it.

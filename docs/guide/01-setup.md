@@ -55,6 +55,17 @@ node bin/config.mjs show --host t3
 
 Inside T3 Code, run setup from the T3 thread to fill the separate `hosts.t3` section with T3 targets such as `claudeAgent/claude-opus-5-5`. It never changes the Codex or Claude overrides. See [the T3 overlay](../../references/t3-runtime.md).
 
+Preview a configured T3 role or panel against a raw `orchestrator_capabilities` result saved from the current thread:
+
+```sh
+node bin/config.mjs resolve --host t3 --role 'feature' --catalog /path/to/catalog.json
+node bin/config.mjs resolve --host t3 --panel 'interrogate reviewers' --catalog /path/to/catalog.json
+```
+
+Add `--effort <level>` for the chosen per-job adjustment. This command neither writes configuration nor launches a task. It preserves external xagent entries and required panel members; unavailable T3 targets fail before dispatch. A successful preview is not a worker receipt. Use the [T3 live verification procedure](../t3-verification.md) after changing this routing or isolation contract.
+
+For a T3 role with configured candidates, `--provider <id>` selects one of them; otherwise the parent provider is preferred, then the first candidate. Explicit family selectors such as `claudeAgent/claude-opus@latest` follow the newest canonical release in that provider's live catalog. Exact IDs stay pinned and failed selections do not fall back. See [task difficulty and version examples](../t3-model-routing.md). Direct Claude Code still uses its own policy; it does not inherit T3's model assignments.
+
 A missing role inherits its parent. Shared panel lists set the number of independent attempts. Concrete model IDs are stored only under that host's overrides and must be available in its running session. Removing an override restores the next layer's value. Rerunning setup preserves choices unless you ask to change them. Configuration changes apply to the next pstack task; already-running workers keep their parent's policy snapshot.
 
 The repository syncs code and prompts, not `~/.config/pstack/config.json`, credentials, conversation logs, plugin caches, or wiki data. Each new machine starts with inherited model defaults; configure its available models through setup if needed. Keep llm-wiki-compiler in its own repository: the modules have separate release and runtime state, and neither requires the other to install.

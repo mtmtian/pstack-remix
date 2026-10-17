@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { resolveT3Targets } from "./t3-targets.mjs";
 
 const HOSTS = ["codex", "claude"];
 // T3 Code orchestrates over a Codex or Claude host; its section is optional so existing files stay valid.
@@ -72,12 +73,32 @@ function scopeOf(host) {
   return host === T3 ? T3 : "host";
 }
 
+function checkRoleValue(value, scope, field) {
+  if (scope === T3 && isObject(value)) {
+    const candidates = value.candidates;
+    if (Object.keys(value).length !== 1 || !Array.isArray(candidates) || !candidates.length) {
+      throw new Error(`${field} must contain only a nonempty candidates array`);
+    }
+    const providers = new Set();
+    for (const entry of candidates) {
+      if (typeof entry !== "string" || !T3_TARGET.test(entry) || entry.startsWith("xagent:")) {
+        throw new Error(`${field}.candidates entries must be T3 <providerInstanceId>/<modelId> targets`);
+      }
+      const provider = entry.split("/", 1)[0];
+      if (providers.has(provider)) throw new Error(`${field}.candidates must have one target per provider`);
+      providers.add(provider);
+    }
+    return;
+  }
+  if (typeof value !== "string" || !value.trim()) throw new Error(`${field} must be a nonempty string${scope === T3 ? " or candidates object" : ""}`);
+  checkModelValue(value, scope, field);
+}
+
 function validateRoles(roles, scope, label) {
   requireObject(roles, `${label}.roles`);
   for (const [name, value] of Object.entries(roles)) {
     if (!name.trim()) throw new Error(`${label}.roles keys must not be empty`);
-    if (typeof value !== "string" || !value.trim()) throw new Error(`${label}.roles.${name} must be a nonempty string`);
-    checkModelValue(value, scope, `${label}.roles.${name}`);
+    checkRoleValue(value, scope, `${label}.roles.${name}`);
   }
 }
 
@@ -145,8 +166,7 @@ function validatePatch(patch, scope, label) {
     for (const [name, value] of Object.entries(patch.roles)) {
       if (!name.trim()) throw new Error(`${label}.roles keys must not be empty`);
       if (value === null) continue;
-      if (typeof value !== "string" || !value.trim()) throw new Error(`${label}.roles.${name} must be a nonempty string or null`);
-      checkModelValue(value, scope, `${label}.roles.${name}`);
+      checkRoleValue(value, scope, `${label}.roles.${name}`);
     }
   }
   if (Object.hasOwn(patch, "panels")) {
@@ -342,6 +362,19 @@ function printJson(value) {
 
 function runCli(args) {
   const [command, ...rest] = args;
+  if (command === "resolve") {
+    const options = parseOptions(rest, new Set(["host", "config", "catalog", "role", "panel", "effort", "provider"]));
+    if (options.host !== T3) throw new Error("resolve requires --host t3");
+    if (!options.catalog) throw new Error("resolve requires --catalog JSON-file from orchestrator_capabilities");
+    if (options.effort !== undefined && !REASONING_EFFORTS.has(options.effort)) {
+      throw new Error(`effort must be one of ${[...REASONING_EFFORTS].join(", ")}`);
+    }
+    const shown = showConfig({ host: T3, configPath: options.config ?? getDefaultConfigPath() });
+    const catalog = parseJson(readFileSync(path.resolve(options.catalog), "utf8"), `Catalog ${options.catalog}`);
+    const plan = resolveT3Targets(shown.effective, catalog, options);
+    printJson({ path: shown.path, host: T3, ...plan });
+    return;
+  }
   if (command === "show") {
     const options = parseOptions(rest, new Set(["host", "config"]));
     printJson(showConfig({ host: requireShowHost(options.host), configPath: options.config ?? getDefaultConfigPath() }));
@@ -360,7 +393,7 @@ function runCli(args) {
     printJson(updateConfig({ host: options.host, patch, configPath: options.config ?? getDefaultConfigPath() }));
     return;
   }
-  throw new Error("Usage: config.mjs show --host codex|claude|t3|antigravity [--config path] | init [--config path] | update [--host codex|claude|t3] --input JSON-file [--config path]");
+  throw new Error("Usage: config.mjs show --host codex|claude|t3|antigravity [--config path] | resolve --host t3 --catalog JSON-file (--role name | --panel name) [--effort level] [--provider candidate-provider] [--config path] | init [--config path] | update [--host codex|claude|t3] --input JSON-file [--config path]");
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
