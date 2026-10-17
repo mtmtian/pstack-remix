@@ -4,7 +4,7 @@ import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } f
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { checkFork, scanDenylist, validateLinks, validateManifests, validateSkills, validateT3Contract } from "./check-fork.mjs";
+import { checkFork, REQUIRED, scanDenylist, validateLinks, validateManifests, validateRequired, validateSkills } from "./check-fork.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
 const cli = path.join(root, "scripts/check-fork.mjs");
@@ -150,17 +150,59 @@ test("Given a clean copy, When the CLI runs on it, Then it exits 0", (t) => {
   assert.match(passed.stdout, /^Fork guards passed/);
 });
 
-test("Given a prose sync that loses a T3 dispatch boundary, When guarded, Then the missing boundary is named", (t) => {
+// What a sync loses for each required decision: [rule, file, local text, what replaces it].
+// Replacements quote upstream's wording at the pin where upstream has its own; null text deletes the file.
+const DROPPED = [
+  ["replay-after-pass", "skills/create-verification-skill/SKILL.md", "Write a replay only after a drive's end-state check passed", ""],
+  ["replay-stale-line", "skills/create-verification-skill/SKILL.md", "`stale: <reason> at <step>`", "a failure"],
+  ["replay-runs-first", "skills/maintain-verification-skill/SKILL.md", "Run a feature's replay first when it has one", ""],
+  ["replay-stale-is-finding", "skills/maintain-verification-skill/SKILL.md", "Never let a passing drive quietly stand in for a stale replay", ""],
+  ["xagent-skill", "skills/xagent/SKILL.md", null],
+  ["xagent-allowlist", "bin/xagent-allowed-commands", null],
+  ["pr-authorization", "skills/poteto-mode/playbooks/opening-a-pr.md", "Use when PR delivery is requested or otherwise explicitly authorized.", "Invoked at the end of every other playbook."],
+  ["babysit-write-authorization", "skills/poteto-mode/playbooks/babysit.md", "only to the extent explicitly authorized", ""],
+  ["babysit-merge-authorization", "skills/poteto-mode/playbooks/babysit.md", "Babysitting never authorizes merging. ", ""],
+  ["auto-merge-on-request", "skills/poteto-mode/playbooks/shipping.md", "only when the user asked for merge-when-ready, and only on a PR", "only on a PR"],
+  ["autopilot-push-authorization", "skills/poteto-mode/playbooks/autopilot-full.md", "Within the program's push authorization, force-push", "Force-push"],
+  ["autopilot-merge-authorization", "skills/poteto-mode/playbooks/autopilot-full.md", "Only the operator's explicit authorization to merge this queue, together with your clean verdict, permits the merge.", "Green CI alone never authorizes a merge."],
+  ["fast-mode-on-request", "skills/poteto-mode/SKILL.md", "Fast mode and priority service tiers cost more, so use them only when the user asked.", "Use fast mode only when the job is urgent, meaning CI or trunk is red or a person is blocked on the result right now."],
+  ["t3-no-service-tier", "references/t3-runtime.md", "The preview adds no speed or service-tier option; do not add one unless the user asked.", ""],
+  ["t3-catalog-preview", "references/t3-runtime.md", "config.mjs resolve --host t3", "removed-by-sync"],
+  ["t3-worktree-isolation", "references/t3-runtime.md", 'isolation: "worktree"', "removed-by-sync"],
+  ["t3-completed-status", "references/t3-runtime.md", "status: completed", "removed-by-sync"],
+  ["t3-result-available", "references/t3-runtime.md", "workState: result_available", "removed-by-sync"],
+  ["watch-pr-once", "skills/poteto-mode/scripts/watch-pr/cli.ts", '"--once"', ""],
+  ["watch-pr-once-test", "skills/poteto-mode/scripts/watch-pr/once.test.ts", null],
+];
+
+test("Given a sync that drops one recorded local decision, When guarded, Then only that decision's rule fails and cites the guide", (t) => {
+  assert.deepEqual(DROPPED.map(([rule]) => rule).sort(), REQUIRED.map((rule) => rule.id).sort(), "each required rule needs one planted loss here");
   const dir = copyRepo(t);
-  const rel = "references/t3-runtime.md";
-  const original = readFileSync(path.join(dir, rel), "utf8");
-  for (const [token, boundary] of [
-    ["config.mjs resolve --host t3", "catalog-backed target preview"],
-    ['isolation: "worktree"', "application-owned worktree isolation"],
-    ["status: completed", "terminal task status"],
-    ["workState: result_available", "available terminal result"],
-  ]) {
-    writeFileSync(path.join(dir, rel), original.split(token).join("removed-by-sync"));
-    assert.deepEqual(validateT3Contract(dir), [`${rel}: missing ${boundary}`]);
+  for (const [rule, rel, text, replacement] of DROPPED) {
+    const file = path.join(dir, rel);
+    const original = readFileSync(file, "utf8");
+    if (text === null) rmSync(file);
+    else edit(dir, rel, (body) => body.split(text).join(replacement));
+
+    const problems = validateRequired(dir);
+
+    assert.equal(problems.length, 1, `${rule}:\n${problems.join("\n")}`);
+    assert.ok(problems[0].startsWith(`${rel}: ${rule}: ${text === null ? "missing" : "no match for "}`), problems[0]);
+    assert.match(problems[0], /\(ADAPTATION\.md#[\w-]+\)$/);
+    writeFileSync(file, original);
   }
+});
+
+test("Given the guide renames a section that rules cite, When guarded, Then each citing rule is reported", (t) => {
+  const dir = copyRepo(t);
+  edit(dir, "ADAPTATION.md", (text) => text.replace("## T3 Code overlay", "## T3 overlay"));
+
+  assert.deepEqual(validateRequired(dir), [
+    "t3-catalog-preview",
+    "t3-worktree-isolation",
+    "t3-completed-status",
+    "t3-result-available",
+    "watch-pr-once",
+    "watch-pr-once-test",
+  ].map((rule) => `ADAPTATION.md: ${rule}: no section #t3-code-overlay records this decision`));
 });

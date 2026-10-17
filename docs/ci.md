@@ -37,9 +37,11 @@ bash scripts/check.sh build
 | Skills | a skill directory lacks `SKILL.md`, a frontmatter `name` differs from its directory or agent file name, a `description` is empty, or a `SKILL.md` has no link to `references/runtime.md` |
 | Links | a Markdown link outside code points at a missing file or leaves the repository |
 | Manifests | a manifest is not valid JSON or loses its name (`pstack`, or `pstack-codex` for Codex), or the root `plugin.json` references `agent-plugins.org`, whose `$schema` makes Codex truncate each skill to 8,000 bytes |
-| T3 contract | the T3 runtime loses the catalog-backed resolver, application-owned worktree isolation, completed status or available-result requirement |
+| Required | a local decision in the `REQUIRED` table of `scripts/check-fork.mjs` loses its file or anchor sentence, such as the verification-skill replays, xagent, explicit PR, push and merge authorization, fast mode only on request, watch-pr `--once`, or the T3 dispatch contract; or a rule cites an adaptation-guide section that no longer exists |
 
-When the denylist fires after a sync, rewrite the sentence the way the adaptation guide records for that sync instead of swapping tokens. A file that names a pattern on purpose, such as an adapter listing the fields it forbids, goes in that rule's `allow` list in `scripts/check-fork.mjs`; `skills/poteto-help/SKILL.md` is the one allowed `disable-model-invocation`. An allowed file that stops matching fails as stale, so an allowance cannot outlive the sentence it excuses. `scripts/check-fork.test.mjs` plants each violation in a copy of the tree and checks that it is reported.
+When the denylist fires after a sync, rewrite the sentence the way the adaptation guide records for that sync instead of swapping tokens. A file that names a pattern on purpose, such as an adapter listing the fields it forbids, goes in that rule's `allow` list in `scripts/check-fork.mjs`; `skills/poteto-help/SKILL.md` is the one allowed `disable-model-invocation`. An allowed file that stops matching fails as stale, so an allowance cannot outlive the sentence it excuses.
+
+When a required rule fires after a sync, restore the local decision in the synced file; each problem names the rule, its anchor, and the guide section that records the decision. If the decision itself changes, update that section and the rule in the same commit. `scripts/check-fork.test.mjs` plants each violation and each lost decision in a copy of the tree and checks that it is reported, and fails when a required rule has no planted loss.
 
 ## Update the distributed bundles
 
