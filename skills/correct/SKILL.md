@@ -13,7 +13,7 @@ Assume every contributor is an agent that sees only the files it opened, copies 
 
 ## Find the mistake classes
 
-First, read recent commits, reverts, review comments, agent instruction files, and comments that explain workarounds. Group the mistakes into classes. A class counts once it has happened twice.
+First, read recent commits, reverts, review comments, agent instruction files, and comments that explain workarounds. Then find where the operator corrected agents in recent sessions on this repo: list those sessions with `node <plugin-root>/bin/transcripts.mjs`, as the shared runtime contract describes, and search only the files it lists. Group the mistakes into classes. A class counts once it has happened twice.
 
 ## Fix each class at the highest level that works
 

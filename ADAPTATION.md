@@ -10,6 +10,8 @@ Shared preferences live at `~/.config/pstack/config.json`. `bin/config.mjs` supp
 
 `references/runtime.md` holds the shared contract. The Codex and Claude adapters hold only native tool and goal differences. Every skill reads the shared contract; parent agents relay the same resolved policy to workers. Canonical project skills remain in `.agents/skills`, with individual non-overwriting `.claude/skills` links for discovery. Existing projects are not rewritten by installation.
 
+`bin/transcripts.mjs` is a local addition with no upstream counterpart. `recall`, `correct` and `automate-me` list prior sessions through it instead of describing transcript paths in prose, and it enforces the shared runtime's cwd and time restriction before any content is read. Claude sessions come only from the project directory Claude Code derives from each requested cwd, and a session counts only if it recorded that cwd, because distinct paths can share a directory name and a session moved from another directory keeps its earlier cwd. Codex rollouts are opened only when modified inside the window, and only for their first `session_meta` record. The Claude directory rule was read from Claude Code 2.1.302 and checked against every existing project directory on the maintainer's machine; upstream's harness note (cursor/plugins#637) names only `/` and `.`, which misses paths with spaces, underscores or non-ASCII characters and those longer than 200 characters. `scripts/transcripts.test.mjs` covers both hosts with a temporary home.
+
 Benny remains dormant. Its copied runtime entry discovers this shared contract instead of maintaining a duplicated adapter. Installing the package does not arm messages, remote writes, webhooks, goals, or scheduled runs.
 
 ## Upstream sync

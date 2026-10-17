@@ -27,9 +27,9 @@ Update mode changes the rest of the flow:
 
 ### 1. Mine their history
 
-Use the current conversation or an authorized host thread-history tool. If local rollouts are needed, constrain candidates by real session metadata (workspace cwd, thread ID, and requested date range) before reading content. Do not scan unrelated projects. If the active transcript is unavailable, use a clearly labeled digest and report the limits of trace verification.
+Use the current conversation or an authorized host thread-history tool. If local transcripts are needed, list candidates with `node <plugin-root>/bin/transcripts.mjs`, as the shared runtime contract describes, with `--since` at the start of the mining window (in update mode, the skill's last edit), and read only the files it lists. Do not scan unrelated projects. If the active transcript is unavailable, use a clearly labeled digest and report the limits of trace verification.
 
-Survey recent agent conversations within that scope for recurring patterns. Run multiple parallel subagents across slices of history (e.g. last 2-4 weeks, split into 3 slices so each has enough material). Set each worker's reasoning effort for the job, per the Subagents section of the **poteto-mode** skill. Each slice mining subagent reads transcripts from the workspace-scoped path the parent provides, looks for the signals below, and returns a short structured list of patterns it saw with evidence pointers. Default signals worth hunting:
+Survey recent agent conversations within that scope for recurring patterns. Run multiple parallel subagents across slices of history (e.g. last 2-4 weeks, split into 3 slices so each has enough material). Set each worker's reasoning effort for the job, per the Subagents section of the **poteto-mode** skill. Each slice mining subagent reads only the transcripts in its slice of the helper's list, looks for the signals below, and returns a short structured list of patterns it saw with evidence pointers. Default signals worth hunting:
 
 - Response preferences (length, tone, format, "dumb it down" corrections)
 - Delegation habits (subagents, models, specialized workflows, parallelism)
