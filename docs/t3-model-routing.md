@@ -34,11 +34,15 @@ For a Codex parent, the first call selects Astra and the second Sol. For a Claud
 
 Each result includes one role worker or all ordered panel seats. `selection.strategy` records how a candidate was chosen. `workers[].entry` is the configured policy, while `workers[].target` is the exact dispatch argument, including the model's supported effort option. Preserve that output with the task receipt. Required xagent panel members remain present.
 
+`inherit-parent` and `auto` omit the target entirely, preserving all parent model options. If policy or `--effort` requests an effort, the preview warns that it is not sent. T3 replaces rather than merges supplied options, and catalog control defaults do not reveal the parent's selection. Choose an explicit model target when the child needs an independent effort setting.
+
 ## Version upgrades
 
 `@latest` is an explicit opt-in to follow canonical releases of one family within one provider. With Opus 5.5 and 5.6 in that provider's catalog, `claude-opus@latest` resolves to 5.6. Numeric ordering also makes 5.10 newer than 5.9. GPT version ordering handles 6.1, 6.2 and 7 in the same way.
 
 Recognized IDs contain a major and optional minor version, each one to three digits. Previews, dated snapshots, context suffixes, routed aliases and other families are excluded. Exact IDs such as `claude-opus-5-5` remain pinned. A missing family, ambiguous newest release or unsupported requested effort is an error. It never downgrades to an older release or another provider. Availability in the catalog does not prove authentication or behavior of a new release.
+
+Use a current T3 version whose catalog filters hidden models. Older versions affected by [T3 #15716](https://github.com/pingdotgg/t3code/issues/15716) exposed hidden models; if that mismatch is observed, upgrade T3 or use an explicitly approved exact target before dispatch. The resolver consumes the environment catalog and does not invent a second policy from client-local picker settings.
 
 Resolve against a fresh catalog once per task and preserve that task's concrete IDs for all rounds. A future task sees a newer release when T3 lists it. Updating T3/provider catalogs remains the host's responsibility. The resolver makes no network call and maintains no second model registry. A changed naming scheme requires an explicit resolver change or exact target.
 

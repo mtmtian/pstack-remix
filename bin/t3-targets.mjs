@@ -89,11 +89,22 @@ function workerFor(entry, catalog, requestedEffort) {
   const providerId = inherited ? catalog.inheritedProviderInstanceId : entry.slice(0, slash);
   const modelId = inherited ? catalog.inheritedModel : entry.slice(slash + 1);
   const model = modelFor(catalog, providerId, modelId, !inherited);
+  if (inherited) {
+    // T3 replaces target.options; catalog control defaults are not parent selections.
+    return {
+      entry, transport: "t3", target: null,
+      resolved: { providerInstanceId: providerId, model: model.id },
+      effort: { requested: requestedEffort, sent: null, option: null },
+      warnings: requestedEffort === null ? [] : [
+        `${providerId}/${model.id}: requested effort ${requestedEffort} is not sent to preserve all parent model options; choose an explicit model target to set effort independently`,
+      ],
+    };
+  }
   const { effort, warnings } = effortFor(model, requestedEffort, `${providerId}/${model.id}`);
-  const target = inherited ? {} : { providerInstanceId: providerId, model: model.id };
+  const target = { providerInstanceId: providerId, model: model.id };
   if (effort.sent !== null) target.options = { [effort.option]: effort.sent };
   return {
-    entry, transport: "t3", target: Object.keys(target).length ? target : null,
+    entry, transport: "t3", target,
     resolved: { providerInstanceId: providerId, model: model.id }, effort, warnings,
   };
 }

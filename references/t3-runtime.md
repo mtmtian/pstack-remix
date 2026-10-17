@@ -18,6 +18,8 @@ An explicit family selector ends in `@latest`, such as `claudeAgent/claude-opus@
 
 Call `orchestrator_capabilities` before the first dispatch of a task and save its raw structured result, including `providers`, `inheritedProviderInstanceId` and `inheritedModel`, to a task-local JSON file. Use this task's catalog, not a saved catalog from setup or another thread. Preview the role or whole panel through the shared helper:
 
+Version following requires a T3 catalog that respects the environment's hidden-model preferences. Current T3 filters those models server-side; older builds affected by [T3 #15716](https://github.com/pingdotgg/t3code/issues/15716) did not. If a hidden model is still advertised, upgrade T3 or use an explicitly approved exact target before dispatch. Do not read another client's picker settings as an environment-wide policy.
+
 ```sh
 node <plugin-root>/bin/config.mjs resolve --host t3 --role 'feature' --catalog <catalog.json>
 node <plugin-root>/bin/config.mjs resolve --host t3 --role 'feature' --provider claudeAgent --catalog <catalog.json>
@@ -30,11 +32,11 @@ For candidate roles, `selection.strategy` and `selection.entry` explain the chos
 
 | Entry | `delegate_task` target |
 | --- | --- |
-| `inherit-parent`, `auto` | Use the preview's `target`, omitting it when null. It contains only an effort option when needed; provider and model still inherit. `resolved` names the parent used for validation, not a replacement target. T3 has no automatic model router |
+| `inherit-parent`, `auto` | Omit `target` (`null` in the preview) to preserve the parent's complete model selection and options. A requested effort is reported as unsent; use an explicit model target to set effort independently. `resolved` names the parent used for validation, not a replacement target. T3 has no automatic model router |
 | `<providerInstanceId>/<modelId>` | Use that worker's exact previewed `target`, including its options |
 | `xagent:<agent>[/<model>]` | The worker has `transport: xagent` and separate `agent`, `model` and `effort`. Run its entry through `bin/xagent` as the shared runtime specifies; never pass it to T3 as a model |
 
-The helper maps effort to the target model's listed select control (`effort`, `reasoningEffort`, or `thinking`), without guessing from its provider name. An unsupported value is an error; if it was a per-job adjustment, the shared rule allows retrying the original policy value, with disclosure. A model with no effort control produces a warning and `effort.sent: null`; it runs with its runtime default or inherited setting, so do not claim that the requested effort was applied. Report warnings. The preview adds no speed or service-tier option; do not add one unless the user asked. A preview proves selection only, not authentication or execution.
+For explicit targets, the helper maps effort to the model's listed select control (`effort`, `reasoningEffort`, or `thinking`), without guessing from its provider name. An unsupported value is an error; if it was a per-job adjustment, the shared rule allows retrying the original policy value, with disclosure. A model with no effort control produces a warning and `effort.sent: null`; it runs with its runtime default, so do not claim that the requested effort was applied. Inherited targets preserve all parent options instead: T3 replaces a supplied options object, and the catalog does not expose the parent's complete selected options. Report warnings. The preview adds no speed or service-tier option; do not add one unless the user asked. A preview proves selection only, not authentication or execution.
 
 ## Delegate
 

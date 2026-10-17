@@ -63,13 +63,30 @@ test("Given a missing or inherited role, When previewed, Then this catalog's par
     else delete f.config.hosts.t3.roles.feature;
     const plan = f.resolved(["--role", "feature"]);
     assert.deepEqual(plan.workers[0].resolved, { providerInstanceId: "code", model: "parent" });
-    assert.deepEqual(plan.workers[0].target, { options: { reasoningEffort: "high" } });
+    assert.equal(plan.workers[0].target, null);
+    assert.equal(plan.workers[0].effort.sent, null);
+    assert.match(plan.workers[0].warnings.join(" "), /preserve.*parent.*options/);
     assert.equal(plan.selection.defaulted, entry === undefined);
   }
   f.catalog.inheritedProviderInstanceId = "judge";
   f.catalog.inheritedModel = "strong";
-  assert.deepEqual(f.resolved(["--role", "feature"]).workers[0].target, { options: { effort: "high" } });
+  assert.equal(f.resolved(["--role", "feature"]).workers[0].target, null);
   assert.equal(f.resolved(["--role", "constructor"]).selection.defaulted, true);
+});
+
+test("Given inherited model options are absent from the catalog, When effort is requested, Then no partial options replace the parent selection", t => {
+  const f = fixture(t);
+  f.config.hosts.t3.roles.feature = "inherit-parent";
+  // Catalog control values describe provider defaults, not the parent's actual selection.
+  // T3 replaces the entire options object when target.options is present.
+  f.catalog.providers[0].models[1].options.push(
+    { id: "fastMode", type: "boolean", currentValue: false },
+    { id: "serviceTier", type: "select", currentValue: "default", options: [{ id: "default" }, { id: "priority" }] },
+  );
+  const worker = f.resolved(["--role", "feature", "--effort", "low"]).workers[0];
+  assert.equal(worker.target, null);
+  assert.deepEqual(worker.effort, { requested: "low", sent: null, option: null });
+  assert.match(worker.warnings.join(" "), /low.*not sent.*preserve.*parent.*options/);
 });
 
 test("Given no config or effort, When a role is previewed, Then it inherits without creating a config or adding options", t => {
