@@ -31,6 +31,8 @@ Run the **arena** skill with the design-sketch task and the Phase A grounding ar
 
 Use `architect runners` from the effective policy, or its `defaultPanel` when that panel is absent.
 
+For the hardest design work, such as cross-cutting ownership changes, subtle concurrency or algorithms, use `hardest architect runners` if the effective policy explicitly configures it. Otherwise keep `architect runners`. Record why the current design needs that difficulty tier and pass the selected panel to arena. A large project alone does not require the harder panel.
+
 Design it twice. Require at least two structurally distinct candidates before synthesis, even when the first looks sufficient. This is the **exhaust-the-design-space** principle skill made concrete. Whole-shape alternatives, not point fixes inside one shape.
 
 Screen every candidate against [`references/design-red-flags.md`](references/design-red-flags.md) before synthesis. Assume the next contributor is an agent that sees only the files it opened, copies the nearest example, and takes the shortest path that compiles. Prefer the design where a change that looks right from one file is right for the whole repo.
@@ -52,6 +54,8 @@ If the human pushes back on the shape (in a checkpoint or after the fact), treat
 ## Phase D: Implement against the sketch
 
 Replace `not implemented` bodies with code, pseudocode with logic. The synthesized sketch is the contract. Deviations from it are signal to surface, not friction to absorb silently. If a function needs a parameter the sketch didn't anticipate, ask whether the sketch was wrong, the requirement was missed, or the implementation is overreaching.
+
+Reclassify each implementation delegate against the chosen sketch. Ordinary work uses its code-playbook role; only implementation that remains intrinsically difficult uses `hardest tasks`. Do not carry the design panel's model tier into all downstream work.
 
 ## Phase E: Scrap when the architecture is wrong
 

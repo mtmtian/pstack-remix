@@ -279,8 +279,23 @@ export function validateManifests(root) {
   return problems;
 }
 
+// These are the dispatch/evidence boundaries an upstream prose sync must retain.
+export function validateT3Contract(root) {
+  const rel = "references/t3-runtime.md";
+  const file = path.join(root, rel);
+  if (!existsSync(file)) return [`${rel}: missing T3 runtime contract`];
+  const text = readFileSync(file, "utf8");
+  const required = [
+    [/config\.mjs resolve --host t3/, "catalog-backed target preview"],
+    [/isolation: "worktree"/, "application-owned worktree isolation"],
+    [/status: completed/, "terminal task status"],
+    [/workState: result_available/, "available terminal result"],
+  ];
+  return required.filter(([pattern]) => !pattern.test(text)).map(([, boundary]) => `${rel}: missing ${boundary}`);
+}
+
 export function checkFork(root) {
-  return [...validateManifests(root), ...validateSkills(root), ...validateLinks(root), ...scanDenylist(root)];
+  return [...validateManifests(root), ...validateSkills(root), ...validateLinks(root), ...scanDenylist(root), ...validateT3Contract(root)];
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
@@ -290,5 +305,5 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
     console.error(`Fork guards failed:\n${problems.join("\n")}`);
     process.exit(1);
   }
-  console.log(`Fork guards passed: ${DENYLIST.length} denylist rules, skill frontmatter and contract links, local Markdown links, manifests.`);
+  console.log(`Fork guards passed: ${DENYLIST.length} denylist rules, skill frontmatter and contract links, local Markdown links, manifests, T3 dispatch contract.`);
 }
