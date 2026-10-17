@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Static guards for upstream syncs. Shipped content must not bring back the
-// Cursor-only instructions ADAPTATION.md replaced, every skill keeps its shared
-// runtime contract, local links resolve, and the manifests keep their fork names.
+// Cursor-only instructions ADAPTATION.md replaced and must keep the local
+// decisions it records, every skill keeps its shared runtime contract, local
+// links resolve, and the manifests keep their fork names.
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -69,6 +70,150 @@ export const DENYLIST = [
     id: "cursor-ui",
     pattern: /\/visualize\b|\bCustom Modes?\b/,
     hint: "Cursor-only UI; use the host's own output and entry points",
+  },
+];
+
+// The local decisions an upstream sync must keep: each names a file and, where
+// wording carries the decision, an anchor in it. `section` is the ADAPTATION.md
+// heading that records the decision; a rule whose heading is gone is reported,
+// so the table cannot point at a decision the guide no longer records.
+export const REQUIRED = [
+  {
+    id: "replay-after-pass",
+    file: "skills/create-verification-skill/SKILL.md",
+    pattern: /Write a replay only after a drive's end-state check passed/,
+    hint: "a replay is written only from a passing drive",
+    section: "maintained-source",
+  },
+  {
+    id: "replay-stale-line",
+    file: "skills/create-verification-skill/SKILL.md",
+    pattern: /prints `stale: <reason> at <step>`/,
+    hint: "a stale replay reports itself instead of being redone",
+    section: "maintained-source",
+  },
+  {
+    id: "replay-runs-first",
+    file: "skills/maintain-verification-skill/SKILL.md",
+    pattern: /Run a feature's replay first when it has one/,
+    hint: "a replay runs before any manual drive",
+    section: "maintained-source",
+  },
+  {
+    id: "replay-stale-is-finding",
+    file: "skills/maintain-verification-skill/SKILL.md",
+    pattern: /Never let a passing drive quietly stand in for a stale replay/,
+    hint: "a stale replay is a finding, never covered by a passing drive",
+    section: "maintained-source",
+  },
+  {
+    id: "xagent-skill",
+    file: "skills/xagent/SKILL.md",
+    hint: "the xagent skill is a local addition with no upstream counterpart",
+    section: "maintained-source",
+  },
+  {
+    id: "xagent-allowlist",
+    file: "bin/xagent-allowed-commands",
+    hint: "xagent writers and the pi guard read their command allowlist here",
+    section: "maintained-source",
+  },
+  {
+    id: "pr-authorization",
+    file: "skills/poteto-mode/playbooks/opening-a-pr.md",
+    pattern: /Use when PR delivery is requested or otherwise explicitly authorized\./,
+    hint: "a PR is opened only on request or explicit authorization",
+    section: "upstream-behavior-retained",
+  },
+  {
+    id: "babysit-write-authorization",
+    file: "skills/poteto-mode/playbooks/babysit.md",
+    pattern: /change local code or remote state only to the extent explicitly authorized/,
+    hint: "babysit pushes and replies only within explicit authorization",
+    section: "upstream-behavior-retained",
+  },
+  {
+    id: "babysit-merge-authorization",
+    file: "skills/poteto-mode/playbooks/babysit.md",
+    pattern: /Babysitting never authorizes merging\. Only an explicit request to merge, land, ship, or merge when ready does\./,
+    hint: "only an explicit request authorizes a merge",
+    section: "upstream-behavior-retained",
+  },
+  {
+    id: "auto-merge-on-request",
+    file: "skills/poteto-mode/playbooks/shipping.md",
+    pattern: /Arm `--auto` [^.]*only when the user asked for merge-when-ready/,
+    hint: "`--auto` is armed only when the user asked for merge-when-ready",
+    section: "upstream-behavior-retained",
+  },
+  {
+    id: "autopilot-push-authorization",
+    file: "skills/poteto-mode/playbooks/autopilot-full.md",
+    pattern: /Within the program's push authorization, force-push only your own branch/,
+    hint: "owners push only within the program's push authorization",
+    section: "upstream-behavior-retained",
+  },
+  {
+    id: "autopilot-merge-authorization",
+    file: "skills/poteto-mode/playbooks/autopilot-full.md",
+    pattern: /Only the operator's explicit authorization to merge this queue, together with your clean verdict, permits the merge\./,
+    hint: "owners merge only under the operator's explicit merge authorization",
+    section: "upstream-behavior-retained",
+  },
+  {
+    id: "fast-mode-on-request",
+    file: "skills/poteto-mode/SKILL.md",
+    pattern: /Fast mode and priority service tiers cost more, so use them only when the user asked\./,
+    hint: "fast mode stays off unless the user asks; urgency does not turn it on",
+    section: "upstream-behavior-retained",
+  },
+  {
+    id: "t3-no-service-tier",
+    file: "references/t3-runtime.md",
+    pattern: /The preview adds no speed or service-tier option; do not add one unless the user asked\./,
+    hint: "T3 dispatch adds no speed or service tier unless the user asks",
+    section: "upstream-behavior-retained",
+  },
+  {
+    id: "t3-catalog-preview",
+    file: "references/t3-runtime.md",
+    pattern: /config\.mjs resolve --host t3/,
+    hint: "T3 targets come from the catalog-backed preview",
+    section: "t3-code-overlay",
+  },
+  {
+    id: "t3-worktree-isolation",
+    file: "references/t3-runtime.md",
+    pattern: /isolation: "worktree"/,
+    hint: "T3 children run in application-owned worktrees",
+    section: "t3-code-overlay",
+  },
+  {
+    id: "t3-completed-status",
+    file: "references/t3-runtime.md",
+    pattern: /status: completed/,
+    hint: "a T3 task counts only at terminal status completed",
+    section: "t3-code-overlay",
+  },
+  {
+    id: "t3-result-available",
+    file: "references/t3-runtime.md",
+    pattern: /workState: result_available/,
+    hint: "a T3 result counts only once it is available",
+    section: "t3-code-overlay",
+  },
+  {
+    id: "watch-pr-once",
+    file: "skills/poteto-mode/scripts/watch-pr/cli.ts",
+    pattern: /"--once"/,
+    hint: "T3 babysit and shipping rounds classify once with --once instead of polling",
+    section: "t3-code-overlay",
+  },
+  {
+    id: "watch-pr-once-test",
+    file: "skills/poteto-mode/scripts/watch-pr/once.test.ts",
+    hint: "--once keeps its own test",
+    section: "t3-code-overlay",
   },
 ];
 
@@ -279,23 +424,27 @@ export function validateManifests(root) {
   return problems;
 }
 
-// These are the dispatch/evidence boundaries an upstream prose sync must retain.
-export function validateT3Contract(root) {
-  const rel = "references/t3-runtime.md";
-  const file = path.join(root, rel);
-  if (!existsSync(file)) return [`${rel}: missing T3 runtime contract`];
-  const text = readFileSync(file, "utf8");
-  const required = [
-    [/config\.mjs resolve --host t3/, "catalog-backed target preview"],
-    [/isolation: "worktree"/, "application-owned worktree isolation"],
-    [/status: completed/, "terminal task status"],
-    [/workState: result_available/, "available terminal result"],
-  ];
-  return required.filter(([pattern]) => !pattern.test(text)).map(([, boundary]) => `${rel}: missing ${boundary}`);
+// GitHub's heading anchors: lowercase, punctuation other than `-` and `_` dropped, spaces to `-`.
+function headingSlugs(text) {
+  return new Set([...text.matchAll(/^#{1,6}[ \t]+(.+?)[ \t]*$/gm)].map((m) => m[1].toLowerCase().replace(/[^\w\- ]/g, "").replaceAll(" ", "-")));
+}
+
+export function validateRequired(root) {
+  const guide = path.join(root, "ADAPTATION.md");
+  const sections = existsSync(guide) ? headingSlugs(readFileSync(guide, "utf8")) : new Set();
+  const problems = [];
+  for (const rule of REQUIRED) {
+    if (!sections.has(rule.section)) problems.push(`ADAPTATION.md: ${rule.id}: no section #${rule.section} records this decision`);
+    const file = path.join(root, rule.file);
+    const why = `${rule.hint} (ADAPTATION.md#${rule.section})`;
+    if (!existsSync(file)) problems.push(`${rule.file}: ${rule.id}: missing; ${why}`);
+    else if (rule.pattern && !rule.pattern.test(readFileSync(file, "utf8"))) problems.push(`${rule.file}: ${rule.id}: no match for ${rule.pattern}; ${why}`);
+  }
+  return problems;
 }
 
 export function checkFork(root) {
-  return [...validateManifests(root), ...validateSkills(root), ...validateLinks(root), ...scanDenylist(root), ...validateT3Contract(root)];
+  return [...validateManifests(root), ...validateSkills(root), ...validateLinks(root), ...scanDenylist(root), ...validateRequired(root)];
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
@@ -305,5 +454,5 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
     console.error(`Fork guards failed:\n${problems.join("\n")}`);
     process.exit(1);
   }
-  console.log(`Fork guards passed: ${DENYLIST.length} denylist rules, skill frontmatter and contract links, local Markdown links, manifests, T3 dispatch contract.`);
+  console.log(`Fork guards passed: ${DENYLIST.length} denylist rules, ${REQUIRED.length} required local decisions, skill frontmatter and contract links, local Markdown links, manifests.`);
 }

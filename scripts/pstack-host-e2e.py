@@ -1,5 +1,70 @@
 #!/usr/bin/env python3
-"""Exercise real swarm -> interrogate policy routing from Claude and Codex on a synthetic repo."""
+"""Exercise real swarm -> interrogate policy routing from Claude and Codex on a synthetic repo.
+
+Actual Claude and Codex hosts run swarm, then interrogate, through their current
+shared policy on synthetic fixtures. The run records source hashes, policy,
+worker receipts and independent tests. It never changes preferences. A run
+passes only on the evidence below; the host's own report never counts.
+
+Parent and reviewers. The parent verified the final source, and each configured
+reviewer saw it in a separate worktree.
+
+xagent entries are checked through their receipts. A meta.json counts as an
+xagent attempt when either marker bin/xagent creates first (prompt.md,
+agent.log) sits beside it, so a broken attempt still fails. Attempts are keyed
+by mode, agent and model; any other meta.json under the evidence directory is
+listed as ignored.
+
+Native entries are checked through the host's own log, parsed by
+scripts/e2e-native-evidence.py: Claude's stream-json Agent calls and their
+resolved model, or Codex's persisted session rollouts. The Codex host therefore
+runs without --ephemeral.
+
+- Checkout. A native dispatch's checkout comes from its subagent's own tool
+  calls: the Claude events whose parent_tool_use_id is its Agent call, or the
+  Codex child rollout, whose task payload is encrypted. Those calls must use
+  exactly one checkout under the run other than the parent, and it must be a
+  linked worktree at the fixture base.
+- Writer or reviewer. The dispatch writes when it edited that checkout with its
+  host's file-edit tool and the edit succeeded (Claude Write/Edit with a
+  successful tool result, a completed Codex FileChange). It reviews when it
+  edited nothing there and the checkout holds the final stats.py. Shell edits
+  are not writer evidence, so a writer that edits only through the shell cannot
+  fill the writer slot.
+- Review bracket. A native review brackets its work, as xagent's
+  snapshot_before and snapshot_after do. Its subagent's own first and last
+  shell commands in that worktree run the absolute path of
+  scripts/e2e-snapshot.py with a Python interpreter, optionally after a cd and
+  with nothing else in the same command. Every other shell command there falls
+  between them, and every snapshot the tool prints for that worktree (leaving
+  ignored test receipts and caches out) matches the worktree's state when the
+  run ends. A shell edit during a review, before it, or after it therefore stops
+  it counting.
+- Snapshot provenance. The snapshot lines come from the subagent's own tool
+  results or Codex aggregated_output, which the host cannot write. An echoed
+  line does not count, because it never ran the tool. Forging one would take
+  rewriting the tool or shadowing python3 on PATH, which is outside the threat
+  model of an acceptance test for cooperating agents.
+
+Effort. When the effective policy sets reasoning_effort, a worker fills a role
+only if its xagent receipt, Claude Agent call or Codex spawn_agent records an
+effort level. The level itself may differ, since poteto-mode adjusts it per
+task.
+
+Ownership. Each checkout belongs to one owner, a worker (kind, agent and model)
+in one mode, so an xagent retry or a native writer's follow-up fix may reuse its
+worktree. Each configured writer or reviewer slot needs an attempt in a checkout
+no other slot used, so two reviews in one worktree count once. A missing log or
+a dispatch that used no path is reported as a gap and fails the check.
+
+Time limits. Each worker attempt gets xagent's default limit with one retry,
+not doubled. The outer host process runs under timeout with a kill-after limit;
+the default --host-timeout lets the writer, review and post-fix re-review rounds
+each retry, and --help prints its arithmetic. Verification commands run through
+scripts/e2e-process.py with a default deadline (--check-timeout),
+process-group termination and bounded output collection. A verification
+timeout remains a failed check with logs and exit code 124.
+"""
 from __future__ import annotations
 
 import argparse
@@ -617,7 +682,7 @@ with no unresolved reproduced violation of the stated contract; otherwise PSTACK
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__.partition("\n")[0], epilog="Acceptance rules: the module docstring of scripts/pstack-host-e2e.py.")
     parser.add_argument("run_dir", type=Path)
     parser.add_argument("--host", choices=tuple(HOSTS), action="append")
     parser.add_argument("--host-timeout", type=int, help=(

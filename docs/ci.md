@@ -37,9 +37,11 @@ bash scripts/check.sh build
 | Skills | a skill directory lacks `SKILL.md`, a frontmatter `name` differs from its directory or agent file name, a `description` is empty, or a `SKILL.md` has no link to `references/runtime.md` |
 | Links | a Markdown link outside code points at a missing file or leaves the repository |
 | Manifests | a manifest is not valid JSON or loses its name (`pstack`, or `pstack-codex` for Codex), or the root `plugin.json` references `agent-plugins.org`, whose `$schema` makes Codex truncate each skill to 8,000 bytes |
-| T3 contract | the T3 runtime loses the catalog-backed resolver, application-owned worktree isolation, completed status or available-result requirement |
+| Required | a local decision in the `REQUIRED` table of `scripts/check-fork.mjs` loses its file or anchor sentence, such as the verification-skill replays, xagent, explicit PR, push and merge authorization, fast mode only on request, watch-pr `--once`, or the T3 dispatch contract; or a rule cites an adaptation-guide section that no longer exists |
 
-When the denylist fires after a sync, rewrite the sentence the way the adaptation guide records for that sync instead of swapping tokens. A file that names a pattern on purpose, such as an adapter listing the fields it forbids, goes in that rule's `allow` list in `scripts/check-fork.mjs`; `skills/poteto-help/SKILL.md` is the one allowed `disable-model-invocation`. An allowed file that stops matching fails as stale, so an allowance cannot outlive the sentence it excuses. `scripts/check-fork.test.mjs` plants each violation in a copy of the tree and checks that it is reported.
+When the denylist fires after a sync, rewrite the sentence the way the adaptation guide records for that sync instead of swapping tokens. A file that names a pattern on purpose, such as an adapter listing the fields it forbids, goes in that rule's `allow` list in `scripts/check-fork.mjs`; `skills/poteto-help/SKILL.md` is the one allowed `disable-model-invocation`. An allowed file that stops matching fails as stale, so an allowance cannot outlive the sentence it excuses.
+
+When a required rule fires after a sync, restore the local decision in the synced file; each problem names the rule, its anchor, and the guide section that records the decision. If the decision itself changes, update that section and the rule in the same commit. `scripts/check-fork.test.mjs` plants each violation and each lost decision in a copy of the tree and checks that it is reported, and fails when a required rule has no planted loss.
 
 ## Update the distributed bundles
 
@@ -72,7 +74,43 @@ Each job has a ten-minute limit. A newer run on the same PR or ref cancels the o
 
 The macOS runtime job installs coreutils. Ubuntu already supplies GNU `timeout`.
 
-After the first successful GitHub run, select all three check names in branch protection if they must block merges. Adding the workflow does not configure branch protection.
+### Branch protection
+
+`main` is protected, and the protection also applies to administrators (`enforce_admins`). GitHub rejects direct pushes to `main`, so every change lands through a pull request. A merge needs these three checks, reported by GitHub Actions (app ID 15368):
+
+- `Runtime (ubuntu-24.04, Node 22.18.0, Python 3.9)`
+- `Runtime (macos-15, Node 24, Python 3.14)`
+- `Build and types`
+
+A branch does not need to be up to date with `main` before it merges (`strict` is off), no review approval is required, and force pushes to `main` and its deletion are blocked.
+
+Each check name is the job's `name` in the [workflow](../.github/workflows/ci.yml), with the matrix `os`, `node`, and `python` values filled in. A pull request that changes a matrix value or a job name reports its checks under new names. It never reports the old required names, so it waits for them indefinitely, and `enforce_admins` leaves no bypass. Update the protection when that pull request is ready to merge. Open pull requests that ran before the change keep the old names until CI runs on them again. `PUT` replaces the whole protection, so send every setting, not only the new check list:
+
+```sh
+gh api -X PUT repos/mtmtian/pstack-remix/branches/main/protection --input - <<'EOF'
+{
+  "required_status_checks": {
+    "strict": false,
+    "checks": [
+      { "context": "Runtime (ubuntu-24.04, Node 22.18.0, Python 3.9)", "app_id": 15368 },
+      { "context": "Runtime (macos-15, Node 24, Python 3.14)", "app_id": 15368 },
+      { "context": "Build and types", "app_id": 15368 }
+    ]
+  },
+  "enforce_admins": true,
+  "required_pull_request_reviews": null,
+  "restrictions": null,
+  "allow_force_pushes": false,
+  "allow_deletions": false
+}
+EOF
+```
+
+Read the result back with `gh api repos/mtmtian/pstack-remix/branches/main/protection`. To remove the protection entirely:
+
+```sh
+gh api -X DELETE repos/mtmtian/pstack-remix/branches/main/protection
+```
 
 ## Checks that still require a host
 
