@@ -30,12 +30,15 @@ function isObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function statOrNull(file) {
-  return statSync(file, { throwIfNoEntry: false }) ?? null;
+function entries(dir) {
+  return statSync(dir, { throwIfNoEntry: false })?.isDirectory() ? readdirSync(dir, { withFileTypes: true }) : [];
 }
 
-function entries(dir) {
-  return statOrNull(dir)?.isDirectory() ? readdirSync(dir, { withFileTypes: true }) : [];
+// The .jsonl files directly inside dir; stem is the name without the extension.
+function jsonlFiles(dir) {
+  return entries(dir)
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".jsonl"))
+    .map((entry) => ({ file: path.join(dir, entry.name), stem: entry.name.slice(0, -".jsonl".length) }));
 }
 
 // Splits only at newline bytes, which never occur inside a UTF-8 sequence, so each line decodes whole.
@@ -71,7 +74,7 @@ function parseRecord(line) {
   }
 }
 
-function transcript(file, stat, fields) {
+function transcript({ file, stat, ...fields }) {
   return { ...fields, path: file, mtime: new Date(stat.mtimeMs).toISOString(), size: stat.size };
 }
 
@@ -85,27 +88,21 @@ function claudeSessionCwd(file, cwds) {
   return null;
 }
 
-function listClaude({ cwds, inWindow, env, homeDir }) {
-  const root = path.join(env.CLAUDE_CONFIG_DIR || path.join(homeDir, ".claude"), "projects");
+function listClaude(cwds, inWindow) {
+  const root = path.join(process.env.CLAUDE_CONFIG_DIR || path.join(homedir(), ".claude"), "projects");
   const found = [];
   for (const dir of new Set([...cwds].map((cwd) => path.join(root, claudeProjectSlug(cwd))))) {
-    for (const entry of entries(dir)) {
-      if (!entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
-      const session = entry.name.slice(0, -".jsonl".length);
-      const file = path.join(dir, entry.name);
-      const subagentDir = path.join(dir, session, "subagents");
+    for (const { file, stem: session } of jsonlFiles(dir)) {
       const candidates = [
-        { file, fields: { kind: "session", session, parent: null } },
-        ...entries(subagentDir)
-          .filter((sub) => sub.isFile() && sub.name.endsWith(".jsonl"))
-          .map((sub) => ({ file: path.join(subagentDir, sub.name), fields: { kind: "subagent", session: sub.name.slice(0, -".jsonl".length), parent: session } })),
+        { file, kind: "session", session, parent: null },
+        ...jsonlFiles(path.join(dir, session, "subagents")).map((sub) => ({ file: sub.file, kind: "subagent", session: sub.stem, parent: session })),
       ]
         .map((candidate) => ({ ...candidate, stat: statSync(candidate.file) }))
         .filter((candidate) => inWindow(candidate.stat.mtimeMs));
       if (!candidates.length) continue;
       const cwd = claudeSessionCwd(file, cwds);
       if (cwd === null) continue;
-      for (const candidate of candidates) found.push(transcript(candidate.file, candidate.stat, { ...candidate.fields, cwd }));
+      for (const candidate of candidates) found.push(transcript({ ...candidate, cwd }));
     }
   }
   return found;
@@ -116,10 +113,7 @@ function* codexRollouts(root) {
   for (const year of numbered(root, 4)) {
     for (const month of numbered(path.join(root, year.name), 2)) {
       for (const day of numbered(path.join(root, year.name, month.name), 2)) {
-        const dir = path.join(root, year.name, month.name, day.name);
-        for (const entry of entries(dir)) {
-          if (entry.isFile() && entry.name.endsWith(".jsonl")) yield path.join(dir, entry.name);
-        }
+        yield* jsonlFiles(path.join(root, year.name, month.name, day.name)).map(({ file }) => file);
       }
     }
   }
@@ -132,8 +126,8 @@ function firstRecord(file) {
 
 // Codex keeps no per-project directory, so a rollout's cwd is in its first record (session_meta).
 // The mtime check comes first: only rollouts inside the window are opened, and only that first line.
-function listCodex({ cwds, inWindow, env, homeDir }) {
-  const root = path.join(env.CODEX_HOME || path.join(homeDir, ".codex"), "sessions");
+function listCodex(cwds, inWindow) {
+  const root = path.join(process.env.CODEX_HOME || path.join(homedir(), ".codex"), "sessions");
   const found = [];
   for (const file of codexRollouts(root)) {
     const stat = statSync(file);
@@ -143,7 +137,9 @@ function listCodex({ cwds, inWindow, env, homeDir }) {
     if (!meta || !cwds.has(meta.cwd)) continue;
     const subagent = isObject(meta.source) && isObject(meta.source.subagent) ? meta.source.subagent : null;
     const parent = subagent?.thread_spawn?.parent_thread_id;
-    found.push(transcript(file, stat, {
+    found.push(transcript({
+      file,
+      stat,
       kind: subagent ? "subagent" : "session",
       session: typeof meta.id === "string" ? meta.id : null,
       parent: typeof parent === "string" ? parent : null,
@@ -169,12 +165,11 @@ function matchableCwds(cwds) {
   return forms;
 }
 
-export function listTranscripts({ host, cwds, since, until, env = process.env, homeDir = homedir() }) {
+function listTranscripts({ host, cwds, since, until }) {
   if (!HOSTS.includes(host)) throw new Error(`host must be one of ${HOSTS.join(" or ")}`);
-  if (!cwds.length) throw new Error("at least one cwd is required");
   if (since > until) throw new Error("since must not be later than until");
-  const options = { cwds: matchableCwds(cwds), inWindow: (mtime) => mtime >= since && mtime <= until, env, homeDir };
-  const found = host === "claude" ? listClaude(options) : listCodex(options);
+  const list = host === "claude" ? listClaude : listCodex;
+  const found = list(matchableCwds(cwds), (mtime) => mtime >= since && mtime <= until);
   found.sort((a, b) => b.mtime.localeCompare(a.mtime) || a.path.localeCompare(b.path));
   return {
     host,
