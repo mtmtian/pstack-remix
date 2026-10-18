@@ -10,7 +10,7 @@ Resolve `<plugin-root>` from this skill's installed path and run:
 node <plugin-root>/bin/config.mjs show --host antigravity
 ```
 
-The command reads `~/.config/pstack/config.json`. It returns the common `roles`, `panels`, `reasoning_effort`, and `required_panel_members` values. It ignores the Codex and Claude Code host overrides, because the stored schema defines no Antigravity-specific preferences. If the file is absent, it prints inherited defaults and creates neither the file nor its parent directory.
+The command reads `~/.config/pstack/config.json`. It returns the common `roles`, `panels`, `reasoning_effort`, `required_panel_members`, `auxiliary_panel_members`, and `xagent_effort_caps` values. It ignores the Codex and Claude Code host overrides, because the stored schema defines no Antigravity-specific preferences. If the file is absent, it prints inherited defaults and creates neither the file nor its parent directory.
 
 `update --host antigravity` is unsupported and must fail without changing preferences. Use an existing supported setup or update path only for an explicitly requested configuration change.
 

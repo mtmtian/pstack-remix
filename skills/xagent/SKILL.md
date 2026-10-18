@@ -52,4 +52,4 @@ A role or panel entry `xagent:<agent>` or `xagent:<agent>/<model>` runs that wor
 ## Checks
 
 - `scripts/xagent-classify.test.sh`, `python3 scripts/xagent.test.py` and `node --test scripts/xagent-pi-guard.test.mjs`: offline, including deterministic read-only violations and unresponsive/cancelled processes.
-- `scripts/xagent-e2e.sh [run-dir]`: every agent in both modes, each CLI accepting `--effort` and any model pinned in `XAGENT_E2E_MODELS`, allowlist denials, the agy mirror, nested refusal, timeout, and Codex as host. Calls every vendor.
+- `scripts/xagent-e2e.sh [run-dir]`: every agent in both modes, each CLI accepting `--effort` and any model pinned in `XAGENT_E2E_MODELS`, allowlist denials, the agy mirror, nested refusal, timeout, and Codex as host. Calls every vendor by default. A run with `XAGENT_E2E_AGENTS` covers only the listed vendors in both modes, while its fixed cases still call codex, gemini and pi; record it as partial evidence that names the vendors left out.

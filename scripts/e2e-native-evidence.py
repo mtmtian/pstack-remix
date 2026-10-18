@@ -153,8 +153,10 @@ def _codex_native_dispatches(lines, codex_home):
 
     if thread not in rollouts:
         return [], f"no Codex rollout for thread {thread} under {sessions}"
-    requested, efforts, returned, started, finished = {}, {}, set(), {}, set()
+    requested, efforts, returned, started, finished, parent_turns = {}, {}, set(), {}, set(), set()
     for _, payload in payloads(rollouts[thread]):
+        if isinstance(payload.get("turn_id"), str):
+            parent_turns.add(payload["turn_id"])
         if payload.get("type") == "function_call" and payload.get("name") == "spawn_agent":
             try:
                 arguments = json.loads(payload.get("arguments") or "{}")
@@ -176,9 +178,12 @@ def _codex_native_dispatches(lines, codex_home):
         child_rollout = rollouts.get(child) if isinstance(child, str) else None
         linked, models, complete, aborted, touched, edited, commands = False, [], False, False, set(), set(), []
         for kind, payload in payloads(child_rollout) if child_rollout else ():
+            # A forked child's rollout begins with a copy of the parent's history, which keeps the parent's turn ids.
+            if payload.get("turn_id") in parent_turns or payload.get("thread_id") not in (None, child):
+                continue
             item = payload.get("item") if payload.get("type") == "item_completed" and isinstance(payload.get("item"), dict) else {}
             if kind == "session_meta":
-                linked = payload.get("parent_thread_id") == thread
+                linked = linked or (payload.get("id") == child and payload.get("parent_thread_id") == thread)
             elif kind == "turn_context":
                 models.append(payload.get("model"))
             elif item.get("type") == "CommandExecution":

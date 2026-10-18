@@ -110,11 +110,28 @@ test("Given mixed and repeated panel seats, When previewed, Then order, independ
   f.config.hosts.t3.panels.review = ["code/ordinary", "code/ordinary", "xagent:claude/opus[1m]"];
   const workers = f.resolved(["--panel", "review"]).workers;
   assert.deepEqual(workers.map(w => w.entry), ["code/ordinary", "code/ordinary", "xagent:claude/opus[1m]", "xagent:gemini"]);
-  assert.deepEqual(workers[2], { entry: "xagent:claude/opus[1m]", transport: "xagent", agent: "claude", model: "opus[1m]", effort: "high" });
+  assert.deepEqual(workers[2], { entry: "xagent:claude/opus[1m]", transport: "xagent", agent: "claude", model: "opus[1m]", effort: "high", warnings: [] });
   assert.equal(workers[3].model, null);
   const defaultPlan = f.resolved(["--panel", "unconfigured"]);
   assert.equal(defaultPlan.selection.defaulted, true);
   assert.deepEqual(defaultPlan.workers.map(w => w.entry), ["inherit-parent", "inherit-parent", "xagent:gemini"]);
+});
+
+test("Given an xagent effort cap, When the effort is above it, Then only that agent is lowered and the plan says so", t => {
+  const f = fixture(t);
+  f.config.xagent_effort_caps = { gemini: "high" };
+  f.config.hosts.t3.reasoning_effort = "xhigh";
+  f.config.hosts.t3.panels.review = ["xagent:claude", "judge/strong"];
+  const workers = f.resolved(["--panel", "review"]).workers;
+  assert.deepEqual(workers.map(w => w.entry), ["xagent:claude", "judge/strong", "xagent:gemini"]);
+  assert.equal(workers[0].effort, "xhigh");
+  assert.deepEqual(workers[0].warnings, []);
+  assert.equal(workers[1].effort.sent, "xhigh");
+  assert.equal(workers[2].effort, "high");
+  assert.deepEqual(workers[2].warnings, ["xagent:gemini: requested effort xhigh is above its xagent_effort_caps entry, so high is sent"]);
+  const job = f.resolved(["--panel", "review", "--effort", "medium"]).workers;
+  assert.equal(job[2].effort, "medium");
+  assert.deepEqual(job[2].warnings, []);
 });
 
 test("Given an unavailable explicit target, When any panel member cannot run, Then the whole preview fails without a replacement", t => {

@@ -86,15 +86,18 @@ def claude_stream(*calls):
     return [json.dumps(event) for event in events]
 
 
-def write_codex_rollouts(home, thread, spawns, parent_rollout=True, effort=None):
+def write_codex_rollouts(home, thread, spawns, parent_rollout=True, effort=None, forked=False):
     """Write rollouts shaped like `codex exec` sessions; return the matching `--json` host log.
 
     Each spawn is (call, requested model, child thread, model the child ran, finished, *actions), where an action
-    is a shell command the child ran, ("run", command, output), or edits(path).
+    is a shell command the child ran, ("run", command, output), or edits(path). A forked child's rollout starts
+    with a copy of the parent's history under the parent's turn id, as Codex writes it.
     """
     day = home / "sessions" / "2026" / "10" / "16"
     day.mkdir(parents=True, exist_ok=True)
-    parent = [{"type": "session_meta", "payload": {"id": thread}}, {"type": "turn_context", "payload": {"model": "gpt-6-astra"}}]
+    parent_turn = f"{thread}-turn"
+    parent_context = {"type": "turn_context", "payload": {"model": "gpt-6-astra", "turn_id": parent_turn}}
+    parent = [{"type": "session_meta", "payload": {"id": thread}}, parent_context]
     for call, requested, child, actual, finished, *actions in spawns:
         arguments = {"task_name": call, "fork_turns": "none", "message": "brief"}
         if requested is not None:
@@ -109,8 +112,13 @@ def write_codex_rollouts(home, thread, spawns, parent_rollout=True, effort=None)
             "type": "SubAgentActivity", "kind": "started", "id": call, "agent_thread_id": child, "agent_path": f"/root/{call}"}}})
         if actual is None:
             continue
-        events = [{"type": "session_meta", "payload": {"id": child, "parent_thread_id": thread}},
-                  {"type": "turn_context", "payload": {"model": actual}}]
+        events = [{"type": "session_meta", "payload": {"id": child, "parent_thread_id": thread, **({"forked_from_id": thread} if forked else {})}}]
+        if forked:
+            events += [{"type": "session_meta", "payload": {"id": thread}}, parent_context,
+                       {"type": "event_msg", "payload": {"type": "item_completed", "thread_id": thread, "turn_id": parent_turn, "item": {
+                           "type": "CommandExecution", "command": ["/bin/zsh", "-lc", "echo parent"], "aggregated_output": "parent", "status": "completed"}}},
+                       {"type": "event_msg", "payload": {"type": "task_complete", "turn_id": parent_turn, "last_agent_message": "parent done"}}]
+        events.append({"type": "turn_context", "payload": {"model": actual, "turn_id": f"{child}-turn"}})
         for index, action in enumerate(actions):
             if isinstance(action, tuple) and action[0] == "edit":
                 events.append({"type": "event_msg", "payload": {"type": "item_completed", "item": {
@@ -170,6 +178,20 @@ class NativeEvidenceTest(FIXTURES["HarnessFixture"]):
         self.assertEqual(sorted(receipt["path"] for receipt in receipts), sorted(receipt["path"] for receipt in written))
         checks = self.valid_receipts(receipts, native_dispatches=native, **CODEX_MIXED)
         self.assertEqual(checks, ALL_CHECKS_PASS)
+
+    def test_given_a_forked_codex_child_when_checked_then_its_copy_of_the_parent_history_is_ignored(self):
+        home = self.root / "codex-home-forked"
+        native, gap = codex_native_dispatches(write_codex_rollouts(home, "thread-forked", [
+            ("call-done", None, "thread-done", "gpt-6-luna", True, ("run", "echo child", "child")),
+            ("call-open", None, "thread-open", "gpt-6-luna", False, ("run", "echo still", "still")),
+        ], forked=True), home)
+
+        self.assertIsNone(gap)
+        done, still_open = native
+        self.assertEqual((done.status, done.resolved, done.usable), ("completed", "gpt-6-luna", True))
+        self.assertEqual([command.command for command in done.commands], ["echo child"])
+        self.assertEqual((still_open.status, still_open.resolved), ("pending", "gpt-6-luna"))
+        self.assertEqual([command.command for command in still_open.commands], ["echo still"])
 
     def test_given_mixed_claude_policy_when_stream_shows_native_dispatches_and_xagent_receipts_then_all_checks_pass(self):
         receipts = self.xagent_reviews_for(CLAUDE_MIXED["reviewers"])
