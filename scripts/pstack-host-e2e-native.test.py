@@ -621,7 +621,8 @@ class NativeEvidenceTest(FIXTURES["HarnessFixture"]):
                 self.assertIn(f"exclusive worktree at fixture base {report['base']} and have it leave its change uncommitted", prompt)
                 self.assertIn(f"a native reviewer changes no files and runs python3 -B {ROOT / 'scripts/e2e-snapshot.py'} <its worktree> "
                               "as its first and as its last shell command", prompt)
-                self.assertIn("pass an effort to every worker, native or xagent", prompt)
+                self.assertIn("pass an effort to every worker, native or xagent; dispatch each native worker as an agent type "
+                              "whose definition sets no effort of its own", prompt)
                 if host == "claude":
                     self.assertIn("-p", launch["argv"])
                     self.assertIn("--no-session-persistence", launch["argv"])

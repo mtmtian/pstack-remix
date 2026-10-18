@@ -168,6 +168,27 @@ export const REQUIRED = [
     section: "upstream-behavior-retained",
   },
   {
+    id: "verification-workers-role",
+    file: "skills/poteto-mode/SKILL.md",
+    pattern: /Verification workers, including a swarm's verify lanes and the \*\*show-me-your-work\*\* handback review, read `verification workers`\./,
+    hint: "verifiers read their own role so each host can point it at another vendor",
+    section: "upstream-behavior-retained",
+  },
+  {
+    id: "swarm-verify-role",
+    file: "skills/swarm/SKILL.md",
+    pattern: /Workers that verify another agent's work, as in a swarm-verify, read `verification workers` instead\./,
+    hint: "a swarm's verify lanes read verification workers, not swarm workers",
+    section: "upstream-behavior-retained",
+  },
+  {
+    id: "handback-review-role",
+    file: "skills/show-me-your-work/SKILL.md",
+    pattern: /spawn a subagent on the `verification workers` role from the effective policy/,
+    hint: "the handback review runs on the verification workers role",
+    section: "upstream-behavior-retained",
+  },
+  {
     id: "t3-no-service-tier",
     file: "references/t3-runtime.md",
     pattern: /The preview adds no speed or service-tier option; do not add one unless the user asked\./,

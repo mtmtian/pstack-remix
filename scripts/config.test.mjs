@@ -428,6 +428,64 @@ test("Given malformed or host-scoped required panel members, When update or show
   assert.match(shown.stderr, /required_panel_members/);
 });
 
+test("Given auxiliary panel members, When every host view runs show, Then each lists them and panels keep their configured entries", (t) => {
+  const dir = tempDir();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const configPath = path.join(dir, "config.json");
+  const inputPath = path.join(dir, "patch.json");
+  const config = validConfig();
+  config.hosts.codex.panels["interrogate reviewers"] = ["inherit-parent", "xagent:claude", "xagent:gemini"];
+  config.hosts.codex.panels["arena cross-judge pool"] = ["xagent:claude"];
+  writeJson(configPath, config);
+  writeJson(inputPath, { auxiliary_panel_members: ["xagent:gemini"] });
+
+  const update = runCli(["update", "--input", inputPath, "--config", configPath]);
+  assert.equal(update.status, 0, update.stderr);
+  for (const host of ["codex", "claude", "t3", "antigravity"]) {
+    const effective = JSON.parse(runCli(["show", "--host", host, "--config", configPath]).stdout).effective;
+    assert.deepEqual(effective.auxiliary_panel_members, ["xagent:gemini"], host);
+    assert.deepEqual(effective.required_panel_members, [], host);
+    assert.deepEqual(effective.defaultPanel, ["inherit-parent", "inherit-parent"], host);
+  }
+  const codex = JSON.parse(runCli(["show", "--host", "codex", "--config", configPath]).stdout).effective;
+  assert.deepEqual(codex.panels["interrogate reviewers"], ["inherit-parent", "xagent:claude", "xagent:gemini"]);
+  assert.deepEqual(codex.panels["arena cross-judge pool"], ["xagent:claude"]);
+
+  writeJson(inputPath, { auxiliary_panel_members: null });
+  assert.equal(runCli(["update", "--input", inputPath, "--config", configPath]).status, 0);
+  assert.deepEqual(JSON.parse(runCli(["show", "--host", "codex", "--config", configPath]).stdout).effective.auxiliary_panel_members, []);
+  assert.equal(Object.hasOwn(JSON.parse(readFileSync(configPath, "utf8")), "auxiliary_panel_members"), false);
+});
+
+test("Given malformed or host-scoped auxiliary panel members, When update or show runs, Then they are rejected without writing", (t) => {
+  const dir = tempDir();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const configPath = path.join(dir, "config.json");
+  const inputPath = path.join(dir, "patch.json");
+  writeJson(configPath, validConfig());
+  const original = readFileSync(configPath, "utf8");
+
+  for (const value of [[], "xagent:gemini", ["inherit-parent"], ["xagent:gemini", "xagent:gemini"], ["xagent:Gemini Pro"]]) {
+    writeJson(inputPath, { auxiliary_panel_members: value });
+    const result = runCli(["update", "--input", inputPath, "--config", configPath]);
+    assert.notEqual(result.status, 0, JSON.stringify(value));
+    assert.equal(readFileSync(configPath, "utf8"), original);
+  }
+  writeJson(inputPath, { auxiliary_panel_members: ["xagent:gemini"] });
+  for (const host of ["codex", "claude", "t3"]) {
+    const hostUpdate = runCli(["update", "--host", host, "--input", inputPath, "--config", configPath]);
+    assert.notEqual(hostUpdate.status, 0, host);
+    assert.equal(readFileSync(configPath, "utf8"), original);
+  }
+
+  const handWritten = validConfig();
+  handWritten.hosts.codex.auxiliary_panel_members = ["xagent:gemini"];
+  writeJson(configPath, handWritten);
+  const shown = runCli(["show", "--host", "codex", "--config", configPath]);
+  assert.notEqual(shown.status, 0);
+  assert.match(shown.stderr, /auxiliary_panel_members/);
+});
+
 test("Given a malformed xagent entry in common policy, When update runs, Then it is rejected without writing", (t) => {
   const dir = tempDir();
   t.after(() => rmSync(dir, { recursive: true, force: true }));
