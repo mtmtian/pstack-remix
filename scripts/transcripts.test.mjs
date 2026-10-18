@@ -170,6 +170,17 @@ test("Given relocated host homes and several checkouts, When listed, Then CLAUDE
   assert.deepEqual(paths(list(home, ["--host", "codex", "--cwd", "/work/repo"], env)), [rollout]);
 });
 
+test("Given bounds in years 0 to 99 or on a day the local calendar skipped, When the CLI parses them, Then it keeps the dates as written", (t) => {
+  const home = tempHome(t);
+  const ancient = list(home, ["--host", "claude", "--since", "0000-01-01T00:00:00Z", "--until", "0000-01-02T00:00:00Z"], { TZ: "UTC" });
+  assert.equal(ancient.since, "0000-01-01T00:00:00.000Z");
+  const bare = list(home, ["--host", "claude", "--since", "0050-01-01", "--until", "0050-01-01"], { TZ: "UTC" });
+  assert.deepEqual([bare.since, bare.until], ["0050-01-01T00:00:00.000Z", "0050-01-01T23:59:59.999Z"]);
+  // Samoa skipped 2011-12-30 locally, but that UTC date still exists.
+  const skipped = list(home, ["--host", "claude", "--since", "2011-12-30T12:00:00Z", "--until", "2011-12-31T00:00:00Z"], { TZ: "Pacific/Apia" });
+  assert.equal(skipped.since, "2011-12-30T12:00:00.000Z");
+});
+
 test("Given invalid arguments, When the CLI runs, Then it exits 1 with the reason", (t) => {
   const home = tempHome(t);
   const cases = [
@@ -177,6 +188,8 @@ test("Given invalid arguments, When the CLI runs, Then it exits 1 with the reaso
     [["--host", "cursor"], /host must be one of claude or codex/],
     [["--host", "claude", "--since", "last week"], /--since must be YYYY-MM-DD or an ISO 8601 date-time/],
     [["--host", "claude", "--until", "2026-02-30"], /--until 2026-02-30 is not a calendar date/],
+    [["--host", "claude", "--until", "2026-02-30T23:00:00Z"], /--until 2026-02-30T23:00:00Z is not a calendar date/],
+    [["--host", "claude", "--since", "2026-04-31T00:00"], /--since 2026-04-31T00:00 is not a calendar date/],
     [["--host", "claude", "--since", "2026-10-10", "--until", "2026-10-01"], /since must not be later than until/],
     [["--host", "claude", "--host", "codex"], /may only be provided once/],
     [["--host", "codex", "--cwd"], /--cwd requires a value/],
