@@ -181,18 +181,19 @@ function listTranscripts({ host, cwds, since, until }) {
 }
 
 // A bare date is a local calendar day: --since starts at its midnight and --until includes the whole day.
+// Date.parse rolls a date-time's day past the month's end into the next month, so both forms check the date first.
 function parseTime(value, flag, { endOfDay }) {
-  const day = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
-  if (day) {
-    const [year, month, date] = day.slice(1).map(Number);
-    const start = new Date(year, month - 1, date);
-    if (start.getFullYear() !== year || start.getMonth() !== month - 1 || start.getDate() !== date) {
-      throw new Error(`${flag} ${value} is not a calendar date`);
-    }
-    return endOfDay ? new Date(year, month - 1, date + 1).getTime() - 1 : start.getTime();
+  const malformed = `${flag} must be YYYY-MM-DD or an ISO 8601 date-time`;
+  const day = /^(\d{4})-(\d{2})-(\d{2})(T.*)?$/.exec(value);
+  if (!day) throw new Error(malformed);
+  const [year, month, date] = day.slice(1, 4).map(Number);
+  const start = new Date(year, month - 1, date);
+  if (start.getFullYear() !== year || start.getMonth() !== month - 1 || start.getDate() !== date) {
+    throw new Error(`${flag} ${value} is not a calendar date`);
   }
-  const time = /^\d{4}-\d{2}-\d{2}T/.test(value) ? Date.parse(value) : Number.NaN;
-  if (Number.isNaN(time)) throw new Error(`${flag} must be YYYY-MM-DD or an ISO 8601 date-time`);
+  if (day[4] === undefined) return endOfDay ? new Date(year, month - 1, date + 1).getTime() - 1 : start.getTime();
+  const time = Date.parse(value);
+  if (Number.isNaN(time)) throw new Error(malformed);
   return time;
 }
 

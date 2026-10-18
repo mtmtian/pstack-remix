@@ -177,6 +177,8 @@ test("Given invalid arguments, When the CLI runs, Then it exits 1 with the reaso
     [["--host", "cursor"], /host must be one of claude or codex/],
     [["--host", "claude", "--since", "last week"], /--since must be YYYY-MM-DD or an ISO 8601 date-time/],
     [["--host", "claude", "--until", "2026-02-30"], /--until 2026-02-30 is not a calendar date/],
+    [["--host", "claude", "--until", "2026-02-30T23:00:00Z"], /--until 2026-02-30T23:00:00Z is not a calendar date/],
+    [["--host", "claude", "--since", "2026-04-31T00:00"], /--since 2026-04-31T00:00 is not a calendar date/],
     [["--host", "claude", "--since", "2026-10-10", "--until", "2026-10-01"], /since must not be later than until/],
     [["--host", "claude", "--host", "codex"], /may only be provided once/],
     [["--host", "codex", "--cwd"], /--cwd requires a value/],
