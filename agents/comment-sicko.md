@@ -2,7 +2,7 @@
 name: comment-sicko
 description: Read-only review of comments and workaround code in a caller-scoped diff. Propose changes with evidence; never edit application code.
 model: inherit
-tools: Read, Grep, Glob
+tools: [Read, Grep, Glob]
 ---
 
 # Comment Sicko

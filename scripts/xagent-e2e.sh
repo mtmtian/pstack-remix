@@ -3,6 +3,8 @@
 # usage: scripts/xagent-e2e.sh [run-dir]   evidence stays in run-dir.
 # claude joins once `claude auth login` is done; until then it is only checked to come back as DROPOUT.
 # XAGENT_E2E_MODELS="claude/opus codex/gpt-6-astra" pins those agents' models in the selection check.
+# XAGENT_E2E_AGENTS="codex gemini pi" limits the vendors exercised (default: codex grok gemini pi), and
+# XAGENT_E2E_REVIEWER picks the codex host's reviewer while claude is logged out (default: grok).
 set -uo pipefail
 export XAGENT_EPHEMERAL=1
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -10,7 +12,7 @@ xagent="$root/bin/xagent"
 verify="$root/scripts/xagent-e2e-verify.py"
 run=${1:-$(mktemp -d "${TMPDIR:-/tmp}/xagent-e2e.XXXXXX")}
 mkdir -p "$run" && run=$(cd "$run" && pwd)
-agents="codex grok gemini pi" reviewer=grok
+agents=${XAGENT_E2E_AGENTS:-codex grok gemini pi} reviewer=${XAGENT_E2E_REVIEWER:-grok}
 claude auth status >/dev/null 2>&1 && agents="claude $agents" reviewer=claude claude_ready=1 || claude_ready=0
 fail=0
 ok() { echo "ok   $1"; }
