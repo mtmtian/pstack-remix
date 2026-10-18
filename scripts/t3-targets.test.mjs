@@ -351,6 +351,24 @@ test("Given a verification role with candidates, When the checked work's family 
   }
 });
 
+test("Given several candidates, When the parent's is not another known family, Then the first configured candidate that is runs, read from its routed model", t => {
+  const f = verificationFixture(t);
+  f.catalog.providers[0].models.push(f.model("route/claude-opus-5-5"));
+  f.catalog.providers[0].canRunCrossProviderChildTask = true;
+  f.config.hosts.t3.roles["verification workers"] = { candidates: ["custom/route/vendor/model", "judge/claude-opus@latest", "code/gpt-sol@latest"] };
+  f.catalog.inheritedProviderInstanceId = "judge";
+  // Parent judge is Claude like the work, custom's family is unknown, so code is the first known other family.
+  const skipped = f.resolved(["--role", "verification workers", "--checked", "judge/claude-opus-5-5"]);
+  assert.equal(skipped.selection.strategy, "cross-family");
+  assert.equal(skipped.workers[0].target.model, "gpt-6.1-sol");
+  // A Claude model routed through the GPT parent's provider counts as Claude.
+  f.config.hosts.t3.roles["verification workers"] = { candidates: ["judge/claude-opus@latest", "code/route/claude-opus-5-5"] };
+  f.catalog.inheritedProviderInstanceId = "code";
+  const routed = f.resolved(["--role", "verification workers", "--checked", "xagent:codex/gpt-6.1-sol"]);
+  assert.equal(routed.selection.entry, "code/route/claude-opus-5-5");
+  assert.equal(routed.workers[0].family, "claude");
+});
+
 test("Given a verification role, When neither the checked work nor a provider is named, Then it fails before any dispatch", t => {
   const f = verificationFixture(t);
   for (const args of [[], ["--provider", "judge", "--checked", "inherit-parent"], ["--checked", " "]]) {
