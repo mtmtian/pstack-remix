@@ -614,7 +614,8 @@ pass that exact model, omitting the model only for inherit-parent or auto. A nat
 host's file-edit tool (Write or Edit in Claude Code, apply_patch in Codex); a native reviewer changes no files and runs
 python3 -B {SNAPSHOT_TOOL} <its worktree> as its first and as its last shell command in that worktree,
 each as a command of its own.
-When the effective policy sets reasoning_effort, pass an effort to every worker, native or xagent.
+When the effective policy sets reasoning_effort, pass an effort to every worker, native or xagent; dispatch each native
+worker as an agent type whose definition sets no effort of its own, so that effort applies.
 Report the resolved routes, actual worker receipt paths, findings, your own test output, and any gaps.
 End with PSTACK_E2E: PASS only if the repair, all configured reviews and your independent tests are complete,
 with no unresolved reproduced violation of the stated contract; otherwise PSTACK_E2E: FAIL.
