@@ -486,6 +486,59 @@ test("Given malformed or host-scoped auxiliary panel members, When update or sho
   assert.match(shown.stderr, /auxiliary_panel_members/);
 });
 
+test("Given xagent effort caps, When every host view runs show, Then each lists them and a null patch removes them", (t) => {
+  const dir = tempDir();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const configPath = path.join(dir, "config.json");
+  const inputPath = path.join(dir, "patch.json");
+  const config = validConfig();
+  config.reasoning_effort = "xhigh";
+  writeJson(configPath, config);
+  const shown = (host) => JSON.parse(runCli(["show", "--host", host, "--config", configPath]).stdout).effective;
+  assert.deepEqual(shown("codex").xagent_effort_caps, {});
+
+  writeJson(inputPath, { xagent_effort_caps: { gemini: "high", pi: "max" } });
+  const update = runCli(["update", "--input", inputPath, "--config", configPath]);
+  assert.equal(update.status, 0, update.stderr);
+  for (const host of ["codex", "claude", "t3", "antigravity"]) {
+    assert.deepEqual(shown(host).xagent_effort_caps, { gemini: "high", pi: "max" }, host);
+    assert.equal(shown(host).reasoning_effort, "xhigh", host);
+  }
+
+  writeJson(inputPath, { xagent_effort_caps: null });
+  assert.equal(runCli(["update", "--input", inputPath, "--config", configPath]).status, 0);
+  assert.deepEqual(shown("claude").xagent_effort_caps, {});
+  assert.equal(Object.hasOwn(JSON.parse(readFileSync(configPath, "utf8")), "xagent_effort_caps"), false);
+});
+
+test("Given malformed or host-scoped xagent effort caps, When update or show runs, Then they are rejected without writing", (t) => {
+  const dir = tempDir();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const configPath = path.join(dir, "config.json");
+  const inputPath = path.join(dir, "patch.json");
+  writeJson(configPath, validConfig());
+  const original = readFileSync(configPath, "utf8");
+
+  for (const value of [{}, [], "high", { gemini: "ultra" }, { gemini: null }, { "Gemini Pro": "high" }, { "xagent:gemini": "high" }]) {
+    writeJson(inputPath, { xagent_effort_caps: value });
+    const result = runCli(["update", "--input", inputPath, "--config", configPath]);
+    assert.notEqual(result.status, 0, JSON.stringify(value));
+    assert.equal(readFileSync(configPath, "utf8"), original);
+  }
+  writeJson(inputPath, { xagent_effort_caps: { gemini: "high" } });
+  for (const host of ["codex", "claude", "t3"]) {
+    assert.notEqual(runCli(["update", "--host", host, "--input", inputPath, "--config", configPath]).status, 0, host);
+    assert.equal(readFileSync(configPath, "utf8"), original);
+  }
+
+  const handWritten = validConfig();
+  handWritten.hosts.claude.xagent_effort_caps = { gemini: "high" };
+  writeJson(configPath, handWritten);
+  const shown = runCli(["show", "--host", "claude", "--config", configPath]);
+  assert.notEqual(shown.status, 0);
+  assert.match(shown.stderr, /xagent_effort_caps/);
+});
+
 test("Given a malformed xagent entry in common policy, When update runs, Then it is rejected without writing", (t) => {
   const dir = tempDir();
   t.after(() => rmSync(dir, { recursive: true, force: true }));

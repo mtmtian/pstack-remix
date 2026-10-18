@@ -25,6 +25,11 @@ const REQUIRED_MEMBERS = "required_panel_members";
 // External agents whose unresolved outcome is reported as a gap instead of blocking their panel.
 const AUXILIARY_MEMBERS = "auxiliary_panel_members";
 const MEMBER_LISTS = [REQUIRED_MEMBERS, AUXILIARY_MEMBERS];
+// The highest effort each external agent's CLI accepts; the parent passes it the lower of the job's effort and this cap.
+const EFFORT_CAPS = "xagent_effort_caps";
+const XAGENT_NAME = /^[a-z][a-z0-9-]*$/;
+// Fields that only common policy may set, because xagent runs the same way from every host.
+const SHARED_FIELDS = [...MEMBER_LISTS, EFFORT_CAPS];
 
 export function getDefaultConfigPath(homeDir = homedir()) {
   return path.join(homeDir, ".config", "pstack", "config.json");
@@ -124,18 +129,31 @@ function validateEffort(policy, label) {
 }
 
 // null means unset, in a stored config as in a patch.
-function validateMemberLists(policy, scope, label) {
-  for (const key of MEMBER_LISTS) {
+function validateSharedFields(policy, scope, label) {
+  for (const key of SHARED_FIELDS) {
     if (!Object.hasOwn(policy, key)) continue;
     const field = `${label}.${key}`;
     if (scope !== "common") throw new Error(`${field} is shared policy and cannot be set per host`);
-    const members = policy[key];
-    if (members === null) continue;
-    if (!Array.isArray(members) || members.length === 0) throw new Error(`${field} must be a nonempty array or null`);
-    for (const member of members) {
-      if (typeof member !== "string" || !XAGENT_VALUE.test(member)) throw new Error(`${field} entries must be xagent:<agent>[/<model>]`);
-    }
-    if (new Set(members).size !== members.length) throw new Error(`${field} entries must be unique`);
+    const value = policy[key];
+    if (value === null) continue;
+    if (key === EFFORT_CAPS) validateEffortCaps(value, field);
+    else validateMemberList(value, field);
+  }
+}
+
+function validateMemberList(members, field) {
+  if (!Array.isArray(members) || members.length === 0) throw new Error(`${field} must be a nonempty array or null`);
+  for (const member of members) {
+    if (typeof member !== "string" || !XAGENT_VALUE.test(member)) throw new Error(`${field} entries must be xagent:<agent>[/<model>]`);
+  }
+  if (new Set(members).size !== members.length) throw new Error(`${field} entries must be unique`);
+}
+
+function validateEffortCaps(caps, field) {
+  if (!isObject(caps) || Object.keys(caps).length === 0) throw new Error(`${field} must be a nonempty object or null`);
+  for (const [agent, effort] of Object.entries(caps)) {
+    if (!XAGENT_NAME.test(agent)) throw new Error(`${field} keys must be xagent agent names`);
+    if (!REASONING_EFFORTS.has(effort)) throw new Error(`${field}.${agent} must be one of ${[...REASONING_EFFORTS].join(", ")}`);
   }
 }
 
@@ -147,7 +165,7 @@ function validatePolicy(policy, scope, label) {
   validateRoles(policy.roles, scope, label);
   validatePanels(policy.panels, scope, label);
   validateEffort(policy, label);
-  validateMemberLists(policy, scope, label);
+  validateSharedFields(policy, scope, label);
 }
 
 function validateConfig(config) {
@@ -162,7 +180,7 @@ function validateConfig(config) {
 
 function validatePatch(patch, scope, label) {
   requireObject(patch, label);
-  const allowed = new Set(["roles", "panels", "reasoning_effort", ...MEMBER_LISTS]);
+  const allowed = new Set(["roles", "panels", "reasoning_effort", ...SHARED_FIELDS]);
   for (const key of Object.keys(patch)) {
     if (!allowed.has(key)) throw new Error(`${label}.${key} is not a supported update field`);
   }
@@ -186,7 +204,7 @@ function validatePatch(patch, scope, label) {
       }
     }
   }
-  validateMemberLists(patch, scope, label);
+  validateSharedFields(patch, scope, label);
   if (Object.hasOwn(patch, "reasoning_effort") && patch.reasoning_effort !== null && !REASONING_EFFORTS.has(patch.reasoning_effort)) {
     throw new Error(`${label}.reasoning_effort must be one of ${[...REASONING_EFFORTS].join(", ")} or null`);
   }
@@ -293,7 +311,7 @@ function applyPatch(policy, patch) {
       });
     }
   }
-  for (const key of ["reasoning_effort", ...MEMBER_LISTS]) {
+  for (const key of ["reasoning_effort", ...SHARED_FIELDS]) {
     if (!Object.hasOwn(patch, key)) continue;
     if (patch[key] === null) delete policy[key];
     else policy[key] = cloneJson(patch[key]);
@@ -334,6 +352,7 @@ export function showConfig({ configPath = getDefaultConfigPath(), host } = {}) {
       panels: Object.fromEntries(Object.entries(panels).map(([name, panel]) => [name, withRequired(panel)])),
       [REQUIRED_MEMBERS]: [...required],
       [AUXILIARY_MEMBERS]: [...(config[AUXILIARY_MEMBERS] ?? [])],
+      [EFFORT_CAPS]: { ...config[EFFORT_CAPS] },
       reasoning_effort: hostPolicy.reasoning_effort ?? config.reasoning_effort ?? null,
       defaultModel: "inherit-parent",
       defaultPanel: withRequired(DEFAULT_PANEL),
