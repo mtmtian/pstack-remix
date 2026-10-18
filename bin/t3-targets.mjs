@@ -93,23 +93,37 @@ function effortFor(model, requested, label) {
   return { effort: { requested, sent: requested, option: control.id }, warnings: [] };
 }
 
-// Whether an effort exceeds a cap; a missing effort or cap never does.
-function above(effort, cap) {
-  return effort != null && cap != null && EFFORT_ORDER.indexOf(effort) > EFFORT_ORDER.indexOf(cap);
+// The requested effort lowered to a cap, with the warning that says so; a missing effort or cap changes nothing.
+function capped(requested, cap, label, field) {
+  if (requested == null || cap == null || EFFORT_ORDER.indexOf(requested) <= EFFORT_ORDER.indexOf(cap)) {
+    return { effort: requested, warning: null };
+  }
+  return { effort: cap, warning: `${label}: requested effort ${requested} is above its ${field} entry, so ${cap} is sent` };
 }
 
-function workerFor(entry, catalog, requestedEffort, effortCaps) {
+// The lowest model_effort_caps entry naming a dash-separated part of the model ID's last segment,
+// so fable matches the fable alias and claude-fable-5-1, and astra matches gpt-6-astra.
+function modelCapFor(modelId, modelCaps) {
+  if (typeof modelId !== "string") return undefined;
+  const parts = modelId.slice(modelId.lastIndexOf("/") + 1).toLowerCase().split("-");
+  return Object.entries(modelCaps)
+    .filter(([name]) => parts.includes(name))
+    .map(([, cap]) => cap)
+    .sort((a, b) => EFFORT_ORDER.indexOf(a) - EFFORT_ORDER.indexOf(b))[0];
+}
+
+function workerFor(entry, catalog, requestedEffort, caps) {
   if (entry.startsWith("xagent:")) {
     const spec = entry.slice("xagent:".length);
     const slash = spec.indexOf("/");
     const agent = slash < 0 ? spec : spec.slice(0, slash);
-    const cap = effortCaps[agent];
-    const lowered = above(requestedEffort, cap);
     const model = modelOf(entry, catalog);
+    const byModel = capped(requestedEffort, modelCapFor(model, caps.model), entry, "model_effort_caps");
+    const byAgent = capped(byModel.effort, caps.agent[agent], entry, "xagent_effort_caps");
     return {
       entry, transport: "xagent", agent, model, family: familyOf(model),
-      effort: lowered ? cap : requestedEffort,
-      warnings: lowered ? [`${entry}: requested effort ${requestedEffort} is above its xagent_effort_caps entry, so ${cap} is sent`] : [],
+      effort: byAgent.effort,
+      warnings: [byModel.warning, byAgent.warning].filter(Boolean),
     };
   }
   const inherited = entry === "inherit-parent" || entry === "auto";
@@ -128,12 +142,15 @@ function workerFor(entry, catalog, requestedEffort, effortCaps) {
       ],
     };
   }
-  const { effort, warnings } = effortFor(model, requestedEffort, `${providerId}/${model.id}`);
+  const label = `${providerId}/${model.id}`;
+  const byModel = capped(requestedEffort, modelCapFor(model.id, caps.model), label, "model_effort_caps");
+  const { effort, warnings } = effortFor(model, byModel.effort, label);
   const target = { providerInstanceId: providerId, model: model.id };
   if (effort.sent !== null) target.options = { [effort.option]: effort.sent };
   return {
     entry, transport: "t3", target,
-    resolved: { providerInstanceId: providerId, model: model.id }, family: familyOf(model.id), effort, warnings,
+    resolved: { providerInstanceId: providerId, model: model.id }, family: familyOf(model.id), effort,
+    warnings: [byModel.warning, ...warnings].filter(Boolean),
   };
 }
 
@@ -190,17 +207,13 @@ export function resolveT3Targets(policy, catalog, { role, panel, effort, provide
     if (provider !== undefined) throw new Error("--provider requires a role with configured candidates");
     entries = kind === "role" ? [value] : value;
   }
-  const wantedEffort = effort ?? policy.reasoning_effort ?? null;
-  const ceiling = policy.reasoning_effort_cap ?? null;
-  const requestedEffort = above(wantedEffort, ceiling) ? ceiling : wantedEffort;
+  const requestedEffort = effort ?? policy.reasoning_effort ?? null;
+  const caps = { agent: policy.xagent_effort_caps ?? {}, model: policy.model_effort_caps ?? {} };
   const auxiliary = new Set(policy.auxiliary_panel_members ?? []);
   return {
     selection,
     workers: entries.map(entry => {
-      const worker = workerFor(entry, catalog, requestedEffort, policy.xagent_effort_caps ?? {});
-      if (requestedEffort !== wantedEffort) {
-        worker.warnings.unshift(`${entry}: requested effort ${wantedEffort} is above reasoning_effort_cap, so ${ceiling} is requested`);
-      }
+      const worker = workerFor(entry, catalog, requestedEffort, caps);
       // The auxiliary listing only relaxes panel seats; a role never becomes optional.
       worker.auxiliary = kind === "panel" && auxiliary.has(entry);
       if (checked !== undefined && !crossFamily(worker.family)) {

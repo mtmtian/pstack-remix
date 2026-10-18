@@ -134,24 +134,30 @@ test("Given an xagent effort cap, When the effort is above it, Then only that ag
   assert.deepEqual(job[2].warnings, []);
 });
 
-test("Given a reasoning effort cap, When the job asks for more, Then every worker is requested at the cap and says so, and lower efforts pass untouched", t => {
+test("Given model effort caps, When a job asks for more, Then only workers on a capped model are lowered and say so", t => {
   const f = fixture(t);
-  f.config.reasoning_effort_cap = "xhigh";
-  f.config.xagent_effort_caps = { gemini: "high" };
-  f.config.hosts.t3.reasoning_effort = "xhigh";
-  f.config.hosts.t3.panels.review = ["judge/strong", "xagent:claude"];
-  const raised = f.resolved(["--panel", "review", "--effort", "max"]).workers;
-  assert.deepEqual(raised.map(w => w.entry), ["judge/strong", "xagent:claude", "xagent:gemini"]);
-  assert.deepEqual(raised[0].target.options, { effort: "xhigh" });
-  assert.equal(raised[1].effort, "xhigh");
-  // The shared ceiling applies first; an agent's own lower cap still applies after it.
-  assert.equal(raised[2].effort, "high");
-  for (const worker of raised) assert.match(worker.warnings[0], /max is above reasoning_effort_cap, so xhigh/);
-  assert.match(raised[2].warnings[1], /xagent_effort_caps entry, so high/);
-  for (const args of [[], ["--effort", "medium"]]) {
-    const workers = f.resolved(["--panel", "review", ...args]).workers;
-    assert.deepEqual(workers.slice(0, 2).flatMap(w => w.warnings), []);
-  }
+  const model = id => ({ id, options: [{ id: "effort", type: "select", options: ["high", "xhigh", "max"].map(id => ({ id })) }] });
+  f.catalog.providers[1].models.push(...["claude-fable-5-1", "gpt-6-astra", "gpt-6.1-sol"].map(model));
+  f.config.model_effort_caps = { fable: "xhigh", astra: "xhigh" };
+  f.config.xagent_effort_caps = { gemini: "high", claude: "high" };
+  f.config.hosts.t3.panels.review = ["judge/claude-fable-5-1", "judge/gpt-6-astra", "judge/gpt-6.1-sol", "xagent:claude/claude-fable-5-1", "xagent:codex/fable"];
+  const workers = f.resolved(["--panel", "review", "--effort", "max"]).workers;
+  const effortOf = w => w.target?.options.effort ?? w.effort;
+  assert.deepEqual(workers.map(w => [w.entry, effortOf(w)]), [
+    ["judge/claude-fable-5-1", "xhigh"],
+    ["judge/gpt-6-astra", "xhigh"],
+    // An uncapped model keeps the raise.
+    ["judge/gpt-6.1-sol", "max"],
+    // The model cap applies first; the agent's own lower cap still applies after it.
+    ["xagent:claude/claude-fable-5-1", "high"],
+    ["xagent:codex/fable", "xhigh"],
+    // Without a pinned model, an xagent worker has no model to cap.
+    ["xagent:gemini", "high"],
+  ]);
+  assert.match(workers[0].warnings.join(" "), /max is above its model_effort_caps entry, so xhigh/);
+  assert.deepEqual(workers[2].warnings, []);
+  assert.deepEqual(workers[3].warnings.map(w => /model_effort_caps|xagent_effort_caps/.exec(w)[0]), ["model_effort_caps", "xagent_effort_caps"]);
+  assert.deepEqual(f.resolved(["--panel", "review", "--effort", "high"]).workers.slice(0, 3).flatMap(w => w.warnings), []);
 });
 
 test("Given an unavailable explicit target, When any panel member cannot run, Then the whole preview fails without a replacement", t => {

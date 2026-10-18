@@ -191,8 +191,8 @@ export const REQUIRED = [
   {
     id: "effort-cap-raise",
     file: "skills/poteto-mode/SKILL.md",
-    pattern: /Raise it one step, up to `max` or the shared `reasoning_effort_cap` when one is set, for the hardest or subtlest work\./,
-    hint: "the hardest-work effort raise stops at the shared reasoning_effort_cap",
+    pattern: /Raise it one step, up to `max` or the worker model's shared `model_effort_caps` entry, for the hardest or subtlest work\./,
+    hint: "the hardest-work effort raise stops at the worker model's model_effort_caps entry",
     section: "upstream-behavior-retained",
   },
   {

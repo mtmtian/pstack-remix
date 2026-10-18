@@ -27,11 +27,13 @@ const AUXILIARY_MEMBERS = "auxiliary_panel_members";
 const MEMBER_LISTS = [REQUIRED_MEMBERS, AUXILIARY_MEMBERS];
 // The highest effort each external agent's CLI accepts; the parent passes it the lower of the job's effort and this cap.
 const EFFORT_CAPS = "xagent_effort_caps";
-// The highest effort any worker on any host receives after the per-job adjustment, so cost has one ceiling.
-const EFFORT_CAP = "reasoning_effort_cap";
+// The highest effort a worker on an expensive model receives, keyed by a dash-separated part of the model name
+// (fable, astra), so every host's ID or alias for that model shares one cost ceiling.
+const MODEL_EFFORT_CAPS = "model_effort_caps";
 const XAGENT_NAME = /^[a-z][a-z0-9-]*$/;
-// Fields that only common policy may set: xagent runs the same way from every host, and the effort cap is one ceiling for all.
-const SHARED_FIELDS = [...MEMBER_LISTS, EFFORT_CAPS, EFFORT_CAP];
+const MODEL_NAME_PART = /^[a-z][a-z0-9]*$/;
+// Fields that only common policy may set, because xagent and each model's cost are the same from every host.
+const SHARED_FIELDS = [...MEMBER_LISTS, EFFORT_CAPS, MODEL_EFFORT_CAPS];
 
 export function getDefaultConfigPath(homeDir = homedir()) {
   return path.join(homeDir, ".config", "pstack", "config.json");
@@ -138,10 +140,9 @@ function validateSharedFields(policy, scope, label) {
     if (scope !== "common") throw new Error(`${field} is shared policy and cannot be set per host`);
     const value = policy[key];
     if (value === null) continue;
-    if (key === EFFORT_CAPS) validateEffortCaps(value, field);
-    else if (key === EFFORT_CAP) {
-      if (!REASONING_EFFORTS.has(value)) throw new Error(`${field} must be one of ${[...REASONING_EFFORTS].join(", ")} or null`);
-    } else validateMemberList(value, field);
+    if (key === EFFORT_CAPS) validateEffortCaps(value, field, XAGENT_NAME, "xagent agent names");
+    else if (key === MODEL_EFFORT_CAPS) validateEffortCaps(value, field, MODEL_NAME_PART, "single model-name parts such as fable");
+    else validateMemberList(value, field);
   }
 }
 
@@ -153,11 +154,11 @@ function validateMemberList(members, field) {
   if (new Set(members).size !== members.length) throw new Error(`${field} entries must be unique`);
 }
 
-function validateEffortCaps(caps, field) {
+function validateEffortCaps(caps, field, keyPattern, keyLabel) {
   if (!isObject(caps) || Object.keys(caps).length === 0) throw new Error(`${field} must be a nonempty object or null`);
-  for (const [agent, effort] of Object.entries(caps)) {
-    if (!XAGENT_NAME.test(agent)) throw new Error(`${field} keys must be xagent agent names`);
-    if (!REASONING_EFFORTS.has(effort)) throw new Error(`${field}.${agent} must be one of ${[...REASONING_EFFORTS].join(", ")}`);
+  for (const [key, effort] of Object.entries(caps)) {
+    if (!keyPattern.test(key)) throw new Error(`${field} keys must be ${keyLabel}`);
+    if (!REASONING_EFFORTS.has(effort)) throw new Error(`${field}.${key} must be one of ${[...REASONING_EFFORTS].join(", ")}`);
   }
 }
 
@@ -357,8 +358,8 @@ export function showConfig({ configPath = getDefaultConfigPath(), host } = {}) {
       [REQUIRED_MEMBERS]: [...required],
       [AUXILIARY_MEMBERS]: [...(config[AUXILIARY_MEMBERS] ?? [])],
       [EFFORT_CAPS]: { ...config[EFFORT_CAPS] },
+      [MODEL_EFFORT_CAPS]: { ...config[MODEL_EFFORT_CAPS] },
       reasoning_effort: hostPolicy.reasoning_effort ?? config.reasoning_effort ?? null,
-      [EFFORT_CAP]: config[EFFORT_CAP] ?? null,
       defaultModel: "inherit-parent",
       defaultPanel: withRequired(DEFAULT_PANEL),
     },
