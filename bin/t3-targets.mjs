@@ -13,12 +13,13 @@ function familyOf(modelId) {
   return FAMILY.exec(name)?.[1] ?? null;
 }
 
-// The model part of a policy entry or a --checked value; an xagent agent without a model has none.
+// The model part of a policy entry or a --checked value: a T3 target or bare model ID loses only its provider,
+// and an xagent agent without a model has none.
 function modelOf(entry, catalog) {
   if (entry === "inherit-parent" || entry === "auto") return catalog.inheritedModel;
-  if (!entry.startsWith("xagent:")) return entry;
   const slash = entry.indexOf("/");
-  return slash < 0 ? null : entry.slice(slash + 1);
+  if (entry.startsWith("xagent:")) return slash < 0 ? null : entry.slice(slash + 1);
+  return entry.slice(slash + 1);
 }
 
 function unique(rows, predicate, label) {
@@ -99,7 +100,7 @@ function workerFor(entry, catalog, requestedEffort, effortCaps) {
     const agent = slash < 0 ? spec : spec.slice(0, slash);
     const cap = effortCaps[agent];
     const lowered = requestedEffort !== null && cap !== undefined && EFFORT_ORDER.indexOf(requestedEffort) > EFFORT_ORDER.indexOf(cap);
-    const model = slash < 0 ? null : spec.slice(slash + 1);
+    const model = modelOf(entry, catalog);
     return {
       entry, transport: "xagent", agent, model, family: familyOf(model),
       effort: lowered ? cap : requestedEffort,
