@@ -224,6 +224,20 @@ export const REQUIRED = [
     section: "t3-code-overlay",
   },
   {
+    id: "t3-owned-child-task",
+    file: "references/t3-runtime.md",
+    pattern: /every pstack worker is an explicitly T3-owned child task/,
+    hint: "pstack workers are explicitly T3-owned child tasks, which T3 itself sends through delegate_task",
+    section: "t3-code-overlay",
+  },
+  {
+    id: "t3-cross-family-verification",
+    file: "bin/t3-targets.mjs",
+    pattern: /const CROSS_FAMILY_ROLE = "verification workers";/,
+    hint: "T3 verification workers require --checked and pick a candidate of another model family",
+    section: "t3-code-overlay",
+  },
+  {
     id: "watch-pr-once",
     file: "skills/poteto-mode/scripts/watch-pr/cli.ts",
     pattern: /"--once"/,

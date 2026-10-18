@@ -2,6 +2,24 @@
 // This module neither launches tasks nor reads or changes configuration.
 const EFFORT_IDS = new Set(["effort", "reasoningEffort", "thinking"]);
 const EFFORT_ORDER = ["low", "medium", "high", "xhigh", "max"];
+// A provider can route to any vendor, so the family comes only from the model ID's last segment.
+const FAMILY = /^(claude|gpt|gemini|grok)-/;
+// Its worker must differ in family from the work it checks, which the parent provider's default cannot ensure.
+const CROSS_FAMILY_ROLE = "verification workers";
+
+function familyOf(modelId) {
+  if (typeof modelId !== "string") return null;
+  const name = modelId.slice(modelId.lastIndexOf("/") + 1).replace(/@latest$/, "").toLowerCase();
+  return FAMILY.exec(name)?.[1] ?? null;
+}
+
+// The model part of a policy entry or a --checked value; an xagent agent without a model has none.
+function modelOf(entry, catalog) {
+  if (entry === "inherit-parent" || entry === "auto") return catalog.inheritedModel;
+  if (!entry.startsWith("xagent:")) return entry;
+  const slash = entry.indexOf("/");
+  return slash < 0 ? null : entry.slice(slash + 1);
+}
 
 function unique(rows, predicate, label) {
   const matches = Array.isArray(rows) ? rows.filter(predicate) : [];
@@ -81,9 +99,9 @@ function workerFor(entry, catalog, requestedEffort, effortCaps) {
     const agent = slash < 0 ? spec : spec.slice(0, slash);
     const cap = effortCaps[agent];
     const lowered = requestedEffort !== null && cap !== undefined && EFFORT_ORDER.indexOf(requestedEffort) > EFFORT_ORDER.indexOf(cap);
+    const model = slash < 0 ? null : spec.slice(slash + 1);
     return {
-      entry, transport: "xagent", agent,
-      model: slash < 0 ? null : spec.slice(slash + 1),
+      entry, transport: "xagent", agent, model, family: familyOf(model),
       effort: lowered ? cap : requestedEffort,
       warnings: lowered ? [`${entry}: requested effort ${requestedEffort} is above its xagent_effort_caps entry, so ${cap} is sent`] : [],
     };
@@ -97,7 +115,7 @@ function workerFor(entry, catalog, requestedEffort, effortCaps) {
     // T3 replaces target.options; catalog control defaults are not parent selections.
     return {
       entry, transport: "t3", target: null,
-      resolved: { providerInstanceId: providerId, model: model.id },
+      resolved: { providerInstanceId: providerId, model: model.id }, family: familyOf(model.id),
       effort: { requested: requestedEffort, sent: null, option: null },
       warnings: requestedEffort === null ? [] : [
         `${providerId}/${model.id}: requested effort ${requestedEffort} is not sent to preserve all parent model options; choose an explicit model target to set effort independently`,
@@ -109,17 +127,18 @@ function workerFor(entry, catalog, requestedEffort, effortCaps) {
   if (effort.sent !== null) target.options = { [effort.option]: effort.sent };
   return {
     entry, transport: "t3", target,
-    resolved: { providerInstanceId: providerId, model: model.id }, effort, warnings,
+    resolved: { providerInstanceId: providerId, model: model.id }, family: familyOf(model.id), effort, warnings,
   };
 }
 
 /**
  * @param {object} policy Effective output of config.mjs show --host t3.
  * @param {object} catalog Raw orchestrator_capabilities structured result for this task.
- * @param {{role?: string, panel?: string, effort?: string, provider?: string}} selection One role or panel, with optional per-job effort and candidate provider.
+ * @param {{role?: string, panel?: string, effort?: string, provider?: string, checked?: string}} selection One role or panel,
+ *   with optional per-job effort, candidate provider, or the entry or model that produced the work being checked.
  * @returns {{selection: object, workers: object[]}} Ordered arguments, never an execution receipt.
  */
-export function resolveT3Targets(policy, catalog, { role, panel, effort, provider }) {
+export function resolveT3Targets(policy, catalog, { role, panel, effort, provider, checked }) {
   if ((role === undefined) === (panel === undefined) || !(role ?? panel).trim()) {
     throw new Error("resolve requires exactly one nonempty --role or --panel");
   }
@@ -128,19 +147,37 @@ export function resolveT3Targets(policy, catalog, { role, panel, effort, provide
       || typeof catalog.inheritedModel !== "string" || !catalog.inheritedModel.trim()) {
     throw new Error("T3 catalog requires providers, inheritedProviderInstanceId and inheritedModel from the current thread");
   }
+  if (provider !== undefined && checked !== undefined) throw new Error("use --provider or --checked, not both");
+  if (checked !== undefined && !checked.trim()) throw new Error("--checked requires a nonempty entry or model");
+  if (role === CROSS_FAMILY_ROLE && provider === undefined && checked === undefined) {
+    throw new Error(`role ${role} requires --checked <entry or model that produced the checked work>, or --provider with a stated reason`);
+  }
   const kind = role === undefined ? "panel" : "role";
   const name = role ?? panel;
   const choices = kind === "role" ? policy.roles : policy.panels;
   const defaulted = !Object.hasOwn(choices, name);
   const value = defaulted ? (kind === "role" ? policy.defaultModel : policy.defaultPanel) : choices[name];
   const selection = { kind, name, defaulted };
+  const checkedFamily = checked === undefined ? null : familyOf(modelOf(checked, catalog));
+  // Unknown on either side never counts as a different family.
+  const crossFamily = family => checkedFamily !== null && family !== null && family !== checkedFamily;
+  if (checked !== undefined) selection.checked = { entry: checked, family: checkedFamily };
   let entries;
   if (kind === "role" && typeof value === "object") {
     const candidates = value.candidates;
-    const providerMatch = candidates.find(entry => entry.slice(0, entry.indexOf("/")) === (provider ?? catalog.inheritedProviderInstanceId));
-    if (provider !== undefined && !providerMatch) throw new Error(`role ${name}: provider ${provider} is not a configured candidate`);
-    const entry = providerMatch ?? candidates[0];
-    selection.strategy = provider !== undefined ? "explicit-provider" : providerMatch ? "parent-provider" : "first-candidate";
+    const providerOf = entry => entry.slice(0, entry.indexOf("/"));
+    let entry;
+    if (provider !== undefined) {
+      entry = candidates.find(candidate => providerOf(candidate) === provider);
+      if (!entry) throw new Error(`role ${name}: provider ${provider} is not a configured candidate`);
+      selection.strategy = "explicit-provider";
+    } else {
+      const parent = candidates.find(candidate => providerOf(candidate) === catalog.inheritedProviderInstanceId);
+      const ordered = parent ? [parent, ...candidates.filter(candidate => candidate !== parent)] : candidates;
+      entry = ordered.find(candidate => crossFamily(familyOf(modelOf(candidate, catalog))));
+      selection.strategy = entry ? "cross-family" : parent ? "parent-provider" : "first-candidate";
+      entry ??= ordered[0];
+    }
     selection.entry = entry;
     entries = [entry];
   } else {
@@ -148,8 +185,19 @@ export function resolveT3Targets(policy, catalog, { role, panel, effort, provide
     entries = kind === "role" ? [value] : value;
   }
   const requestedEffort = effort ?? policy.reasoning_effort ?? null;
+  const auxiliary = new Set(policy.auxiliary_panel_members ?? []);
   return {
     selection,
-    workers: entries.map(entry => workerFor(entry, catalog, requestedEffort, policy.xagent_effort_caps ?? {})),
+    workers: entries.map(entry => {
+      const worker = workerFor(entry, catalog, requestedEffort, policy.xagent_effort_caps ?? {});
+      // The auxiliary listing only relaxes panel seats; a role never becomes optional.
+      worker.auxiliary = kind === "panel" && auxiliary.has(entry);
+      if (checked !== undefined && !crossFamily(worker.family)) {
+        worker.warnings.push(worker.family !== null && worker.family === checkedFamily
+          ? `${entry}: same ${worker.family} family as the checked work; label it same-family review`
+          : `${entry}: the family of ${worker.family === null ? "this worker" : "the checked work"} is unknown, so it is not cross-family evidence`);
+      }
+      return worker;
+    }),
   };
 }
