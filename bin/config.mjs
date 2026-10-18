@@ -22,6 +22,9 @@ const REASONING_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
 const DEFAULT_PANEL = ["inherit-parent", "inherit-parent"];
 // External agents that must join every panel, so a per-panel or per-host list cannot leave them out.
 const REQUIRED_MEMBERS = "required_panel_members";
+// External agents whose unresolved outcome is reported as a gap instead of blocking their panel.
+const AUXILIARY_MEMBERS = "auxiliary_panel_members";
+const MEMBER_LISTS = [REQUIRED_MEMBERS, AUXILIARY_MEMBERS];
 
 export function getDefaultConfigPath(homeDir = homedir()) {
   return path.join(homeDir, ".config", "pstack", "config.json");
@@ -121,17 +124,19 @@ function validateEffort(policy, label) {
 }
 
 // null means unset, in a stored config as in a patch.
-function validateRequiredMembers(policy, scope, label) {
-  if (!Object.hasOwn(policy, REQUIRED_MEMBERS)) return;
-  const field = `${label}.${REQUIRED_MEMBERS}`;
-  if (scope !== "common") throw new Error(`${field} is shared policy and cannot be set per host`);
-  const members = policy[REQUIRED_MEMBERS];
-  if (members === null) return;
-  if (!Array.isArray(members) || members.length === 0) throw new Error(`${field} must be a nonempty array or null`);
-  for (const member of members) {
-    if (typeof member !== "string" || !XAGENT_VALUE.test(member)) throw new Error(`${field} entries must be xagent:<agent>[/<model>]`);
+function validateMemberLists(policy, scope, label) {
+  for (const key of MEMBER_LISTS) {
+    if (!Object.hasOwn(policy, key)) continue;
+    const field = `${label}.${key}`;
+    if (scope !== "common") throw new Error(`${field} is shared policy and cannot be set per host`);
+    const members = policy[key];
+    if (members === null) continue;
+    if (!Array.isArray(members) || members.length === 0) throw new Error(`${field} must be a nonempty array or null`);
+    for (const member of members) {
+      if (typeof member !== "string" || !XAGENT_VALUE.test(member)) throw new Error(`${field} entries must be xagent:<agent>[/<model>]`);
+    }
+    if (new Set(members).size !== members.length) throw new Error(`${field} entries must be unique`);
   }
-  if (new Set(members).size !== members.length) throw new Error(`${field} entries must be unique`);
 }
 
 function validatePolicy(policy, scope, label) {
@@ -142,7 +147,7 @@ function validatePolicy(policy, scope, label) {
   validateRoles(policy.roles, scope, label);
   validatePanels(policy.panels, scope, label);
   validateEffort(policy, label);
-  validateRequiredMembers(policy, scope, label);
+  validateMemberLists(policy, scope, label);
 }
 
 function validateConfig(config) {
@@ -157,7 +162,7 @@ function validateConfig(config) {
 
 function validatePatch(patch, scope, label) {
   requireObject(patch, label);
-  const allowed = new Set(["roles", "panels", "reasoning_effort", REQUIRED_MEMBERS]);
+  const allowed = new Set(["roles", "panels", "reasoning_effort", ...MEMBER_LISTS]);
   for (const key of Object.keys(patch)) {
     if (!allowed.has(key)) throw new Error(`${label}.${key} is not a supported update field`);
   }
@@ -181,7 +186,7 @@ function validatePatch(patch, scope, label) {
       }
     }
   }
-  validateRequiredMembers(patch, scope, label);
+  validateMemberLists(patch, scope, label);
   if (Object.hasOwn(patch, "reasoning_effort") && patch.reasoning_effort !== null && !REASONING_EFFORTS.has(patch.reasoning_effort)) {
     throw new Error(`${label}.reasoning_effort must be one of ${[...REASONING_EFFORTS].join(", ")} or null`);
   }
@@ -288,7 +293,7 @@ function applyPatch(policy, patch) {
       });
     }
   }
-  for (const key of ["reasoning_effort", REQUIRED_MEMBERS]) {
+  for (const key of ["reasoning_effort", ...MEMBER_LISTS]) {
     if (!Object.hasOwn(patch, key)) continue;
     if (patch[key] === null) delete policy[key];
     else policy[key] = cloneJson(patch[key]);
@@ -328,6 +333,7 @@ export function showConfig({ configPath = getDefaultConfigPath(), host } = {}) {
       roles: { ...config.roles, ...hostPolicy.roles },
       panels: Object.fromEntries(Object.entries(panels).map(([name, panel]) => [name, withRequired(panel)])),
       [REQUIRED_MEMBERS]: [...required],
+      [AUXILIARY_MEMBERS]: [...(config[AUXILIARY_MEMBERS] ?? [])],
       reasoning_effort: hostPolicy.reasoning_effort ?? config.reasoning_effort ?? null,
       defaultModel: "inherit-parent",
       defaultPanel: withRequired(DEFAULT_PANEL),
