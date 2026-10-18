@@ -3,8 +3,9 @@
 # usage: scripts/xagent-e2e.sh [run-dir]   evidence stays in run-dir.
 # claude joins once `claude auth login` is done; until then it is only checked to come back as DROPOUT.
 # XAGENT_E2E_MODELS="claude/opus codex/gpt-6-astra" pins those agents' models in the selection check.
-# XAGENT_E2E_AGENTS="codex gemini pi" limits the vendors exercised (default: codex grok gemini pi), and
-# XAGENT_E2E_REVIEWER picks the codex host's reviewer while claude is logged out (default: grok).
+# XAGENT_E2E_AGENTS="codex gemini pi" picks the vendors in the fix, review and selection matrix (default:
+# codex grok gemini pi), and XAGENT_E2E_REVIEWER picks the codex host's reviewer while claude is logged out
+# (default: grok). The probe, nested-dispatch, timeout and codex-hosted cases always run codex, gemini (agy) and pi.
 set -uo pipefail
 export XAGENT_EPHEMERAL=1
 root=$(cd "$(dirname "$0")/.." && pwd)

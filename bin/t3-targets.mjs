@@ -1,6 +1,7 @@
 // Turn a resolved pstack policy and one live T3 catalog into dispatch arguments.
 // This module neither launches tasks nor reads or changes configuration.
 const EFFORT_IDS = new Set(["effort", "reasoningEffort", "thinking"]);
+const EFFORT_ORDER = ["low", "medium", "high", "xhigh", "max"];
 
 function unique(rows, predicate, label) {
   const matches = Array.isArray(rows) ? rows.filter(predicate) : [];
@@ -73,15 +74,18 @@ function effortFor(model, requested, label) {
   return { effort: { requested, sent: requested, option: control.id }, warnings: [] };
 }
 
-function workerFor(entry, catalog, requestedEffort) {
+function workerFor(entry, catalog, requestedEffort, effortCaps) {
   if (entry.startsWith("xagent:")) {
     const spec = entry.slice("xagent:".length);
     const slash = spec.indexOf("/");
+    const agent = slash < 0 ? spec : spec.slice(0, slash);
+    const cap = effortCaps[agent];
+    const lowered = requestedEffort !== null && cap !== undefined && EFFORT_ORDER.indexOf(requestedEffort) > EFFORT_ORDER.indexOf(cap);
     return {
-      entry, transport: "xagent",
-      agent: slash < 0 ? spec : spec.slice(0, slash),
+      entry, transport: "xagent", agent,
       model: slash < 0 ? null : spec.slice(slash + 1),
-      effort: requestedEffort,
+      effort: lowered ? cap : requestedEffort,
+      warnings: lowered ? [`${entry}: requested effort ${requestedEffort} is above its xagent_effort_caps entry, so ${cap} is sent`] : [],
     };
   }
   const inherited = entry === "inherit-parent" || entry === "auto";
@@ -146,6 +150,6 @@ export function resolveT3Targets(policy, catalog, { role, panel, effort, provide
   const requestedEffort = effort ?? policy.reasoning_effort ?? null;
   return {
     selection,
-    workers: entries.map(entry => workerFor(entry, catalog, requestedEffort)),
+    workers: entries.map(entry => workerFor(entry, catalog, requestedEffort, policy.xagent_effort_caps ?? {})),
   };
 }
