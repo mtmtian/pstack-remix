@@ -539,6 +539,35 @@ test("Given malformed or host-scoped xagent effort caps, When update or show run
   assert.match(shown.stderr, /xagent_effort_caps/);
 });
 
+test("Given a reasoning effort cap, When every host view runs show, Then each lists it, only common policy may set it, and null removes it", (t) => {
+  const dir = tempDir();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const configPath = path.join(dir, "config.json");
+  const inputPath = path.join(dir, "patch.json");
+  writeJson(configPath, validConfig());
+  const shown = (host) => JSON.parse(runCli(["show", "--host", host, "--config", configPath]).stdout).effective;
+  assert.equal(shown("claude").reasoning_effort_cap, null);
+
+  writeJson(inputPath, { reasoning_effort_cap: "xhigh" });
+  assert.equal(runCli(["update", "--input", inputPath, "--config", configPath]).status, 0);
+  for (const host of ["codex", "claude", "t3", "antigravity"]) assert.equal(shown(host).reasoning_effort_cap, "xhigh", host);
+
+  const original = readFileSync(configPath, "utf8");
+  for (const host of ["codex", "claude", "t3"]) {
+    assert.notEqual(runCli(["update", "--host", host, "--input", inputPath, "--config", configPath]).status, 0, host);
+  }
+  for (const value of ["ultra", "", 3]) {
+    writeJson(inputPath, { reasoning_effort_cap: value });
+    assert.notEqual(runCli(["update", "--input", inputPath, "--config", configPath]).status, 0, JSON.stringify(value));
+  }
+  assert.equal(readFileSync(configPath, "utf8"), original);
+
+  writeJson(inputPath, { reasoning_effort_cap: null });
+  assert.equal(runCli(["update", "--input", inputPath, "--config", configPath]).status, 0);
+  assert.equal(shown("codex").reasoning_effort_cap, null);
+  assert.equal(Object.hasOwn(JSON.parse(readFileSync(configPath, "utf8")), "reasoning_effort_cap"), false);
+});
+
 test("Given a malformed xagent entry in common policy, When update runs, Then it is rejected without writing", (t) => {
   const dir = tempDir();
   t.after(() => rmSync(dir, { recursive: true, force: true }));

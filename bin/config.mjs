@@ -27,9 +27,11 @@ const AUXILIARY_MEMBERS = "auxiliary_panel_members";
 const MEMBER_LISTS = [REQUIRED_MEMBERS, AUXILIARY_MEMBERS];
 // The highest effort each external agent's CLI accepts; the parent passes it the lower of the job's effort and this cap.
 const EFFORT_CAPS = "xagent_effort_caps";
+// The highest effort any worker on any host receives after the per-job adjustment, so cost has one ceiling.
+const EFFORT_CAP = "reasoning_effort_cap";
 const XAGENT_NAME = /^[a-z][a-z0-9-]*$/;
-// Fields that only common policy may set, because xagent runs the same way from every host.
-const SHARED_FIELDS = [...MEMBER_LISTS, EFFORT_CAPS];
+// Fields that only common policy may set: xagent runs the same way from every host, and the effort cap is one ceiling for all.
+const SHARED_FIELDS = [...MEMBER_LISTS, EFFORT_CAPS, EFFORT_CAP];
 
 export function getDefaultConfigPath(homeDir = homedir()) {
   return path.join(homeDir, ".config", "pstack", "config.json");
@@ -137,7 +139,9 @@ function validateSharedFields(policy, scope, label) {
     const value = policy[key];
     if (value === null) continue;
     if (key === EFFORT_CAPS) validateEffortCaps(value, field);
-    else validateMemberList(value, field);
+    else if (key === EFFORT_CAP) {
+      if (!REASONING_EFFORTS.has(value)) throw new Error(`${field} must be one of ${[...REASONING_EFFORTS].join(", ")} or null`);
+    } else validateMemberList(value, field);
   }
 }
 
@@ -354,6 +358,7 @@ export function showConfig({ configPath = getDefaultConfigPath(), host } = {}) {
       [AUXILIARY_MEMBERS]: [...(config[AUXILIARY_MEMBERS] ?? [])],
       [EFFORT_CAPS]: { ...config[EFFORT_CAPS] },
       reasoning_effort: hostPolicy.reasoning_effort ?? config.reasoning_effort ?? null,
+      [EFFORT_CAP]: config[EFFORT_CAP] ?? null,
       defaultModel: "inherit-parent",
       defaultPanel: withRequired(DEFAULT_PANEL),
     },

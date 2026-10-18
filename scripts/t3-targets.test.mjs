@@ -134,6 +134,26 @@ test("Given an xagent effort cap, When the effort is above it, Then only that ag
   assert.deepEqual(job[2].warnings, []);
 });
 
+test("Given a reasoning effort cap, When the job asks for more, Then every worker is requested at the cap and says so, and lower efforts pass untouched", t => {
+  const f = fixture(t);
+  f.config.reasoning_effort_cap = "xhigh";
+  f.config.xagent_effort_caps = { gemini: "high" };
+  f.config.hosts.t3.reasoning_effort = "xhigh";
+  f.config.hosts.t3.panels.review = ["judge/strong", "xagent:claude"];
+  const raised = f.resolved(["--panel", "review", "--effort", "max"]).workers;
+  assert.deepEqual(raised.map(w => w.entry), ["judge/strong", "xagent:claude", "xagent:gemini"]);
+  assert.deepEqual(raised[0].target.options, { effort: "xhigh" });
+  assert.equal(raised[1].effort, "xhigh");
+  // The shared ceiling applies first; an agent's own lower cap still applies after it.
+  assert.equal(raised[2].effort, "high");
+  for (const worker of raised) assert.match(worker.warnings[0], /max is above reasoning_effort_cap, so xhigh/);
+  assert.match(raised[2].warnings[1], /xagent_effort_caps entry, so high/);
+  for (const args of [[], ["--effort", "medium"]]) {
+    const workers = f.resolved(["--panel", "review", ...args]).workers;
+    assert.deepEqual(workers.slice(0, 2).flatMap(w => w.warnings), []);
+  }
+});
+
 test("Given an unavailable explicit target, When any panel member cannot run, Then the whole preview fails without a replacement", t => {
   const f = fixture(t);
   f.config.hosts.t3.panels.review = ["code/ordinary", "judge/strong"];

@@ -192,7 +192,7 @@ pstack 本身不安装定时器；长任务流程也不保证会话退出或主�
 
 共享配置中的 `required_panel_members`（例如 `["xagent:grok", "xagent:gemini"]`）会把这些外部 Agent 追加到两个主控的每个评审组和默认评审组，单个评审组或主控覆盖都无法遗漏它们。评审组里的 `xagent:<agent>` 不会被替换成继承模型，也不会以 N-1 静默跳过；重试和失败报告规则见[运行时契约](./references/runtime.md)。
 
-共享配置中的 `auxiliary_panel_members`（例如 `["xagent:gemini"]`）把这些外部 Agent 标为辅助成员：重试一次后仍失败，只记为覆盖缺口，不阻塞其余成员已完成的评审组；它们仍不会被替换成别的模型。共享配置中的 `xagent_effort_caps`（例如 `{"gemini": "high"}`）给外部 Agent 设推理强度上限，适用于模型支持的档位比 `reasoning_effort` 少的 CLI；它只限制强度，不会换模型。在 Codex 和 Claude Code 上，agent 定义里自己设了推理强度的子 Agent 保持定义里的值，共享的 `reasoning_effort` 作用于其余 worker，包括外部 Agent。
+共享配置中的 `auxiliary_panel_members`（例如 `["xagent:gemini"]`）把这些外部 Agent 标为辅助成员：重试一次后仍失败，只记为覆盖缺口，不阻塞其余成员已完成的评审组；它们仍不会被替换成别的模型。共享配置中的 `xagent_effort_caps`（例如 `{"gemini": "high"}`）给外部 Agent 设推理强度上限，适用于模型支持的档位比 `reasoning_effort` 少的 CLI；它只限制强度，不会换模型。共享配置中的 `reasoning_effort_cap`（例如 `"xhigh"`）是所有宿主上任何 worker 的推理强度上限，最难的工作升档也到此为止；同样只限制强度，不换模型。在 Codex 和 Claude Code 上，agent 定义里自己设了推理强度的子 Agent 保持定义里的值，共享的 `reasoning_effort` 作用于其余 worker，包括外部 Agent。
 
 | 配置值 | 本机执行入口 |
 |---|---|

@@ -169,6 +169,7 @@ const DROPPED = [
   ["verification-workers-role", "skills/poteto-mode/SKILL.md", "Verification workers, including a swarm's verify lanes and the **show-me-your-work** handback review, read `verification workers`.", ""],
   ["swarm-verify-role", "skills/swarm/SKILL.md", "Workers that verify another agent's work, as in a swarm-verify, read `verification workers` instead.", ""],
   ["handback-review-role", "skills/show-me-your-work/SKILL.md", "on the `verification workers` role from the effective policy, on a different available model family", "on a different model family"],
+  ["effort-cap-raise", "skills/poteto-mode/SKILL.md", "up to `max` or the shared `reasoning_effort_cap` when one is set,", "up to `max`,"],
   ["t3-no-service-tier", "references/t3-runtime.md", "The preview adds no speed or service-tier option; do not add one unless the user asked.", ""],
   ["t3-catalog-preview", "references/t3-runtime.md", "config.mjs resolve --host t3", "removed-by-sync"],
   ["t3-worktree-isolation", "references/t3-runtime.md", 'isolation: "worktree"', "removed-by-sync"],

@@ -93,13 +93,18 @@ function effortFor(model, requested, label) {
   return { effort: { requested, sent: requested, option: control.id }, warnings: [] };
 }
 
+// Whether an effort exceeds a cap; a missing effort or cap never does.
+function above(effort, cap) {
+  return effort != null && cap != null && EFFORT_ORDER.indexOf(effort) > EFFORT_ORDER.indexOf(cap);
+}
+
 function workerFor(entry, catalog, requestedEffort, effortCaps) {
   if (entry.startsWith("xagent:")) {
     const spec = entry.slice("xagent:".length);
     const slash = spec.indexOf("/");
     const agent = slash < 0 ? spec : spec.slice(0, slash);
     const cap = effortCaps[agent];
-    const lowered = requestedEffort !== null && cap !== undefined && EFFORT_ORDER.indexOf(requestedEffort) > EFFORT_ORDER.indexOf(cap);
+    const lowered = above(requestedEffort, cap);
     const model = modelOf(entry, catalog);
     return {
       entry, transport: "xagent", agent, model, family: familyOf(model),
@@ -185,12 +190,17 @@ export function resolveT3Targets(policy, catalog, { role, panel, effort, provide
     if (provider !== undefined) throw new Error("--provider requires a role with configured candidates");
     entries = kind === "role" ? [value] : value;
   }
-  const requestedEffort = effort ?? policy.reasoning_effort ?? null;
+  const wantedEffort = effort ?? policy.reasoning_effort ?? null;
+  const ceiling = policy.reasoning_effort_cap ?? null;
+  const requestedEffort = above(wantedEffort, ceiling) ? ceiling : wantedEffort;
   const auxiliary = new Set(policy.auxiliary_panel_members ?? []);
   return {
     selection,
     workers: entries.map(entry => {
       const worker = workerFor(entry, catalog, requestedEffort, policy.xagent_effort_caps ?? {});
+      if (requestedEffort !== wantedEffort) {
+        worker.warnings.unshift(`${entry}: requested effort ${wantedEffort} is above reasoning_effort_cap, so ${ceiling} is requested`);
+      }
       // The auxiliary listing only relaxes panel seats; a role never becomes optional.
       worker.auxiliary = kind === "panel" && auxiliary.has(entry);
       if (checked !== undefined && !crossFamily(worker.family)) {

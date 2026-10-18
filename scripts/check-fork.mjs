@@ -189,6 +189,13 @@ export const REQUIRED = [
     section: "upstream-behavior-retained",
   },
   {
+    id: "effort-cap-raise",
+    file: "skills/poteto-mode/SKILL.md",
+    pattern: /Raise it one step, up to `max` or the shared `reasoning_effort_cap` when one is set, for the hardest or subtlest work\./,
+    hint: "the hardest-work effort raise stops at the shared reasoning_effort_cap",
+    section: "upstream-behavior-retained",
+  },
+  {
     id: "t3-no-service-tier",
     file: "references/t3-runtime.md",
     pattern: /The preview adds no speed or service-tier option; do not add one unless the user asked\./,
