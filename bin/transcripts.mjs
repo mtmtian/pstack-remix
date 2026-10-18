@@ -180,6 +180,19 @@ function listTranscripts({ host, cwds, since, until }) {
   };
 }
 
+// The proleptic Gregorian calendar Date.parse uses, independent of the local time zone.
+function isCalendarDate(year, month, date) {
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  return month >= 1 && month <= 12 && date >= 1 && date <= [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1];
+}
+
+// setFullYear, unlike the Date constructor, does not map years 0 to 99 onto 1900 to 1999.
+function localMidnight(year, monthIndex, date) {
+  const day = new Date(0);
+  day.setFullYear(year, monthIndex, date);
+  return day.setHours(0, 0, 0, 0);
+}
+
 // A bare date is a local calendar day: --since starts at its midnight and --until includes the whole day.
 // Date.parse rolls a date-time's day past the month's end into the next month, so both forms check the date first.
 function parseTime(value, flag, { endOfDay }) {
@@ -187,11 +200,8 @@ function parseTime(value, flag, { endOfDay }) {
   const day = /^(\d{4})-(\d{2})-(\d{2})(T.*)?$/.exec(value);
   if (!day) throw new Error(malformed);
   const [year, month, date] = day.slice(1, 4).map(Number);
-  const start = new Date(year, month - 1, date);
-  if (start.getFullYear() !== year || start.getMonth() !== month - 1 || start.getDate() !== date) {
-    throw new Error(`${flag} ${value} is not a calendar date`);
-  }
-  if (day[4] === undefined) return endOfDay ? new Date(year, month - 1, date + 1).getTime() - 1 : start.getTime();
+  if (!isCalendarDate(year, month, date)) throw new Error(`${flag} ${value} is not a calendar date`);
+  if (day[4] === undefined) return endOfDay ? localMidnight(year, month - 1, date + 1) - 1 : localMidnight(year, month - 1, date);
   const time = Date.parse(value);
   if (Number.isNaN(time)) throw new Error(malformed);
   return time;
