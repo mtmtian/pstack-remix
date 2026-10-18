@@ -388,7 +388,7 @@ function printJson(value) {
 function runCli(args) {
   const [command, ...rest] = args;
   if (command === "resolve") {
-    const options = parseOptions(rest, new Set(["host", "config", "catalog", "role", "panel", "effort", "provider"]));
+    const options = parseOptions(rest, new Set(["host", "config", "catalog", "role", "panel", "effort", "provider", "checked"]));
     if (options.host !== T3) throw new Error("resolve requires --host t3");
     if (!options.catalog) throw new Error("resolve requires --catalog JSON-file from orchestrator_capabilities");
     if (options.effort !== undefined && !REASONING_EFFORTS.has(options.effort)) {
@@ -418,7 +418,7 @@ function runCli(args) {
     printJson(updateConfig({ host: options.host, patch, configPath: options.config ?? getDefaultConfigPath() }));
     return;
   }
-  throw new Error("Usage: config.mjs show --host codex|claude|t3|antigravity [--config path] | resolve --host t3 --catalog JSON-file (--role name | --panel name) [--effort level] [--provider candidate-provider] [--config path] | init [--config path] | update [--host codex|claude|t3] --input JSON-file [--config path]");
+  throw new Error("Usage: config.mjs show --host codex|claude|t3|antigravity [--config path] | resolve --host t3 --catalog JSON-file (--role name | --panel name) [--effort level] [--provider candidate-provider | --checked entry-or-model] [--config path] | init [--config path] | update [--host codex|claude|t3] --input JSON-file [--config path]");
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

@@ -174,6 +174,8 @@ const DROPPED = [
   ["t3-worktree-isolation", "references/t3-runtime.md", 'isolation: "worktree"', "removed-by-sync"],
   ["t3-completed-status", "references/t3-runtime.md", "status: completed", "removed-by-sync"],
   ["t3-result-available", "references/t3-runtime.md", "workState: result_available", "removed-by-sync"],
+  ["t3-owned-child-task", "references/t3-runtime.md", "every pstack worker is an explicitly T3-owned child task", "every pstack worker goes through `delegate_task`"],
+  ["t3-cross-family-verification", "bin/t3-targets.mjs", 'const CROSS_FAMILY_ROLE = "verification workers";', ""],
   ["watch-pr-once", "skills/poteto-mode/scripts/watch-pr/cli.ts", '"--once"', ""],
   ["watch-pr-once-test", "skills/poteto-mode/scripts/watch-pr/once.test.ts", null],
 ];
@@ -205,6 +207,8 @@ test("Given the guide renames a section that rules cite, When guarded, Then each
     "t3-worktree-isolation",
     "t3-completed-status",
     "t3-result-available",
+    "t3-owned-child-task",
+    "t3-cross-family-verification",
     "watch-pr-once",
     "watch-pr-once-test",
   ].map((rule) => `ADAPTATION.md: ${rule}: no section #t3-code-overlay records this decision`));

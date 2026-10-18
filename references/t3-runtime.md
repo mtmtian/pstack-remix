@@ -24,9 +24,12 @@ Version following requires a T3 catalog that respects the environment's hidden-m
 node <plugin-root>/bin/config.mjs resolve --host t3 --role 'feature' --catalog <catalog.json>
 node <plugin-root>/bin/config.mjs resolve --host t3 --role 'feature' --provider claudeAgent --catalog <catalog.json>
 node <plugin-root>/bin/config.mjs resolve --host t3 --panel 'interrogate reviewers' --catalog <catalog.json>
+node <plugin-root>/bin/config.mjs resolve --host t3 --role 'verification workers' --checked inherit-parent --catalog <catalog.json>
 ```
 
 Use the role the playbook requests. For a per-job effort adjustment, add `--effort <level>` after applying poteto-mode's rule. The helper reads the same effective policy as `show`; it writes nothing and starts no task. `selection.defaulted` means that role or panel was absent and used the shared inherited default. It checks each T3 provider, child capability, cross-provider capability, exact model and effort choice. An invalid member fails the whole preview before dispatch; report the named target and constraints. Do not substitute another model, provider, or `xagent:<agent>` unless the user says so.
+
+A step that checks other work resolves with `--checked <entry or model>`, naming what produced that work: `inherit-parent` when the parent wrote it, the writer's resolved `<providerInstanceId>/<modelId>`, or `xagent:<agent>/<model>`. Every worker reports `family`, read only from the last segment of its model ID: canonical `claude-`, `gpt-`, `gemini-` and `grok-` IDs name a family, anything else is unknown. A provider name never decides it, because one provider can route other vendors' models. A candidate role then takes the first candidate, the parent provider's first, whose known family differs from the checked work's (`selection.strategy: cross-family`). When none does, or either family is unknown, the default selection stands with a warning: label that review same-family, or say it is not cross-family evidence. `verification workers` fails without `--checked` unless `--provider` names a candidate for a reason the brief states. For a pool such as `arena cross-judge pool`, resolve the panel with `--checked inherit-parent` and choose a seat without a family warning. An `xagent:<agent>` entry without a model has an unknown family; pin its model where family evidence matters.
 
 For candidate roles, `selection.strategy` and `selection.entry` explain the chosen candidate. Each worker's `entry` retains the configured selector; `resolved` and `target` contain the concrete model. Dispatch only `target`, never an `@latest` string or candidates object. Save and reuse this task's resolved model IDs, including for later rounds, so a catalog change cannot silently change a running task. Start the next task with a fresh catalog. The [routing examples](../docs/t3-model-routing.md) show phase changes, upgrades and native-host differences.
 
@@ -40,7 +43,7 @@ For explicit targets, the helper maps effort to the model's listed select contro
 
 ## Delegate
 
-In a T3 session every pstack worker goes through `delegate_task`, including `inherit-parent` roles, so each child is owned by and visible in the thread. Do not also use the host's native subagent tool for the same role.
+In a T3 session every pstack worker is an explicitly T3-owned child task, so it goes through `delegate_task`, including `inherit-parent` roles. T3 prefers native subagent tools for same-provider work only when they support the chosen model, and sends explicitly T3-owned child tasks through `delegate_task`; pstack workers take that path so the thread owns and shows each child, T3 isolates it in an application-owned worktree, and every provider leaves the same `taskId` receipt. Do not also use the host's native subagent tool for the same role. The host adapter's rule that a native agent definition owns its effort does not apply here: the resolved `hosts.t3` policy owns each child's model and effort.
 
 | pstack action | On T3 |
 | --- | --- |
@@ -61,7 +64,7 @@ Keep the preview, dispatch response and terminal `task_status` together with the
 
 ## Mixed panels
 
-`xagent:<agent>` entries, including `required_panel_members`, still run through `bin/xagent` from the host shell. Their availability is checked by that CLI, not the T3 catalog, and they remain outside T3's child-task lifecycle. T3 may expose the same models directly or through another provider; consult the live catalog rather than a fixed vendor list. Do not automatically convert an xagent entry. Shared required members are still appended, so adding a T3 seat does not replace one. Start T3 targets first so they run while the xagent commands block the shell call, then collect both. A family listed on both paths runs twice, as two independent attempts; a provider name alone does not identify the model family. Count and label them accurately. The final reply names the provider and model, or xagent agent, that ran each step, with its `taskId` or output directory.
+`xagent:<agent>` entries, including `required_panel_members`, still run through `bin/xagent` from the host shell. Their availability is checked by that CLI, not the T3 catalog, and they remain outside T3's child-task lifecycle. T3 may expose the same models directly or through another provider; consult the live catalog rather than a fixed vendor list. Do not automatically convert an xagent entry. Shared required members are still appended, so adding a T3 seat does not replace one. A panel worker's `auxiliary` is true only for a seat listed in shared `auxiliary_panel_members`: its unresolved outcome is a reported gap, while every other seat, and every role, blocks as the shared runtime specifies. Start T3 targets first so they run while the xagent commands block the shell call, then collect both. A family listed on both paths runs twice, as two independent attempts; a provider name alone does not identify the model family. Count and label them accurately. The final reply names the provider and model, or xagent agent, that ran each step, with its `taskId` or output directory.
 
 ## Schedules and PRs
 

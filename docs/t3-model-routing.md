@@ -36,6 +36,17 @@ Each result includes one role worker or all ordered panel seats. `selection.stra
 
 `inherit-parent` and `auto` omit the target entirely, preserving all parent model options. If policy or `--effort` requests an effort, the preview warns that it is not sent. T3 replaces rather than merges supplied options, and catalog control defaults do not reveal the parent's selection. Choose an explicit model target when the child needs an independent effort setting.
 
+## Checking another worker's work
+
+A verifier must not share the family of the work it checks, but the parent-provider default picks the parent's own family. Name the work instead:
+
+```sh
+node bin/config.mjs resolve --host t3 --role 'verification workers' --checked inherit-parent --catalog catalog.json
+node bin/config.mjs resolve --host t3 --role 'verification workers' --checked codex/gpt-6.1-sol --catalog catalog.json
+```
+
+With `verification workers` set to `{"candidates": ["codex/gpt-sol@latest", "claudeAgent/claude-opus@latest"]}`, a Claude parent that wrote the change gets GPT Sol from the first call, and a review of a Codex writer's Sol output gets Opus from the second. `selection.strategy` is `cross-family`. The family comes from the model ID, so `codex/claude/claude-opus-5-5`, a Claude model routed through the Codex provider, checks as Claude. When no candidate is a known other family, the default stands with a warning. Without `--checked` or `--provider` this role is an error.
+
 ## Version upgrades
 
 `@latest` is an explicit opt-in to follow canonical releases of one family within one provider. With Opus 5.5 and 5.6 in that provider's catalog, `claude-opus@latest` resolves to 5.6. Numeric ordering also makes 5.10 newer than 5.9. GPT version ordering handles 6.1, 6.2 and 7 in the same way.
@@ -54,4 +65,4 @@ Changing T3 policy does not populate native roles. Upgrade both local plugin pac
 
 ## Verification
 
-`node --test scripts/config.test.mjs scripts/t3-targets.test.mjs` covers candidate selection, separate hard/ordinary roles, numeric upgrades, exact pins, invalid choices, non-fallback failures, native view isolation and preserved panel seats. Synthetic 5.6/5.10/6.2 catalogs test future-version handling; they do not claim those releases are currently available. Use the [live verification procedure](./t3-verification.md) for actual provider execution.
+`node --test scripts/config.test.mjs scripts/t3-targets.test.mjs` covers candidate selection, cross-family checks, auxiliary seats, separate hard/ordinary roles, numeric upgrades, exact pins, invalid choices, non-fallback failures, native view isolation and preserved panel seats. Synthetic 5.6/5.10/6.2 catalogs test future-version handling; they do not claim those releases are currently available. Use the [live verification procedure](./t3-verification.md) for actual provider execution.

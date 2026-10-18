@@ -110,7 +110,7 @@ test("Given mixed and repeated panel seats, When previewed, Then order, independ
   f.config.hosts.t3.panels.review = ["code/ordinary", "code/ordinary", "xagent:claude/opus[1m]"];
   const workers = f.resolved(["--panel", "review"]).workers;
   assert.deepEqual(workers.map(w => w.entry), ["code/ordinary", "code/ordinary", "xagent:claude/opus[1m]", "xagent:gemini"]);
-  assert.deepEqual(workers[2], { entry: "xagent:claude/opus[1m]", transport: "xagent", agent: "claude", model: "opus[1m]", effort: "high", warnings: [] });
+  assert.deepEqual(workers[2], { entry: "xagent:claude/opus[1m]", transport: "xagent", agent: "claude", model: "opus[1m]", family: null, effort: "high", warnings: [], auxiliary: false });
   assert.equal(workers[3].model, null);
   const defaultPlan = f.resolved(["--panel", "unconfigured"]);
   assert.equal(defaultPlan.selection.defaulted, true);
@@ -324,4 +324,95 @@ test("Given a latest-family panel, When resolved, Then ordered independent seats
   f.config.hosts.t3.panels["hardest architect runners"] = ["judge/claude-fable@latest", "code/gpt-astra@latest"];
   const workers = f.resolved(["--panel", "hardest architect runners"]).workers;
   assert.deepEqual(workers.map(w => w.target?.model ?? w.agent), ["claude-fable-5-1", "gpt-6-astra", "gemini"]);
+});
+
+function verificationFixture(t) {
+  const f = familyFixture(t);
+  f.config.hosts.t3.roles["verification workers"] = { candidates: ["code/gpt-sol@latest", "judge/claude-opus@latest"] };
+  f.catalog.inheritedModel = "gpt-6.1-sol";
+  return f;
+}
+
+test("Given a verification role with candidates, When the checked work's family is known, Then the candidate of another family runs", t => {
+  const f = verificationFixture(t);
+  for (const [checked, family, model] of [
+    ["inherit-parent", "gpt", "claude-opus-5-5"],
+    ["judge/claude-opus-5-5", "claude", "gpt-6.1-sol"],
+    // The provider that ran the work does not decide its family; the routed model ID does.
+    ["code/route/claude-opus-5-5", "claude", "gpt-6.1-sol"],
+    ["xagent:codex/gpt-6.1-sol", "gpt", "claude-opus-5-5"],
+  ]) {
+    const plan = f.resolved(["--role", "verification workers", "--checked", checked]);
+    assert.deepEqual(plan.selection.checked, { entry: checked, family });
+    assert.equal(plan.selection.strategy, "cross-family");
+    assert.equal(plan.workers.length, 1);
+    assert.equal(plan.workers[0].target.model, model);
+    assert.deepEqual(plan.workers[0].warnings, []);
+  }
+});
+
+test("Given several candidates, When the parent's is not another known family, Then the first configured candidate that is runs, read from its routed model", t => {
+  const f = verificationFixture(t);
+  f.catalog.providers[0].models.push(f.model("route/claude-opus-5-5"));
+  f.catalog.providers[0].canRunCrossProviderChildTask = true;
+  f.config.hosts.t3.roles["verification workers"] = { candidates: ["custom/route/vendor/model", "judge/claude-opus@latest", "code/gpt-sol@latest"] };
+  f.catalog.inheritedProviderInstanceId = "judge";
+  // Parent judge is Claude like the work, custom's family is unknown, so code is the first known other family.
+  const skipped = f.resolved(["--role", "verification workers", "--checked", "judge/claude-opus-5-5"]);
+  assert.equal(skipped.selection.strategy, "cross-family");
+  assert.equal(skipped.workers[0].target.model, "gpt-6.1-sol");
+  // A Claude model routed through the GPT parent's provider counts as Claude.
+  f.config.hosts.t3.roles["verification workers"] = { candidates: ["judge/claude-opus@latest", "code/route/claude-opus-5-5"] };
+  f.catalog.inheritedProviderInstanceId = "code";
+  const routed = f.resolved(["--role", "verification workers", "--checked", "xagent:codex/gpt-6.1-sol"]);
+  assert.equal(routed.selection.entry, "code/route/claude-opus-5-5");
+  assert.equal(routed.workers[0].family, "claude");
+});
+
+test("Given a verification role, When neither the checked work nor a provider is named, Then it fails before any dispatch", t => {
+  const f = verificationFixture(t);
+  for (const args of [[], ["--provider", "judge", "--checked", "inherit-parent"], ["--checked", " "]]) {
+    const failed = f.run(["--role", "verification workers", ...args]);
+    assert.notEqual(failed.status, 0);
+    assert.equal(failed.stdout, "");
+    assert.match(failed.stderr, /checked/);
+  }
+  const chosen = f.resolved(["--role", "verification workers", "--provider", "code"]);
+  assert.equal(chosen.selection.strategy, "explicit-provider");
+  assert.equal(chosen.workers[0].target.model, "gpt-6.1-sol");
+});
+
+test("Given no candidate of a known other family, When the work is checked, Then the default runs and is labeled same-family or unproven", t => {
+  const f = verificationFixture(t);
+  f.config.hosts.t3.roles["verification workers"] = { candidates: ["code/ordinary", "judge/claude-opus@latest"] };
+  f.catalog.inheritedProviderInstanceId = "judge";
+  const same = f.resolved(["--role", "verification workers", "--checked", "judge/claude-opus-5-5"]);
+  assert.equal(same.selection.strategy, "parent-provider");
+  assert.equal(same.workers[0].target.model, "claude-opus-5-5");
+  assert.match(same.workers[0].warnings.join(" "), /same claude family.*same-family review/);
+  const unknown = f.resolved(["--role", "verification workers", "--checked", "xagent:pi"]);
+  assert.deepEqual(unknown.selection.checked, { entry: "xagent:pi", family: null });
+  assert.equal(unknown.selection.strategy, "parent-provider");
+  assert.match(unknown.workers[0].warnings.join(" "), /checked work is unknown.*not cross-family evidence/);
+});
+
+test("Given a panel and the checked work, When resolved, Then every seat reports its family and only seats of another known family pass silently", t => {
+  const f = verificationFixture(t);
+  f.config.hosts.t3.panels.review = ["code/gpt-sol@latest", "judge/claude-opus@latest"];
+  const workers = f.resolved(["--panel", "review", "--checked", "judge/claude-opus-5-5"]).workers;
+  assert.deepEqual(workers.map(w => w.family), ["gpt", "claude", null]);
+  assert.deepEqual(workers[0].warnings, []);
+  assert.match(workers[1].warnings.join(" "), /same claude family/);
+  assert.match(workers[2].warnings.join(" "), /this worker is unknown/);
+});
+
+test("Given an auxiliary external member, When panels and roles resolve, Then only its panel seat is marked auxiliary", t => {
+  const f = verificationFixture(t);
+  f.config.auxiliary_panel_members = ["xagent:gemini"];
+  f.config.hosts.t3.panels.review = ["code/gpt-sol@latest", "xagent:gemini"];
+  const workers = f.resolved(["--panel", "review"]).workers;
+  assert.deepEqual(workers.map(w => [w.entry, w.auxiliary]), [["code/gpt-sol@latest", false], ["xagent:gemini", true]]);
+  assert.deepEqual(f.resolved(["--panel", "unconfigured"]).workers.map(w => w.auxiliary), [false, false, true]);
+  f.config.hosts.t3.roles.feature = "xagent:gemini";
+  assert.equal(f.resolved(["--role", "feature"]).workers[0].auxiliary, false);
 });
