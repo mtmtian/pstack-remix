@@ -11,6 +11,9 @@ export function findTlc() {
   return { jar: TLA2TOOLS, java: JAVA || "java" };
 }
 
+// The escapes of a TLA+ string. In \" and \\ the character after the backslash stands for itself.
+const ESCAPED = { n: "\n", t: "\t", r: "\r", f: "\f" };
+
 export function parseValue(text) {
   const src = text.trim();
   let i = 0;
@@ -83,8 +86,8 @@ export function parseValue(text) {
       i++;
       let s = "";
       while (i < src.length && src[i] !== '"') {
-        if (src[i] === "\\") i++;
-        s += src[i++];
+        s += src[i] === "\\" ? (ESCAPED[src[++i]] ?? src[i]) : src[i];
+        i++;
       }
       i++;
       return s;

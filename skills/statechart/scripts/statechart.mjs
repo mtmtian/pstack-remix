@@ -186,7 +186,8 @@ Exit codes
      CHART.mmd. The output says which.
   2  The command cannot finish: a bad argument, a missing file, a chart or TLC output that it
      cannot read, no TLC, a helper script that cannot start, an output folder with files that the
-     command did not write, an input file that changed during the run, a new mapping to fill in,
+     command did not write, an input file that changed during the run (a spec's EXTENDS and
+     INSTANCE modules beside it and a mapping's relative imports count), a new mapping to fill in,
      or a chart that --png cannot render. When a chart does not render, the command keeps the
      files it wrote and exits 2, whatever the rules give. Otherwise, exit 2 does not change the
      output folder, unless the command moved it aside and cannot put it back. Then the message
@@ -666,13 +667,23 @@ function finish({ work, out, inputs }, { files, charts }, ok, png) {
 const published = (work, out) => (file) => rel(path.join(out, path.relative(work, file)));
 
 const OWN =
-  /^((chart|bug-\d+(-developer|-layered)?)\.(mmd|png)|stories\.md|summary\.json|tlc|\.DS_Store)$/;
+  /^((chart|bug-\d+(-developer|-layered)?)\.(mmd|png)|stories\.md|summary\.json|\.DS_Store)$/;
+// tlc/ has the config, output, and graph of each TLC run, named after the module and the rule, and
+// the regions proof. Any other entry there, a folder included, is the user's.
+const OWN_TLC = /^(\w+(-\w+)?\.(cfg|out|dot)|regions-(all|proof)\.mmd|\.DS_Store)$/;
 
 function foreign(dir) {
+  const others = (folder, own) =>
+    fs
+      .readdirSync(folder, { withFileTypes: true })
+      .filter((e) => !(e.isFile() && own.test(e.name)));
   try {
-    return fs
-      .readdirSync(dir)
-      .filter((f) => !OWN.test(f))
+    return others(dir, OWN)
+      .flatMap((e) =>
+        e.name === "tlc" && e.isDirectory()
+          ? others(path.join(dir, "tlc"), OWN_TLC).map((t) => path.join("tlc", t.name))
+          : [e.name],
+      )
       .sort();
   } catch (e) {
     if (e.code === "ENOENT") return [];
@@ -703,8 +714,36 @@ const fingerprint = (file) => {
   }
 };
 
+// The local files that an input reads: the EXTENDS and INSTANCE modules next to a spec, and the
+// relative imports of a mapping. Each TLC run and chart script reads them again, so they are
+// inputs too.
+function reads(file) {
+  const dir = path.dirname(file);
+  try {
+    if (file.endsWith(".tla")) {
+      const text = withoutComments(file);
+      const extended = [...text.matchAll(/\bEXTENDS\s+(\w+(?:\s*,\s*\w+)*)/g)];
+      const instanced = [...text.matchAll(/\bINSTANCE\s+(\w+)/g)].map((m) => m[1]);
+      return [...extended.flatMap((m) => m[1].split(/\s*,\s*/)), ...instanced].map((m) =>
+        path.join(dir, `${m}.tla`),
+      );
+    }
+    if (/\.[cm]?js$/.test(file)) {
+      const text = fs.readFileSync(file, "utf8");
+      return [...text.matchAll(/\b(?:from|import)\s*\(?\s*(["'])(\.\.?\/[^"']+)\1/g)].map((m) =>
+        path.join(dir, m[2]),
+      );
+    }
+  } catch {}
+  return [];
+}
+
 function snapshot(files, inputs = new Map()) {
-  for (const f of files) if (f && !inputs.has(f)) inputs.set(f, fingerprint(f));
+  for (const f of files) {
+    if (!f || inputs.has(f)) continue;
+    inputs.set(f, fingerprint(f));
+    snapshot(reads(f), inputs);
+  }
   return inputs;
 }
 

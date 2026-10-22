@@ -274,6 +274,36 @@ s = "Saving"
 3 states generated, 3 distinct states found, 0 states left on queue.
 `;
 
+test("a TLC string keeps its escapes, so a newline is not the letter n", () => {
+  const value = 'a\nb\t"q"\\z';
+  assert.equal(parseValue(String.raw`"a\nb\t\"q\"\\z"`), value);
+  assert.notEqual(
+    stateKey({ s: parseValue(String.raw`"\n"`) }),
+    stateKey({ s: parseValue('"n"') }),
+  );
+  // TLC 1.7.4 prints that value so in its graph and in a counterexample.
+  const graph = parseDot(String.raw`1 [label="s = \"n\"",style = filled]
+1 -> 2 [label="Step",color="black",fontcolor="black"];
+2 [label="s = \"a\\nb\\t\\\"q\\\"\\\\z\""];`);
+  assert.deepEqual(
+    [...graph.nodes.values()].map((n) => n.vars.s),
+    ["n", value],
+  );
+  const [trace] = parseTraces(String.raw`Error: Invariant Never is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+s = "n"
+
+State 2: <Step line 4, col 9 to line 4, col 40 of module Esc>
+s = "a\nb\t\"q\"\\z"
+
+`);
+  assert.deepEqual(
+    trace.steps.map((step) => step.vars.s),
+    ["n", value],
+  );
+});
+
 test("a rule broken by a start state is a counterexample of one state", () => {
   const text = `Error: Invariant NeverSyncedWhileOffline is violated by the initial state:
 /\\ badge = "Synced"
@@ -890,6 +920,86 @@ test("statechart.mjs does not use an output folder that has files that it did no
   ]);
   assert.deepEqual(readdirSync(out).sort(), [".DS_Store", "chart.mmd", "notes.md", "tlc"]);
   assert.equal(readFileSync(join(out, "chart.mmd"), "utf8"), "kept\n");
+});
+
+test("statechart.mjs does not use an output folder whose tlc folder has an entry that it did not write", () => {
+  const dir = mkdtempSync(join(tmpdir(), "statechart-"));
+  writeFileSync(join(dir, "Pay.tla"), "---- MODULE Pay ----\n====\n");
+  writeFileSync(join(dir, "Pay.cfg"), "SPECIFICATION Spec\n");
+  writeFileSync(join(dir, "Pay.map.mjs"), 'export const state = () => "Cart";\n');
+  const tlcDir = join(dir, "Pay-statechart", "tlc");
+  mkdirSync(tlcDir, { recursive: true });
+  for (const f of [
+    ...["Pay.cfg", "Pay.out", "Pay.dot", "Pay-NoDoubleCharge.cfg", "Pay-NoDoubleCharge.out"],
+    ...["regions-all.mmd", "regions-proof.mmd", ".DS_Store"],
+  ])
+    writeFileSync(join(tlcDir, f), "");
+  assert.equal(node("statechart.mjs", ["from-spec", "Pay.tla"], dir, noTlc).stderr, NO_TLC);
+  for (const [entry, make] of [
+    ["notes.txt", (file) => writeFileSync(file, "mine\n")],
+    ["drafts", (folder) => mkdirSync(folder)],
+  ]) {
+    make(join(tlcDir, entry));
+    const r = node("statechart.mjs", ["from-spec", "Pay.tla"], dir, noTlc);
+    assert.equal(r.status, 2);
+    assert.equal(
+      r.stderr,
+      `Pay-statechart has a file that this command did not write: tlc/${entry}. A run puts its files in place of the whole output folder, so pass --out with a new folder.\n`,
+    );
+    assert.ok(existsSync(join(tlcDir, entry)), entry);
+    rmSync(join(tlcDir, entry), { recursive: true });
+  }
+});
+
+test("a run whose spec module or mapping import changes while it runs leaves the output folder", () => {
+  const dir = mkdtempSync(join(tmpdir(), "statechart-"));
+  writeFileSync(join(dir, "tla2tools.jar"), "");
+  // A stand-in for TLC: it writes a one-state graph, finishes clean, and edits $EDIT, as a user
+  // who edits a file while a long run reads it.
+  const java = join(dir, "java");
+  writeFileSync(
+    java,
+    `#!${process.execPath}
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+const dump = args.indexOf("-dump");
+if (dump >= 0) fs.writeFileSync(args[dump + 2], '1 [label="x = 0",style = filled]\\n');
+fs.appendFileSync(process.env.EDIT, "\\n");
+console.log("Model checking completed. No error has been found.");
+`,
+    { mode: 0o755 },
+  );
+  writeFileSync(join(dir, "Pay.tla"), "---- MODULE Pay ----\nEXTENDS Naturals, PayParts\n====\n");
+  writeFileSync(join(dir, "PayParts.tla"), "---- MODULE PayParts ----\n====\n");
+  writeFileSync(join(dir, "Pay.cfg"), "SPECIFICATION Spec\n");
+  mkdirSync(join(dir, "labels"));
+  writeFileSync(join(dir, "labels", "screens.mjs"), 'export const screen = "Cart";\n');
+  writeFileSync(
+    join(dir, "Pay.map.mjs"),
+    'import { screen } from "./labels/screens.mjs";\nexport const state = () => screen;\n',
+  );
+  writeFileSync(join(dir, "notes.md"), "");
+  const run = (edit) =>
+    node("statechart.mjs", ["from-spec", "Pay.tla"], dir, {
+      TLA2TOOLS: join(dir, "tla2tools.jar"),
+      JAVA: java,
+      EDIT: join(dir, edit),
+    });
+  const out = join(dir, "Pay-statechart");
+  for (const edit of ["PayParts.tla", join("labels", "screens.mjs")]) {
+    const r = run(edit);
+    assert.equal(r.status, 2, r.stderr);
+    assert.ok(
+      r.stderr.startsWith(
+        `${edit} changed while this run read it, so the run left Pay-statechart as it was.`,
+      ),
+      r.stderr,
+    );
+    assert.equal(existsSync(out), false);
+  }
+  const other = run("notes.md");
+  assert.equal(other.status, 0, other.stderr);
+  assert.equal(existsSync(join(out, "chart.mmd")), true);
 });
 
 test("statechart.mjs exits 2 and names a helper script that cannot start", () => {
@@ -1572,6 +1682,97 @@ test(
     );
     assert.equal(alone.status, 2);
     assert.match(alone.stderr, /^--against-traces and --against-rules go together\./);
+  },
+);
+
+// TLC 1.7.4's graph and counterexample for pay() whose Charge charges twice, cut to the lines that
+// the scripts read, so the test runs without TLC.
+const twiceDot = String.raw`strict digraph DiskGraph {
+1 [label="/\\ screen = \"Cart\"\n/\\ charges = 0",style = filled]
+1 -> 2 [label="Pay",color="black",fontcolor="black"];
+2 [label="/\\ screen = \"Paying\"\n/\\ charges = 0"];
+2 -> 3 [label="Charge",color="black",fontcolor="black"];
+3 [label="/\\ screen = \"Paying\"\n/\\ charges = 1"];
+3 -> 4 [label="Charge",color="black",fontcolor="black"];
+4 [label="/\\ screen = \"Paying\"\n/\\ charges = 2"];
+}`;
+const twiceTrace = String.raw`Error: Invariant NoDoubleCharge is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ screen = "Cart"
+/\ charges = 0
+
+State 2: <Pay line 6, col 8 to line 6, col 65 of module Pay>
+/\ screen = "Paying"
+/\ charges = 0
+
+State 3: <Charge line 7, col 11 to line 7, col 88 of module Pay>
+/\ screen = "Paying"
+/\ charges = 1
+
+State 4: <Charge line 7, col 11 to line 7, col 88 of module Pay>
+/\ screen = "Paying"
+/\ charges = 2
+
+Model checking completed. No error has been found.
+`;
+
+test("a fix whose config skips a rule keeps the states that break that rule wrong, not fixed", () => {
+  const dir = mkdtempSync(join(tmpdir(), "statechart-"));
+  writeFileSync(join(dir, "Pay.dot"), twiceDot);
+  writeFileSync(join(dir, "Pay-NoDoubleCharge.out"), twiceTrace);
+  for (const rule of ["ScreenKnown", "NoDoubleCharge"])
+    writeFileSync(join(dir, `PayFixed-${rule}.out`), "Model checking completed.\n");
+  writeFileSync(join(dir, "pay.map.mjs"), payMap);
+  const chart = (rules) => {
+    const r = node(
+      "tlc-to-chart.mjs",
+      [
+        ...["--dot", "Pay.dot", "--map", "pay.map.mjs", "--traces", "Pay-NoDoubleCharge.out"],
+        ...["--fixed-dot", "Pay.dot", "--fixed-rules", rules.join(",")],
+        ...rules.flatMap((rule) => ["--fixed-traces", `PayFixed-${rule}.out`]),
+        ...["--story", "story.md", "--summary", "summary.json", "--out", "chart.mmd"],
+      ],
+      dir,
+    );
+    assert.equal(r.status, 0, r.stderr);
+    return {
+      status: JSON.parse(readFileSync(join(dir, "summary.json"), "utf8")).chartStatus,
+      story: readFileSync(join(dir, "story.md"), "utf8"),
+    };
+  };
+  const skipped = chart(["ScreenKnown"]);
+  assert.deepEqual(skipped.status, { works: 3, wrong: 1, fixed: 0 });
+  assert.match(
+    skipped.story,
+    /^With the fix you see the same screens and steps, but the fix does not check this rule\.$/m,
+  );
+  const checked = chart(["ScreenKnown", "NoDoubleCharge"]);
+  assert.deepEqual(checked.status, { works: 3, wrong: 0, fixed: 1 });
+});
+
+test(
+  "from-spec with a fix whose config skips a rule says so, and counts that rule's bad state still wrong",
+  needsTlc,
+  () => {
+    const dir = mkdtempSync(join(tmpdir(), "statechart-"));
+    const charge = `screen = "Paying" /\\ charges < 2 /\\ charges' = charges + 1 /\\ UNCHANGED screen`;
+    const known = 'ScreenKnown == screen \\in {"Cart", "Paying", "Refunded"}\n====';
+    for (const name of ["Pay", "PayFixed"])
+      writeFileSync(join(dir, `${name}.tla`), pay(name, charge).replace("====", known));
+    writeFileSync(
+      join(dir, "Pay.cfg"),
+      "SPECIFICATION Spec\nINVARIANT NoDoubleCharge ScreenKnown\n",
+    );
+    writeFileSync(join(dir, "PayFixed.cfg"), "SPECIFICATION Spec\nINVARIANT ScreenKnown\n");
+    writeFileSync(join(dir, "Pay.map.mjs"), payMap);
+    const r = node("statechart.mjs", ["from-spec", "Pay.tla", "--fixed", "PayFixed.tla"], dir);
+    assert.equal(r.status, 1, r.stderr);
+    assert.match(r.stdout, /^\d+ work today, [1-9]\d* still wrong with the fix, 0 fixed or new/m);
+    assert.match(
+      r.stderr,
+      /^PayFixed\.cfg does not check NoDoubleCharge, so the stories cannot say whether PayFixed\.tla keeps it\.$/m,
+    );
   },
 );
 
