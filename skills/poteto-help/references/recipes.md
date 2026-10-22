@@ -6,7 +6,7 @@ Replace the goal, paths, and checks with the real ones. These examples use `pote
 
 - `poteto-mode read <thread>. Restate the underlying issue plainly before doing anything. Don't change code yet.`
 - `in-your-own-words <long or messy ask>`
-- `sharpen <your task>`
+- `sharpen <the prompt you're about to send>`
 - `poteto-mode investigate why <symptom>. Give me what we know, which evidence you used, and your best hypotheses. Don't change code yet.`
 - `Use how to trace <subsystem>, then why to find the evidence behind the recent change.`
 - `Recall my work on <topic> from last week, then read this issue.`
@@ -34,6 +34,7 @@ Replace the goal, paths, and checks with the real ones. These examples use `pote
 ## Review and ship
 
 - `Interrogate the whole branch against its intent. Do not change anything; report only defects or regressions with evidence.`
+- `create-formal-verification-skill prove <property> holds in <module>, even when <steps> interleave or retry.` After merges or refactors in that code: `maintain-formal-verification-skill`.
 - `Swarm: check each package under <dir> with its own check script, then give me one report.`
 - `Open a focused PR with the verification evidence in its description.`
 - `Babysit this PR until it is merge-ready; do not merge it.`
@@ -43,6 +44,7 @@ Replace the goal, paths, and checks with the real ones. These examples use `pote
 
 - `I am stepping away. Finish <goal> in a fresh worktree from <base>. Done means <checks>. Keep a decision log and stop before any external write that I have not authorized.`
 - `Show me the work trail and what still needs attention.`
+- `ketchup` catches you up on this chat since your last message and lists every call that waits on you.
 - `Run these independent queue items and report each result before proceeding to another phase.`
 - `Reflect on this task and propose only skill edits that change a future decision.`
 - `Explain your last reply in plain language.`

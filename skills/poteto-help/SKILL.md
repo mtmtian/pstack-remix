@@ -26,12 +26,13 @@ Check only state that changes the answer:
 
 - When model or cost setup matters, read the active host's effective policy with `node <plugin-root>/bin/config.mjs show --host codex`, `--host claude`, `--host t3` in a T3 Code session, or the read-only common-policy view `--host antigravity`. The shared file is `~/.config/pstack/config.json`. If it is absent, missing roles inherit the main conversation and setup remains optional. This command is read-only; do not initialize or change preferences from a help request.
 - If the project has no `verify-*` skill or application harness, mention [`create-verification-skill`](../create-verification-skill/SKILL.md) when the question is about proving behavior.
+- If the project has no formal verification skill, no property is checked past what tests reach. Mention [`create-formal-verification-skill`](../create-formal-verification-skill/SKILL.md) when the question is about a race, an invariant, or another case tests rarely hit. When one exists and the code it covers changed after the commit it records as last in sync, mention [`maintain-formal-verification-skill`](../maintain-formal-verification-skill/SKILL.md) if the question touches that code.
 
 When setup is relevant and the user has not chosen a policy, offer to point them to the current host's `setup-pstack` entry now or answer first and leave setup for later. Do not run setup or write preferences as part of help.
 
 ## Get set up
 
-Use [the setup guide](../../docs/guide/01-setup.md) for installation and updates. Once installed, the setup entry is `$pstack-codex:setup-pstack` in Codex and `/pstack:setup-pstack` in Claude Code. It reads and updates pstack's shared or host-specific preferences only when the user asks.
+Use [the setup guide](../../docs/guide/01-setup.md) for installation and updates. Once installed, the setup entry is `$pstack-codex:setup-pstack` in Codex and `/pstack:setup-pstack` in Claude Code. It reads and updates pstack's shared or host-specific preferences only when the user asks. It also mentions `create-verification-skill` and `create-formal-verification-skill` once each when the project has neither kind of skill.
 
 To start a real task, invoke `$pstack-codex:poteto-mode` in Codex or `/pstack:poteto-mode` in Claude Code. A useful prompt states the goal, a check that can pass or fail, the proof to show, and any real constraints. The playbook supplies the steps, so a hand-written skill sequence can drop or reorder them. See [`references/prompting.md`](references/prompting.md) and [guide page 2](../../docs/guide/02-poteto-mode.md).
 
@@ -53,12 +54,12 @@ The default for non-trivial work is `poteto-mode`, which routes to other skills 
 |---|---|
 | Do a non-trivial task with a rigorous workflow | [`poteto-mode`](../poteto-mode/SKILL.md) |
 | Check that the agent understood your goal and the problem before it starts | [`in-your-own-words`](../in-your-own-words/SKILL.md) |
-| Aim a task higher before starting: more expert, more outcome-focused, not overspecified | [`sharpen`](../sharpen/SKILL.md) |
+| Get a prompt rewritten deeper, not bigger, before sending it: what a top professional would add, their raw material and methods, and an outside check. It returns the prompt and doesn't do the task | [`sharpen`](../sharpen/SKILL.md) |
 | Understand what code does or where code should live | [`how`](../how/SKILL.md) |
 | Trace why code is shaped this way or why a number changed | [`why`](../why/SKILL.md) |
 | Understand a change in plain language | [`teach`](../teach/SKILL.md) |
 | Recover context from recent work | [`recall`](../recall/SKILL.md) |
-| Catch up on what changed in this chat since your last message, in a few plain sentences and small visuals, with enough context to decide each action item | [`ketchup`](../ketchup/SKILL.md) |
+| Catch up on what changed in this chat since your last message, in plain words and small visuals, with every item waiting on you listed and decidable from the reply alone | [`ketchup`](../ketchup/SKILL.md) |
 | Check what a small diff might break elsewhere | [`blast-radius`](../blast-radius/SKILL.md) |
 | Settle types and module boundaries before implementation | [`architect`](../architect/SKILL.md) |
 | Compare several attempts at one brief | [`arena`](../arena/SKILL.md) |
@@ -72,6 +73,9 @@ The default for non-trivial work is `poteto-mode`, which routes to other skills 
 | Hear an explanation in simpler words | [`bro`](../bro/SKILL.md) |
 | Give an app a scripted way to prove user-visible behavior | [`create-verification-skill`](../create-verification-skill/SKILL.md) |
 | Update a verification skill and its feature map | [`maintain-verification-skill`](../maintain-verification-skill/SKILL.md) |
+| Formally verify a race, invariant, or other property that tests rarely reach | [`create-formal-verification-skill`](../create-formal-verification-skill/SKILL.md) |
+| Bring a formal verification back in line after the code it covers changed, and learn whether a failure is drift or a bug | [`maintain-formal-verification-skill`](../maintain-formal-verification-skill/SKILL.md) |
+| Show a PM or designer what the user sees as a chart checked by a model, with each bug drawn as a numbered path, turn an agreed chart into a TLA+ skeleton, or audit the code against its TLA+ spec | [`statechart`](../statechart/SKILL.md) |
 | Vet a performance measurement | [`benchmark-checklist`](../benchmark-checklist/SKILL.md) |
 | Design a rigorous run when no playbook fits | [`figure-it-out`](../figure-it-out/SKILL.md) |
 | Keep a decision record for later review | [`show-me-your-work`](../show-me-your-work/SKILL.md) |

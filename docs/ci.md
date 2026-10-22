@@ -23,7 +23,7 @@ bash scripts/check.sh runtime
 bash scripts/check.sh build
 ```
 
-`runtime` needs no Bun, vendor CLI, login, or shared pstack configuration. It starts with the [fork guards](#fork-guards), then exercises config resolution, the pi guard, verdict parsing, xagent receipts, cancellation, timeouts, and host verification with vendor stand-ins. It also copies the shipped Node bundles into a temporary directory without dependencies and checks orchestrator persistence and watcher argument handling.
+`runtime` needs no Bun, vendor CLI, login, or shared pstack configuration. It starts with the [fork guards](#fork-guards), then exercises config resolution, the pi guard, verdict parsing, xagent receipts, cancellation, timeouts, and host verification with vendor stand-ins. It also copies the shipped Node bundles into a temporary directory without dependencies and checks orchestrator persistence and watcher argument handling. The statechart script tests run too; those that need TLC skip unless `TLA2TOOLS` names a `tla2tools.jar`.
 
 `build` runs strict type checking and the Bun tests for both `orch` and `watch-pr`. It tests the real builder, then rebuilds into a temporary directory and compares the result with the working-tree artifacts. It fails if source hashes, bundles, or the bundled license differ or are missing, or a bundle loses execute permission. Build inputs exclude `node_modules`, logs, `.DS_Store`, and TypeScript build caches. It never repairs artifacts during a check. Checks stop at the first failure and print the failing command.
 

@@ -56,11 +56,13 @@ $show-me-your-work catch me up on what you did last night
 
 Before the skill hands back its summary, it spawns a reviewer on a different available model family (or explicitly labeled same-family independent review) to read the trail and the transcript, and the reply ends with an Attention section listing what deserves your scrutiny. Read that section first, then the log rows it points at. You're auditing decisions, not re-reading the whole night.
 
+For a quick status instead of an audit, run [`$ketchup`](../../skills/ketchup/SKILL.md) in the chat that ran the work. It reads only, and tells you in plain words what changed since your last message, with the screenshots and small diagrams the work produced. Then it lists each call waiting on you, such as a merge, an approval, or a choice between options, with its pick, the evidence, and the risk, so you can decide from the reply alone.
+
 ## When the night holds a queue, not a task
 
 The contract above drives one task to one finish condition. Some nights hold more, a queue of independent changes or a whole program. Three playbooks scale the same trust up.
 
-[Autopilot-full](../../skills/poteto-mode/playbooks/autopilot-full.md) runs a queue of independent PRs through verification and, when the user has authorized the remote action, to merged. Each PR gets one owner agent that carries it from build through merge, and no owner merges on its own verdict. A swarm of fresh verifiers starts at the code-ready head and repeats on patch-changing pushes. The final patch needs a clean verdict, CI must pass on the merge-prep head, and the merge must stay within the user's explicitly authorized repository and PR scope. The verdict does not grant broader remote authority:
+[Autopilot-full](../../skills/poteto-mode/playbooks/autopilot-full.md) runs a queue of independent PRs through verification and, when the user has authorized the remote action, to merged. Each PR gets one owner agent that carries it from build through merge, and no owner merges on its own verdict. A swarm of fresh verifiers checks the owner's code-ready head. A later rebase or minor fix gets one fresh verifier, and only new behavior or a large new diff calls the full swarm again. The final patch needs a clean verdict, CI must pass on the merge-prep head, and the merge must stay within the user's explicitly authorized repository and PR scope. The verdict does not grant broader remote authority:
 
 ```text
 $poteto-mode full autopilot on this queue. each item is independent. i want them merged by morning.

@@ -12,13 +12,21 @@ use $how first to understand how this initialization works. then use $why to fig
 
 Mechanics first, history second. Each skill's report tells you which sources it searched, so you know what the answer is grounded in.
 
+## Sharpen a prompt before you send it
+
+```text
+$sharpen write the onboarding doc for the new billing service.
+```
+
+The agent names what an expert would do that you didn't ask for, the raw material they'd start from, their methods and tools, and an outside check that the result is right. It hands back your prompt rewritten to ask for that and doesn't do the task. Send the rewrite when it reads right.
+
 ## Get a second opinion on a design
 
 ```text
 ask $arena for a second opinion on this thread and our approach
 ```
 
-Your current design becomes one candidate among several, and the synthesis tells you whether the panel found something better or confirmed what you had. Cheap insurance before a costly commitment.
+Your current design becomes one candidate among several, and the synthesis tells you whether the panel found something better or confirmed what you had. It costs little next to a design that is expensive to reverse.
 
 ## Check independent slices in parallel
 
@@ -35,6 +43,14 @@ $interrogate the whole branch, but skeptically. don't change anything yet. no ni
 ```
 
 The qualifiers do real work. "don't change anything yet" keeps it read-only, and the nitpick rule pre-filters the noise so `Act on` findings are worth your time.
+
+## Prove a property tests rarely reach
+
+```text
+$create-formal-verification-skill the retry queue. a message must never be delivered twice.
+```
+
+You get one property checked in every case within a stated scope, a counterexample in your code's terms if the code already breaks it, and a project skill the next agent runs on any change to that code.
 
 ## Fix a bug through a failing test
 
@@ -78,11 +94,19 @@ $bro
 
 That's the whole prompt. [`$bro`](../../skills/bro/SKILL.md) restates the last message like one human talking to another, no jargon, shorter. Use it when a reply is technically thorough and you still don't know what it said.
 
+## Catch up on a chat you left running
+
+```text
+$ketchup
+```
+
+[`$ketchup`](../../skills/ketchup/SKILL.md) tells you in plain words what changed since your last message, then lists each call waiting on you with its pick, evidence, and risk. It changes nothing while it reports.
+
 ## The pitfalls
 
 - **Enumerating skills in the prompt.** "use $how then $architect then $arena" reorders steps the playbook already sequences. State the goal and constraints. Name a skill only to override a default.
 - **A vague finish condition.** "make it better" gives `/goal` nothing to check. Give a command or artifact that can pass or fail. A goal is finite work, not a timer.
-- **Parallel agents in one worktree.** They overwrite each other and the diff becomes archaeology. Say "own worktree per attempt" and the isolation is free.
+- **Parallel agents in one worktree.** They overwrite each other, and nobody can tell which agent changed what. Say "own worktree per attempt" and the isolation is free.
 - **Using `$arena` for coverage.** `$arena` repeats one design or code brief, then picks a base and grafts the best parts. `$swarm` partitions slices or declared race arms and aggregates one report.
 - **Accepting every review comment.** Bots and humans both file real catches and noise in one list. `$interrogate` sorts findings into act-on and dismissed buckets with reasons, and you can override either way.
 - **Treating `auto` as a model slug.** `auto` and `inherit-parent` mean "omit the model field so the subagent inherits the parent chat model." [Setup](./01-setup.md) covers the roles and the pstack-specific JSON file.
