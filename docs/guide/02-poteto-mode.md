@@ -25,7 +25,7 @@ flowchart TD
     J --> K
 ```
 
-The diagram shows the common routes. There are also playbooks for hillclimbing a metric, diagnosing runtime symptoms and captured traces, prototypes, visual parity, authoring and evaluating skills, autonomous runs, babysitting a PR or stack to merge-ready, shipping a verified stack, running a PR queue on autopilot, orchestrating project-scale programs, session pickup, pausing safely, multi-phase plans, and worktree cleanup. The [playbook directory](../../skills/poteto-mode/playbooks/) has the full set.
+The diagram shows the common routes. There are also playbooks for hillclimbing a metric, diagnosing runtime symptoms and captured traces, prototypes, visual parity, authoring and evaluating skills, autonomous runs, opening a PR, babysitting a PR or stack to merge-ready, shipping a verified stack, running a PR queue or a stack on autopilot, orchestrating project-scale programs, session pickup, pausing safely, multi-phase plans, and worktree cleanup. The [playbook directory](../../skills/poteto-mode/playbooks/) has the full set.
 
 ## Say the goal, not the ceremony
 
@@ -38,6 +38,14 @@ $poteto-mode users get two notifications after a retry. repro first, then fix an
 That's a Bug fix prompt. "repro first" is a real constraint, not politeness, and the playbook honors it. Watch the todo list fill with the Bug fix steps. A skipped step stays visible with `skip: <reason>`.
 
 A useful prompt can state the goal, a pass/fail done check, the proof to show, what you already know, and any real constraints. Leave out a hand-written skill sequence; the playbook supplies the order. See [`poteto-help` prompt guidance](../../skills/poteto-help/references/prompting.md) for examples. If you are unsure which skill fits, invoke `$pstack-codex:poteto-help` in Codex or `/pstack:poteto-help` in Claude Code.
+
+For a restatement of your goal and the problem alone, with no playbook, run [`$in-your-own-words`](../../skills/in-your-own-words/SKILL.md). When you're unsure whether a prompt is aimed right, run [`$sharpen`](../../skills/sharpen/SKILL.md) on it before you send it:
+
+```text
+$sharpen write a migration guide for the v2 config format.
+```
+
+The agent says what a top professional would do that you didn't ask for, the rawest material they would start from, the methods and tools they would use, and what other than you or the agent would show the result is right. Then it rewrites your prompt to ask for exactly that, deeper but not bigger, and leaves your choices open. It doesn't do the task. Read the rewrite, then send it, for example with `$poteto-mode`.
 
 When the conversation already carries the context, the prompt shrinks to almost nothing. All of these are enough:
 

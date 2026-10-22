@@ -6,7 +6,7 @@
 
 这是一个独立维护的本地适配版本，基于 Lauren Tan 以 MIT 协议发布的上游 pstack 0.15.21，跟踪提交 [`997ffc7f`](https://github.com/cursor/plugins/tree/997ffc7fe26bdaa6478a14e7f5b8d5f9ed747102/pstack)。本项目不由 Lauren Tan、Cursor、OpenAI 或 Anthropic 维护。
 
-两种主控共用 **55 个技能、23 个流程模板**、工程原则、Agent 提示词和 Node 工具。插件清单和少量运行时适配负责处理主控差异。仓库名为 `pstack-remix`；为兼容已有安装，Codex 插件名仍为 `pstack-codex`，Claude Code 插件名为 `pstack`。
+两种主控共用 **58 个技能、23 个流程模板**、工程原则、Agent 提示词和 Node 工具。插件清单和少量运行时适配负责处理主控差异。仓库名为 `pstack-remix`；为兼容已有安装，Codex 插件名仍为 `pstack-codex`，Claude Code 插件名为 `pstack`。
 
 ## 安装与快速开始
 
@@ -155,11 +155,11 @@ pstack 本身不安装定时器；长任务流程也不保证会话退出或主�
 | [`poteto-mode`](./skills/poteto-mode/SKILL.md) | 非简单任务的默认入口，选择流程并协调执行。 |
 | [`poteto-help`](./skills/poteto-help/SKILL.md) | 了解 pstack、选择技能或流程，并得到一条可直接发送的提示词；不会因此自动开始底层任务。 |
 | [`in-your-own-words`](./skills/in-your-own-words/SKILL.md) | 开工前先用自己的话复述你的目标和要解决的问题，确认理解一致。 |
-| [`sharpen`](./skills/sharpen/SKILL.md) | 开工前按顶尖专家的做法校准任务：看清真实目标、去掉不必要的约束、保留一个外部校验，然后直接开始做。 |
+| [`sharpen`](./skills/sharpen/SKILL.md) | 发出 prompt 前把它改得更深而不是更大：顶尖从业者会额外做什么、从哪些最原始的材料入手、用什么方法和工具、靠什么外部校验判断结果正确。只交回改写后的 prompt，保留该由你做的选择，不执行任务。 |
 | [`how`](./skills/how/SKILL.md) | 梳理子系统的结构、行为和调用关系。 |
 | [`why`](./skills/why/SKILL.md) | 通过实际可用的源码、Issue、文档、讨论和观测工具追溯设计原因。 |
 | [`recall`](./skills/recall/SKILL.md) | 从相关历史会话和共享记录中恢复某个主题的当前上下文。 |
-| [`ketchup`](./skills/ketchup/SKILL.md) | 用几句平实的话加少量截图、视频或图示，回顾本次会话里你上一条消息之后的变化，并给每个待决事项附上刚好够做决定的背景。 |
+| [`ketchup`](./skills/ketchup/SKILL.md) | 用平实的话加少量截图、视频或图示，回顾本次会话里你上一条消息之后的变化，并列出每个等你决定的事项，单看回复就能拍板，条目多时回复也不为控制字数而删减。 |
 | [`blast-radius`](./skills/blast-radius/SKILL.md) | 检查小改动可能影响的其他部分，用运行证据验证关键安全假设。 |
 | [`architect`](./skills/architect/SKILL.md) | 在跨函数边界的实现前，明确调用示例、类型和模块形状。 |
 | [`arena`](./skills/arena/SKILL.md) | 对同一任务并行尝试多个方案，再选取各自优点。 |
@@ -180,6 +180,9 @@ pstack 本身不安装定时器；长任务流程也不保证会话退出或主�
 | [`show-me-your-work`](./skills/show-me-your-work/SKILL.md) | 把决策过程记录为可以审阅和提交的 TSV 文件。 |
 | [`create-verification-skill`](./skills/create-verification-skill/SKILL.md) | 为缺少行为验证手段的项目创建验证技能和功能清单。 |
 | [`maintain-verification-skill`](./skills/maintain-verification-skill/SKILL.md) | 结合源码与实际运行，修正已经偏离产品的验证技能。 |
+| [`create-formal-verification-skill`](./skills/create-formal-verification-skill/SKILL.md) | 测试很难触及竞态、重试、状态机、解析器或 unsafe 代码的出错路径时，用合适的工具形式化验证一条性质，并生成项目级技能，每次改动都能复查。 |
+| [`maintain-formal-verification-skill`](./skills/maintain-formal-verification-skill/SKILL.md) | 形式化验证覆盖的代码变了之后，按代码更新模型、harness 或性质并重跑，区分失败是验证漂移还是代码 bug。 |
+| [`statechart`](./skills/statechart/SKILL.md) | 从 TLA+ 模型生成用户视角的 Mermaid 状态图给产品或设计看：标出正常、仍有问题、被待合并修复解决的状态，把 TLC 找到的每个 bug 画成编号路径；也能把商定的状态图转成 TLA+ 骨架，或拿现有 spec 审计代码。 |
 | [`unslop`](./skills/unslop/SKILL.md) | 去掉空泛、机械或带明显 AI 痕迹的表达。 |
 | [`bro`](./skills/bro/SKILL.md) | 用简单、自然的语言重新解释上一条回复。 |
 | [`technical-writing`](./skills/technical-writing/SKILL.md) | 编写文档、RFC、README、PR 说明和提交信息。 |

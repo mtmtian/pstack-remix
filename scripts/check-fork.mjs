@@ -107,6 +107,13 @@ export const REQUIRED = [
     section: "maintained-source",
   },
   {
+    id: "statechart-no-download",
+    file: "skills/statechart/scripts/statechart.mjs",
+    pattern: /\["--no-install", "@mermaid-js\/mermaid-cli"/,
+    hint: "statechart --png renders only with an installed Mermaid CLI and never downloads one",
+    section: "upstream-behavior-retained",
+  },
+  {
     id: "xagent-skill",
     file: "skills/xagent/SKILL.md",
     hint: "the xagent skill is a local addition with no upstream counterpart",

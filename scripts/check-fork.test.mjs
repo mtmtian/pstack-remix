@@ -157,6 +157,7 @@ const DROPPED = [
   ["replay-stale-line", "skills/create-verification-skill/SKILL.md", "`stale: <reason> at <step>`", "a failure"],
   ["replay-runs-first", "skills/maintain-verification-skill/SKILL.md", "Run a feature's replay first when it has one", ""],
   ["replay-stale-is-finding", "skills/maintain-verification-skill/SKILL.md", "Never let a passing drive quietly stand in for a stale replay", ""],
+  ["statechart-no-download", "skills/statechart/scripts/statechart.mjs", '"--no-install", "@mermaid-js/mermaid-cli"', '"-y", "@mermaid-js/mermaid-cli"'],
   ["xagent-skill", "skills/xagent/SKILL.md", null],
   ["xagent-allowlist", "bin/xagent-allowed-commands", null],
   ["pr-authorization", "skills/poteto-mode/playbooks/opening-a-pr.md", "Use when PR delivery is requested or otherwise explicitly authorized.", "Invoked at the end of every other playbook."],
