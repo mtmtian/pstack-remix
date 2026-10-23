@@ -794,30 +794,38 @@ const moved = (from, to, ...missed) => {
   return true;
 };
 
-// Another run or the user can create or fill `to` while the copy runs, so the copy creates each
-// folder and file only where none exists, and a failed copy removes only what it created.
+// Another run or the user can create, fill, or replace `to` while the copy runs, so the copy
+// creates each folder and file only where none exists, and a failed copy removes only what it
+// created: an entry whose identity is still the one it had when this copy made it. A folder's
+// change time moves as files go in, so a folder is known by its inode alone.
 function copyFolder(from, to) {
+  const identity = (file, folder) => {
+    const { dev, ino, ctimeNs } = fs.lstatSync(file, { bigint: true });
+    return `${dev} ${ino}${folder ? "" : ` ${ctimeNs}`}`;
+  };
   const made = [];
+  const record = (file, folder) => made.push({ file, folder, id: identity(file, folder) });
   try {
     (function copy(src, dst) {
       fs.mkdirSync(dst);
-      made.push({ file: dst, folder: true });
+      record(dst, true);
       for (const e of fs.readdirSync(src, { withFileTypes: true })) {
         const [s, d] = [path.join(src, e.name), path.join(dst, e.name)];
         if (e.isDirectory()) copy(s, d);
         else {
           fs.copyFileSync(s, d, fs.constants.COPYFILE_EXCL);
-          made.push({ file: d, folder: false });
+          record(d, false);
         }
       }
     })(from, to);
   } catch (e) {
-    for (const { file, folder } of made.reverse()) {
+    for (const { file, folder, id } of made.reverse()) {
       try {
+        if (identity(file, folder) !== id) continue;
         if (folder) fs.rmdirSync(file);
         else fs.unlinkSync(file);
       } catch {
-        // A folder that another run or the user put files in stays.
+        // Gone already, or a folder that another run or the user put files in: it stays.
       }
     }
     throw e;
@@ -903,8 +911,12 @@ function secondModel(input, cfg, { fixed, against, label }) {
 }
 
 function warnUnchecked(now, other) {
-  const checked = new Set([...other.rules, ...other.properties]);
-  const unchecked = [...now.rules, ...now.properties].filter((r) => !checked.has(r));
+  // A state predicate as a PROPERTY holds only in the initial states, so only an INVARIANT checks
+  // an INVARIANT, while an INVARIANT also checks a PROPERTY.
+  const unchecked = [
+    ...now.rules.filter((r) => !other.rules.includes(r)),
+    ...now.properties.filter((p) => !other.rules.includes(p) && !other.properties.includes(p)),
+  ];
   if (unchecked.length)
     console.error(
       `${rel(other.cfgFile)} does not check ${unchecked.join(", ")}, so the stories cannot say whether ${path.basename(other.spec)} keeps ${unchecked.length === 1 ? "it" : "them"}.`,
@@ -919,11 +931,15 @@ const specFiles = (dir) =>
     .sort();
 
 // listedBreaks() reads every config beside the spec, and the folder's specs to name its module.
-const listedInputs = (spec) => {
+// The configs come from the folder's own fingerprint, so a config that appears or goes after it
+// changes the folder, and every config in it has its contents fingerprinted.
+function snapshotListed(spec, inputs) {
   const dir = path.dirname(spec);
-  const configs = specFiles(dir).filter((f) => f.endsWith(".cfg"));
-  return [dir, ...configs.map((f) => path.join(dir, f))];
-};
+  const listing = fingerprint(dir);
+  inputs.set(dir, listing);
+  const configs = (listing ?? "").split("\n").filter((f) => f.endsWith(".cfg"));
+  snapshot(configs.map((f) => path.join(dir, f)), inputs);
+}
 
 function listedBreaks(spec) {
   const dir = path.dirname(spec);
@@ -973,7 +989,7 @@ async function fromSpec(input, { "expect-broken": expected, ...flags }) {
   const otherCfg = secondCfg(cfg, flags);
   const inputs = snapshot([input, cfg, map, flags.fixed ?? flags.against, otherCfg]);
   const second = secondModel(input, otherCfg, flags);
-  if (second?.role === "against") snapshot(listedInputs(flags.against), inputs);
+  if (second?.role === "against") snapshotListed(flags.against, inputs);
   const model = readInput(input, cfg, expected);
   const out = outDir(flags.out, input, name);
   if (!fs.existsSync(map)) {

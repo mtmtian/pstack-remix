@@ -1013,17 +1013,38 @@ test("a run with --against leaves the output folder when a config beside the spe
   writeFileSync(join(dir, "spec", "PayAgreed.cfg"), "SPECIFICATION Spec\n");
   writeFileSync(join(dir, "spec", "PayRetry.cfg"), "SPECIFICATION Spec\n");
   writeFileSync(join(dir, "notes.md"), "");
-  const run = (edit) =>
+  // A config that appears just after the run lists the folder, and is still being written.
+  writeFileSync(
+    join(dir, "late-config.cjs"),
+    `const fs = require("node:fs");
+const path = require("node:path");
+const { readdirSync } = fs;
+let done = false;
+fs.readdirSync = (dir, ...rest) => {
+  const names = readdirSync(dir, ...rest);
+  if (!done && path.basename(String(dir)) === "spec") {
+    done = true;
+    fs.writeFileSync(path.join(dir, "PayLate.cfg"), "SPECIFICATION Spec\\n");
+  }
+  return names;
+};
+`,
+  );
+  const run = (edit, env = {}) =>
     node("statechart.mjs", ["from-spec", "Pay.tla", "--against", "spec/PayAgreed.tla"], dir, {
       ...tlcEnv,
+      ...env,
       EDIT: join(dir, edit),
     });
-  // An edited config, and a new one, change which configs list a bug.
-  for (const [edit, changed] of [
+  // An edited config, a new one, and one that appears after the listing change which configs
+  // list a bug.
+  const late = { NODE_OPTIONS: `--require ${join(dir, "late-config.cjs")}` };
+  for (const [edit, changed, env] of [
     [join("spec", "PayRetry.cfg"), join("spec", "PayRetry.cfg")],
     [join("spec", "PayNew.cfg"), "spec"],
+    [join("spec", "PayLate.cfg"), "spec", late],
   ]) {
-    const r = run(edit);
+    const r = run(edit, env);
     assert.equal(r.status, 2, r.stderr);
     assert.ok(r.stderr.startsWith(`${changed} changed while this run read it`), r.stderr);
     assert.equal(existsSync(join(dir, "Pay-statechart")), false);
@@ -1032,21 +1053,29 @@ test("a run with --against leaves the output folder when a config beside the spe
   assert.equal(other.status, 0, other.stderr);
 });
 
-test("a fix whose config skips a PROPERTY says the fix does not check it", () => {
+test("a fix whose config skips a PROPERTY, or checks an INVARIANT only as a PROPERTY, says so", () => {
   const dir = mkdtempSync(join(tmpdir(), "statechart-"));
   const tlcEnv = standInTlc(dir);
   for (const name of ["Pay", "PayFixed"])
     writeFileSync(join(dir, `${name}.tla`), `---- MODULE ${name} ----\n====\n`);
   writeFileSync(join(dir, "Pay.cfg"), "SPECIFICATION Spec\nINVARIANT Paid\nPROPERTY Settles\n");
-  writeFileSync(join(dir, "PayFixed.cfg"), "SPECIFICATION Spec\nINVARIANT Paid\n");
   writeFileSync(join(dir, "Pay.map.mjs"), 'export const state = () => "Cart";\n');
-  const args = ["from-spec", "Pay.tla", "--fixed", "PayFixed.tla"];
-  const r = node("statechart.mjs", args, dir, tlcEnv);
-  assert.equal(r.status, 0, r.stderr);
-  assert.match(
-    r.stderr,
-    /^PayFixed\.cfg does not check Settles, so the stories cannot say whether PayFixed\.tla keeps it\.$/m,
-  );
+  // A PROPERTY that is a state predicate holds only in the initial states, so it does not stand in
+  // for an INVARIANT, while an INVARIANT does stand in for a PROPERTY.
+  for (const [fixed, unchecked] of [
+    ["INVARIANT Paid\n", "Settles"],
+    ["PROPERTY Paid\nINVARIANT Settles\n", "Paid"],
+  ]) {
+    writeFileSync(join(dir, "PayFixed.cfg"), `SPECIFICATION Spec\n${fixed}`);
+    const args = ["from-spec", "Pay.tla", "--fixed", "PayFixed.tla"];
+    const r = node("statechart.mjs", args, dir, tlcEnv);
+    assert.equal(r.status, 0, r.stderr);
+    const warning = `PayFixed.cfg does not check ${unchecked}, so the stories cannot say whether PayFixed.tla keeps it.`;
+    assert.deepEqual(
+      r.stderr.split("\n").filter((l) => l.includes("does not check")),
+      [warning],
+    );
+  }
 });
 
 test("the mapping scaffold lists the actions of a module whose definitions are indented", () => {
@@ -1080,17 +1109,19 @@ Spec == Init /\\ [][Pay \\/ Charge]_<<screen, charges>>
 });
 
 // Makes renames into Pay-statechart fail as on a FUSE mount, and lets "another run" fill the
-// folder after the run checked it ($RACE=checked) or while the run copies ($RACE=copying).
+// folder after the run checked it ($RACE=checked), fill it while the run copies ($RACE=copying),
+// or move it aside and put its own folder there while the run copies ($RACE=replaced). The other
+// run's folder has notes.md and its own copy of each name it shares with this run.
 const renameFails = `const fs = require("node:fs");
 const path = require("node:path");
 const target = (p) => path.basename(String(p)) === "Pay-statechart";
 const { renameSync, existsSync, copyFileSync } = fs;
 let raced = false;
-const race = (out, also) => {
+const race = (out, ...names) => {
   raced = true;
   fs.mkdirSync(out, { recursive: true });
   fs.writeFileSync(path.join(out, "notes.md"), "mine\\n");
-  fs.writeFileSync(path.join(out, also), "theirs\\n");
+  for (const name of names) fs.writeFileSync(path.join(out, name), "theirs\\n");
 };
 fs.renameSync = (from, to) => {
   if (!target(to)) return renameSync(from, to);
@@ -1101,10 +1132,16 @@ fs.existsSync = (p) => {
   if (process.env.RACE === "checked" && !raced && target(p)) race(p, "chart.mmd");
   return there;
 };
-let copies = 0;
+const copied = [];
 fs.copyFileSync = (from, to, mode) => {
-  if (process.env.RACE === "copying" && !raced && target(path.dirname(to)) && ++copies === 2)
-    race(path.dirname(to), path.basename(to));
+  const out = path.dirname(to);
+  if (!raced && target(out) && copied.push(path.basename(to)) === 2) {
+    if (process.env.RACE === "copying") race(out, path.basename(to));
+    if (process.env.RACE === "replaced") {
+      renameSync(out, out + "-moved");
+      race(out, ...copied);
+    }
+  }
   return copyFileSync(from, to, mode);
 };
 `;
@@ -1117,7 +1154,11 @@ test("a copy into place on a filesystem that cannot rename keeps files that anot
   writeFileSync(join(dir, "Pay.map.mjs"), 'export const state = () => "Cart";\n');
   writeFileSync(join(dir, "rename-fails.cjs"), renameFails);
   const out = join(dir, "Pay-statechart");
-  for (const race of ["checked", "copying"]) {
+  for (const [race, shared] of [
+    ["checked", 1],
+    ["copying", 1],
+    ["replaced", 2],
+  ]) {
     rmSync(out, { recursive: true, force: true });
     const r = node("statechart.mjs", ["from-spec", "Pay.tla"], dir, {
       ...tlcEnv,
@@ -1125,11 +1166,10 @@ test("a copy into place on a filesystem that cannot rename keeps files that anot
       RACE: race,
     });
     assert.equal(r.status, 2, `${race}: ${r.stderr}`);
-    const kept = readdirSync(out).sort();
-    assert.equal(kept.length, 2, `${race}: ${kept}`);
+    const theirs = readdirSync(out).filter((f) => f !== "notes.md");
+    assert.equal(theirs.length, shared, `${race}: ${theirs}`);
     assert.equal(readFileSync(join(out, "notes.md"), "utf8"), "mine\n", race);
-    const theirs = kept.find((f) => f !== "notes.md");
-    assert.equal(readFileSync(join(out, theirs), "utf8"), "theirs\n", race);
+    for (const f of theirs) assert.equal(readFileSync(join(out, f), "utf8"), "theirs\n", race);
   }
 });
 
