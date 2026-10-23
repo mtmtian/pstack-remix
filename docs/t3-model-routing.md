@@ -21,7 +21,7 @@ This T3 patch permits two families per code role. It does not start two workers:
 }
 ```
 
-Save the raw current `orchestrator_capabilities` structured result to `catalog.json`, then resolve:
+Save the raw current `orchestrator_capabilities` structured result to `catalog.json`, then resolve. From T3 0.1.2 that result is a short list; when a preview says a model is omitted, save a `search` result for it and add `--catalog search.json` after `--catalog catalog.json`:
 
 ```sh
 node bin/config.mjs resolve --host t3 --role 'hardest tasks' --catalog catalog.json
