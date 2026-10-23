@@ -471,12 +471,18 @@ function rulesAsExpected(now, other, expected) {
 const SCAFFOLD = (name, spec) => {
   const text = withoutComments(spec);
   const vars = tlaVariables(text);
+  // Top-level definitions start at the least indentation of any definition, which a module may
+  // put past column 0. A LET definition sits deeper, inside its action.
+  const indents = [...text.matchAll(/^([ \t]*)\w+[ \t]*(?:\([^)]*\))?[ \t]*==/gm)].map(
+    (m) => m[1].length,
+  );
+  const top = indents.length ? Math.min(...indents) : 0;
   // A definition that only another action calls is listed too, though TLC names no step after it.
   const actions = [
     ...new Set(
       text
-        .split(/\n(?=\S)/)
-        .map((d) => /^(\w+)\s*(?:\([^)]*\))?\s*==([^]*)/.exec(d))
+        .split(new RegExp(`\\n(?=[ \\t]{${top}}\\S)`))
+        .map((d) => /^[ \t]*(\w+)\s*(?:\([^)]*\))?\s*==([^]*)/.exec(d))
         .filter((d) => d && PRIMES_OR_UNCHANGED.test(d[2]))
         .map((d) => d[1]),
     ),
@@ -703,10 +709,12 @@ function outDir(flagged, input, name) {
   return out;
 }
 
+// A folder among the inputs stands for the specs and configs in it.
 const fingerprint = (file) => {
   try {
-    const { ino, ctimeNs } = fs.statSync(file, { bigint: true });
-    return `${ino} ${ctimeNs} ${fs.readFileSync(file, "base64")}`;
+    const stat = fs.statSync(file, { bigint: true });
+    if (stat.isDirectory()) return specFiles(file).join("\n");
+    return `${stat.ino} ${stat.ctimeNs} ${fs.readFileSync(file, "base64")}`;
   } catch {
     return null;
   }
@@ -777,14 +785,44 @@ const moved = (from, to, ...missed) => {
     fs.rmdirSync(to);
   }
   try {
-    fs.cpSync(from, to, { recursive: true, errorOnExist: true, force: false });
+    copyFolder(from, to);
   } catch (e) {
-    fs.rmSync(to, { recursive: true, force: true });
+    if (e.code === "EEXIST" && e.path === to && missed.includes("EEXIST")) return false;
     throw e;
   }
   fs.rmSync(from, { recursive: true, force: true });
   return true;
 };
+
+// Another run or the user can create or fill `to` while the copy runs, so the copy creates each
+// folder and file only where none exists, and a failed copy removes only what it created.
+function copyFolder(from, to) {
+  const made = [];
+  try {
+    (function copy(src, dst) {
+      fs.mkdirSync(dst);
+      made.push({ file: dst, folder: true });
+      for (const e of fs.readdirSync(src, { withFileTypes: true })) {
+        const [s, d] = [path.join(src, e.name), path.join(dst, e.name)];
+        if (e.isDirectory()) copy(s, d);
+        else {
+          fs.copyFileSync(s, d, fs.constants.COPYFILE_EXCL);
+          made.push({ file: d, folder: false });
+        }
+      }
+    })(from, to);
+  } catch (e) {
+    for (const { file, folder } of made.reverse()) {
+      try {
+        if (folder) fs.rmdirSync(file);
+        else fs.unlinkSync(file);
+      } catch {
+        // A folder that another run or the user put files in stays.
+      }
+    }
+    throw e;
+  }
+}
 
 function unchanged(inputs, out) {
   const changed = [...inputs].find(([f, was]) => fingerprint(f) !== was)?.[0];
@@ -865,17 +903,32 @@ function secondModel(input, cfg, { fixed, against, label }) {
 }
 
 function warnUnchecked(now, other) {
-  const unchecked = now.rules.filter((r) => !other.rules.includes(r));
+  const checked = new Set([...other.rules, ...other.properties]);
+  const unchecked = [...now.rules, ...now.properties].filter((r) => !checked.has(r));
   if (unchecked.length)
     console.error(
       `${rel(other.cfgFile)} does not check ${unchecked.join(", ")}, so the stories cannot say whether ${path.basename(other.spec)} keeps ${unchecked.length === 1 ? "it" : "them"}.`,
     );
 }
 
+// The specs and configs in a folder, which listedBreaks() reads. TLC's trace files do not count.
+const specFiles = (dir) =>
+  fs
+    .readdirSync(dir)
+    .filter((f) => /\.(tla|cfg)$/.test(f) && !f.includes("_TTrace_"))
+    .sort();
+
+// listedBreaks() reads every config beside the spec, and the folder's specs to name its module.
+const listedInputs = (spec) => {
+  const dir = path.dirname(spec);
+  const configs = specFiles(dir).filter((f) => f.endsWith(".cfg"));
+  return [dir, ...configs.map((f) => path.join(dir, f))];
+};
+
 function listedBreaks(spec) {
   const dir = path.dirname(spec);
-  const files = fs.readdirSync(dir).sort();
-  const modules = files.filter((f) => f.endsWith(".tla") && !f.includes("_TTrace_"));
+  const files = specFiles(dir);
+  const modules = files.filter((f) => f.endsWith(".tla"));
   const only = modules.length === 1 ? path.basename(modules[0], ".tla") : undefined;
   const breaks = {};
   let headed = false;
@@ -920,6 +973,7 @@ async function fromSpec(input, { "expect-broken": expected, ...flags }) {
   const otherCfg = secondCfg(cfg, flags);
   const inputs = snapshot([input, cfg, map, flags.fixed ?? flags.against, otherCfg]);
   const second = secondModel(input, otherCfg, flags);
+  if (second?.role === "against") snapshot(listedInputs(flags.against), inputs);
   const model = readInput(input, cfg, expected);
   const out = outDir(flags.out, input, name);
   if (!fs.existsSync(map)) {
