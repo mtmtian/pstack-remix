@@ -7,11 +7,12 @@ import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   BROKEN_PROPERTY,
-  checkTlcOutput,
   findTlc,
   joinAnd,
   parseDot,
+  PRIMES_OR_UNCHANGED,
   tlaVariables,
+  tlcOutputWarning,
   uncitedConditions,
 } from "./lib.mjs";
 
@@ -348,7 +349,7 @@ function tlc(tools, spec, cfg, base, { dump, workers = "1" } = {}) {
   if (r.error) throw new CannotFinish(`cannot run TLC: ${r.error.message}`);
   fs.writeFileSync(`${base}.out`, r.stdout);
   try {
-    return { stdout: r.stdout, warning: checkTlcOutput(r.stdout, `${base}.out`) };
+    return { stdout: r.stdout, warning: tlcOutputWarning(r.stdout, `${base}.out`) };
   } catch (e) {
     throw new TlcStopped(e.message);
   }
@@ -425,8 +426,6 @@ function check(tools, model, { work, out }, expected) {
   const said = (rule, broken) =>
     `  ${rule} ${broken ? (expected.has(rule) ? "is broken (expected)" : "is broken") : "holds"}.`;
   const shown = (file) => rel(path.join(out, "tlc", path.basename(file)));
-  // With -continue TLC reports every bad state. The CONSTRAINT stops each path at its first bad
-  // state, so a rule that stays broken reports only the step that broke it, not every later state.
   const traces = rules.map((rule) => {
     const file = path.join(tlcDir, `${name}-${rule}`);
     const cfg = `${cfgWithoutRules}INVARIANT ${rule}\nCONSTRAINT ${rule}\n`;
@@ -472,14 +471,19 @@ function rulesAsExpected(now, other, expected) {
 const SCAFFOLD = (name, spec) => {
   const text = withoutComments(spec);
   const vars = tlaVariables(text);
-  // TLC names each step after a definition that primes a variable or leaves one UNCHANGED. A
-  // definition that only another action calls is listed too, though TLC names no step after it.
+  // Top-level definitions start at the least indentation of any definition, which a module may
+  // put past column 0. A LET definition sits deeper, inside its action.
+  const indents = [...text.matchAll(/^([ \t]*)\w+[ \t]*(?:\([^)]*\))?[ \t]*==/gm)].map(
+    (m) => m[1].length,
+  );
+  const top = indents.length ? Math.min(...indents) : 0;
+  // A definition that only another action calls is listed too, though TLC names no step after it.
   const actions = [
     ...new Set(
       text
-        .split(/\n(?=\S)/)
-        .map((d) => /^(\w+)\s*(?:\([^)]*\))?\s*==([^]*)/.exec(d))
-        .filter((d) => d && /[\w)\]>}]'|\bUNCHANGED\b/.test(d[2]))
+        .split(new RegExp(`\\n(?=[ \\t]{${top}}\\S)`))
+        .map((d) => /^[ \t]*(\w+)\s*(?:\([^)]*\))?\s*==([^]*)/.exec(d))
+        .filter((d) => d && PRIMES_OR_UNCHANGED.test(d[2]))
         .map((d) => d[1]),
     ),
   ].sort();
@@ -705,10 +709,12 @@ function outDir(flagged, input, name) {
   return out;
 }
 
+// A folder among the inputs stands for the specs and configs in it.
 const fingerprint = (file) => {
   try {
-    const { ino, ctimeNs } = fs.statSync(file, { bigint: true });
-    return `${ino} ${ctimeNs} ${fs.readFileSync(file, "base64")}`;
+    const stat = fs.statSync(file, { bigint: true });
+    if (stat.isDirectory()) return specFiles(file).join("\n");
+    return `${stat.ino} ${stat.ctimeNs} ${fs.readFileSync(file, "base64")}`;
   } catch {
     return null;
   }
@@ -772,21 +778,59 @@ const moved = (from, to, ...missed) => {
     if (!["ENOSYS", "EXDEV", "EISDIR"].includes(e.code)) throw e;
   }
   // Some filesystems, such as FUSE mounts, cannot rename a folder that has files. They fail with
-  // ENOSYS, or with EISDIR when the target exists. Copy, and keep rename's outcomes.
+  // ENOSYS, or with EISDIR when the target exists.
   if (!fs.existsSync(from) && missed.includes("ENOENT")) return false;
   if (fs.existsSync(to)) {
     if (fs.readdirSync(to).length && missed.includes("ENOTEMPTY")) return false;
     fs.rmdirSync(to);
   }
   try {
-    fs.cpSync(from, to, { recursive: true, errorOnExist: true, force: false });
+    copyFolder(from, to);
   } catch (e) {
-    fs.rmSync(to, { recursive: true, force: true });
+    if (e.code === "EEXIST" && e.path === to && missed.includes("EEXIST")) return false;
     throw e;
   }
   fs.rmSync(from, { recursive: true, force: true });
   return true;
 };
+
+// Another run or the user can create, fill, or replace `to` while the copy runs, so the copy
+// creates each folder and file only where none exists, and a failed copy removes only what it
+// created: an entry whose identity is still the one it had when this copy made it. A folder's
+// change time moves as files go in, so a folder is known by its inode alone.
+function copyFolder(from, to) {
+  const identity = (file, folder) => {
+    const { dev, ino, ctimeNs } = fs.lstatSync(file, { bigint: true });
+    return `${dev} ${ino}${folder ? "" : ` ${ctimeNs}`}`;
+  };
+  const made = [];
+  const record = (file, folder) => made.push({ file, folder, id: identity(file, folder) });
+  try {
+    (function copy(src, dst) {
+      fs.mkdirSync(dst);
+      record(dst, true);
+      for (const e of fs.readdirSync(src, { withFileTypes: true })) {
+        const [s, d] = [path.join(src, e.name), path.join(dst, e.name)];
+        if (e.isDirectory()) copy(s, d);
+        else {
+          fs.copyFileSync(s, d, fs.constants.COPYFILE_EXCL);
+          record(d, false);
+        }
+      }
+    })(from, to);
+  } catch (e) {
+    for (const { file, folder, id } of made.reverse()) {
+      try {
+        if (identity(file, folder) !== id) continue;
+        if (folder) fs.rmdirSync(file);
+        else fs.unlinkSync(file);
+      } catch {
+        // Gone already, or a folder that another run or the user put files in: it stays.
+      }
+    }
+    throw e;
+  }
+}
 
 function unchanged(inputs, out) {
   const changed = [...inputs].find(([f, was]) => fingerprint(f) !== was)?.[0];
@@ -859,7 +903,6 @@ function secondModel(input, cfg, { fixed, against, label }) {
   }
   const [role, spec] = fixed ? ["fixed", fixed] : ["against", against];
   const name = path.basename(input, ".tla");
-  // TLC's output files are named after the spec, so a second model with the same name overwrites them.
   if (path.basename(spec, ".tla") === name)
     throw new CannotFinish(
       `${rel(spec)} needs its own file and module name, such as ${name}${fixed ? "Fixed" : "Agreed"}.tla.`,
@@ -868,20 +911,40 @@ function secondModel(input, cfg, { fixed, against, label }) {
 }
 
 function warnUnchecked(now, other) {
-  const unchecked = now.rules.filter((r) => !other.rules.includes(r));
+  // A state predicate as a PROPERTY holds only in the initial states, so only an INVARIANT checks
+  // an INVARIANT, while an INVARIANT also checks a PROPERTY.
+  const unchecked = [
+    ...now.rules.filter((r) => !other.rules.includes(r)),
+    ...now.properties.filter((p) => !other.rules.includes(p) && !other.properties.includes(p)),
+  ];
   if (unchecked.length)
     console.error(
       `${rel(other.cfgFile)} does not check ${unchecked.join(", ")}, so the stories cannot say whether ${path.basename(other.spec)} keeps ${unchecked.length === 1 ? "it" : "them"}.`,
     );
 }
 
-// The rule that each config beside the spec expects TLC to break, from the "\* expect:" and
-// "\* module:" lines of each config. null when no config of the spec's
-// module has an "\* expect:" line.
+// The specs and configs in a folder, which listedBreaks() reads. TLC's trace files do not count.
+const specFiles = (dir) =>
+  fs
+    .readdirSync(dir)
+    .filter((f) => /\.(tla|cfg)$/.test(f) && !f.includes("_TTrace_"))
+    .sort();
+
+// listedBreaks() reads every config beside the spec, and the folder's specs to name its module.
+// The configs come from the folder's own fingerprint, so a config that appears or goes after it
+// changes the folder, and every config in it has its contents fingerprinted.
+function snapshotListed(spec, inputs) {
+  const dir = path.dirname(spec);
+  const listing = fingerprint(dir);
+  inputs.set(dir, listing);
+  const configs = (listing ?? "").split("\n").filter((f) => f.endsWith(".cfg"));
+  snapshot(configs.map((f) => path.join(dir, f)), inputs);
+}
+
 function listedBreaks(spec) {
   const dir = path.dirname(spec);
-  const files = fs.readdirSync(dir).sort();
-  const modules = files.filter((f) => f.endsWith(".tla") && !f.includes("_TTrace_"));
+  const files = specFiles(dir);
+  const modules = files.filter((f) => f.endsWith(".tla"));
   const only = modules.length === 1 ? path.basename(modules[0], ".tla") : undefined;
   const breaks = {};
   let headed = false;
@@ -926,6 +989,7 @@ async function fromSpec(input, { "expect-broken": expected, ...flags }) {
   const otherCfg = secondCfg(cfg, flags);
   const inputs = snapshot([input, cfg, map, flags.fixed ?? flags.against, otherCfg]);
   const second = secondModel(input, otherCfg, flags);
+  if (second?.role === "against") snapshotListed(flags.against, inputs);
   const model = readInput(input, cfg, expected);
   const out = outDir(flags.out, input, name);
   if (!fs.existsSync(map)) {

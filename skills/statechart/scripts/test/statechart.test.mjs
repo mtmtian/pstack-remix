@@ -15,7 +15,6 @@ import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import {
-  checkTlcOutput,
   findTlc,
   parseDot,
   parseMermaid,
@@ -23,6 +22,7 @@ import {
   parseValue,
   ruleSentences,
   stateKey,
+  tlcOutputWarning,
   uncitedConditions,
 } from "../lib.mjs";
 
@@ -310,7 +310,7 @@ test("a rule broken by a start state is a counterexample of one state", () => {
 /\\ conn = "Offline"
 
 ${done}`;
-  assert.doesNotThrow(() => checkTlcOutput(text, "tlc.out"));
+  assert.doesNotThrow(() => tlcOutputWarning(text, "tlc.out"));
   assert.deepEqual(parseTraces(text), [
     {
       invariant: "NeverSyncedWhileOffline",
@@ -321,30 +321,30 @@ ${done}`;
 
 test("TLC output from a run that failed or stopped early is refused", () => {
   assert.doesNotThrow(() =>
-    checkTlcOutput(
+    tlcOutputWarning(
       `Error: Invariant Small is violated.\nError: The behavior up to this point is:\nState 1: <Initial predicate>\nx = 0\n\n${done}`,
       "ok.out",
     ),
   );
   assert.throws(
     () =>
-      checkTlcOutput(
+      tlcOutputWarning(
         "Error: The invariant Nope specified in the configuration file\nis not defined in the specification.\n",
         "cfg.out",
       ),
     /cfg\.out: TLC stopped on an error that is not a broken rule/,
   );
   assert.throws(
-    () => checkTlcOutput("Error: Parsing or semantic analysis failed.\n", "parse.out"),
+    () => tlcOutputWarning("Error: Parsing or semantic analysis failed.\n", "parse.out"),
     /not a broken rule/,
   );
   assert.throws(
-    () => checkTlcOutput(evaluationError, "eval.out"),
+    () => tlcOutputWarning(evaluationError, "eval.out"),
     /TLC threw an unexpected exception/,
   );
   assert.throws(
     () =>
-      checkTlcOutput(
+      tlcOutputWarning(
         "Error: Invariant Small is violated.\nError: The behavior up to this point is:\nState 1: <Initial predicate>\nx = 0\n",
         "stopped.out",
       ),
@@ -378,12 +378,12 @@ test("a rule that TLC finds broken before TLC throws a Java exception keeps its 
     "Index 123 out of bounds for length 4",
   )}\n${stoppedEarly}`;
   assert.equal(
-    checkTlcOutput(oneWorker, "tlc.out"),
+    tlcOutputWarning(oneWorker, "tlc.out"),
     `TLC found that Small is broken, and then failed with ${aioobe}. TLC stopped before it checked every state, so the charts can miss states that break Small. The failure is in TLC, not in the rule. Do not weaken Small because of it. A smaller constant can let TLC finish.`,
   );
   const workersInterleaved = `${tlcThrew("java.lang.RuntimeException", aioobe)}${smallBroken}${stoppedEarly}`;
   assert.match(
-    checkTlcOutput(workersInterleaved, "tlc.out"),
+    tlcOutputWarning(workersInterleaved, "tlc.out"),
     /failed with java\.lang\.ArrayIndexOutOfBoundsException: Index 123/,
   );
   assert.deepEqual(
@@ -392,7 +392,7 @@ test("a rule that TLC finds broken before TLC throws a Java exception keeps its 
   );
   assert.throws(
     () =>
-      checkTlcOutput(
+      tlcOutputWarning(
         `${smallBroken}${tlcThrew("java.lang.RuntimeException", "util.Assert$TLCRuntimeException: Attempted to apply tuple")}${stoppedEarly}`,
         "formula.out",
       ),
@@ -400,7 +400,7 @@ test("a rule that TLC finds broken before TLC throws a Java exception keeps its 
   );
   assert.throws(
     () =>
-      checkTlcOutput(
+      tlcOutputWarning(
         `${tlcThrew("java.lang.ArrayIndexOutOfBoundsException", "Index 123 out of bounds for length 4")}${stoppedEarly}`,
         "never-broken.out",
       ),
@@ -951,24 +951,28 @@ test("statechart.mjs does not use an output folder whose tlc folder has an entry
   }
 });
 
-test("a run whose spec module or mapping import changes while it runs leaves the output folder", () => {
-  const dir = mkdtempSync(join(tmpdir(), "statechart-"));
+// A stand-in for TLC: it writes a one-state graph, finishes clean, and edits $EDIT when it is
+// set, as a user who edits a file while a long run reads it.
+const standInTlc = (dir) => {
   writeFileSync(join(dir, "tla2tools.jar"), "");
-  // A stand-in for TLC: it writes a one-state graph, finishes clean, and edits $EDIT, as a user
-  // who edits a file while a long run reads it.
-  const java = join(dir, "java");
   writeFileSync(
-    java,
+    join(dir, "java"),
     `#!${process.execPath}
 const fs = require("node:fs");
 const args = process.argv.slice(2);
 const dump = args.indexOf("-dump");
 if (dump >= 0) fs.writeFileSync(args[dump + 2], '1 [label="x = 0",style = filled]\\n');
-fs.appendFileSync(process.env.EDIT, "\\n");
+if (process.env.EDIT) fs.appendFileSync(process.env.EDIT, "\\n");
 console.log("Model checking completed. No error has been found.");
 `,
     { mode: 0o755 },
   );
+  return { TLA2TOOLS: join(dir, "tla2tools.jar"), JAVA: join(dir, "java") };
+};
+
+test("a run whose spec module or mapping import changes while it runs leaves the output folder", () => {
+  const dir = mkdtempSync(join(tmpdir(), "statechart-"));
+  const tlcEnv = standInTlc(dir);
   writeFileSync(join(dir, "Pay.tla"), "---- MODULE Pay ----\nEXTENDS Naturals, PayParts\n====\n");
   writeFileSync(join(dir, "PayParts.tla"), "---- MODULE PayParts ----\n====\n");
   writeFileSync(join(dir, "Pay.cfg"), "SPECIFICATION Spec\n");
@@ -980,11 +984,7 @@ console.log("Model checking completed. No error has been found.");
   );
   writeFileSync(join(dir, "notes.md"), "");
   const run = (edit) =>
-    node("statechart.mjs", ["from-spec", "Pay.tla"], dir, {
-      TLA2TOOLS: join(dir, "tla2tools.jar"),
-      JAVA: java,
-      EDIT: join(dir, edit),
-    });
+    node("statechart.mjs", ["from-spec", "Pay.tla"], dir, { ...tlcEnv, EDIT: join(dir, edit) });
   const out = join(dir, "Pay-statechart");
   for (const edit of ["PayParts.tla", join("labels", "screens.mjs")]) {
     const r = run(edit);
@@ -1000,6 +1000,177 @@ console.log("Model checking completed. No error has been found.");
   const other = run("notes.md");
   assert.equal(other.status, 0, other.stderr);
   assert.equal(existsSync(join(out, "chart.mmd")), true);
+});
+
+test("a run with --against leaves the output folder when a config beside the spec changes", () => {
+  const dir = mkdtempSync(join(tmpdir(), "statechart-"));
+  const tlcEnv = standInTlc(dir);
+  writeFileSync(join(dir, "Pay.tla"), "---- MODULE Pay ----\n====\n");
+  writeFileSync(join(dir, "Pay.cfg"), "SPECIFICATION Spec\n");
+  writeFileSync(join(dir, "Pay.map.mjs"), 'export const state = () => "Cart";\n');
+  mkdirSync(join(dir, "spec"));
+  writeFileSync(join(dir, "spec", "PayAgreed.tla"), "---- MODULE PayAgreed ----\n====\n");
+  writeFileSync(join(dir, "spec", "PayAgreed.cfg"), "SPECIFICATION Spec\n");
+  writeFileSync(join(dir, "spec", "PayRetry.cfg"), "SPECIFICATION Spec\n");
+  writeFileSync(join(dir, "notes.md"), "");
+  // A config that appears just after the run lists the folder, and is still being written.
+  writeFileSync(
+    join(dir, "late-config.cjs"),
+    `const fs = require("node:fs");
+const path = require("node:path");
+const { readdirSync } = fs;
+let done = false;
+fs.readdirSync = (dir, ...rest) => {
+  const names = readdirSync(dir, ...rest);
+  if (!done && path.basename(String(dir)) === "spec") {
+    done = true;
+    fs.writeFileSync(path.join(dir, "PayLate.cfg"), "SPECIFICATION Spec\\n");
+  }
+  return names;
+};
+`,
+  );
+  const run = (edit, env = {}) =>
+    node("statechart.mjs", ["from-spec", "Pay.tla", "--against", "spec/PayAgreed.tla"], dir, {
+      ...tlcEnv,
+      ...env,
+      EDIT: join(dir, edit),
+    });
+  // An edited config, a new one, and one that appears after the listing change which configs
+  // list a bug.
+  const late = { NODE_OPTIONS: `--require ${join(dir, "late-config.cjs")}` };
+  for (const [edit, changed, env] of [
+    [join("spec", "PayRetry.cfg"), join("spec", "PayRetry.cfg")],
+    [join("spec", "PayNew.cfg"), "spec"],
+    [join("spec", "PayLate.cfg"), "spec", late],
+  ]) {
+    const r = run(edit, env);
+    assert.equal(r.status, 2, r.stderr);
+    assert.ok(r.stderr.startsWith(`${changed} changed while this run read it`), r.stderr);
+    assert.equal(existsSync(join(dir, "Pay-statechart")), false);
+  }
+  const other = run("notes.md");
+  assert.equal(other.status, 0, other.stderr);
+});
+
+test("a fix whose config skips a PROPERTY, or checks an INVARIANT only as a PROPERTY, says so", () => {
+  const dir = mkdtempSync(join(tmpdir(), "statechart-"));
+  const tlcEnv = standInTlc(dir);
+  for (const name of ["Pay", "PayFixed"])
+    writeFileSync(join(dir, `${name}.tla`), `---- MODULE ${name} ----\n====\n`);
+  writeFileSync(join(dir, "Pay.cfg"), "SPECIFICATION Spec\nINVARIANT Paid\nPROPERTY Settles\n");
+  writeFileSync(join(dir, "Pay.map.mjs"), 'export const state = () => "Cart";\n');
+  // A PROPERTY that is a state predicate holds only in the initial states, so it does not stand in
+  // for an INVARIANT, while an INVARIANT does stand in for a PROPERTY.
+  for (const [fixed, unchecked] of [
+    ["INVARIANT Paid\n", "Settles"],
+    ["PROPERTY Paid\nINVARIANT Settles\n", "Paid"],
+  ]) {
+    writeFileSync(join(dir, "PayFixed.cfg"), `SPECIFICATION Spec\n${fixed}`);
+    const args = ["from-spec", "Pay.tla", "--fixed", "PayFixed.tla"];
+    const r = node("statechart.mjs", args, dir, tlcEnv);
+    assert.equal(r.status, 0, r.stderr);
+    const warning = `PayFixed.cfg does not check ${unchecked}, so the stories cannot say whether PayFixed.tla keeps it.`;
+    assert.deepEqual(
+      r.stderr.split("\n").filter((l) => l.includes("does not check")),
+      [warning],
+    );
+  }
+});
+
+test("the mapping scaffold lists the actions of a module whose definitions are indented", () => {
+  const module = (indent) =>
+    `---- MODULE Pay ----
+EXTENDS Naturals
+VARIABLES screen, charges
+Init == screen = "Cart" /\\ charges = 0
+Pay == screen = "Cart"
+       /\\ screen' = "Paying"
+       /\\ UNCHANGED charges
+Charge ==
+  LET amount == 1
+      fee == 0
+  IN /\\ charges' = charges + amount + fee
+     /\\ UNCHANGED screen
+Spec == Init /\\ [][Pay \\/ Charge]_<<screen, charges>>
+====
+`.replace(/\n(?!=)/g, `\n${indent}`);
+  for (const indent of ["", "  "]) {
+    const dir = mkdtempSync(join(tmpdir(), "statechart-"));
+    writeFileSync(join(dir, "Pay.tla"), module(indent));
+    writeFileSync(join(dir, "Pay.cfg"), "SPECIFICATION Spec\n");
+    const r = node("statechart.mjs", ["from-spec", "Pay.tla"], dir, noTlc);
+    assert.equal(r.status, 2, r.stderr);
+    const map = readFileSync(join(dir, "Pay.map.mjs"), "utf8");
+    const steps = /const STEPS = \{\n([^}]*)\}/.exec(map)[1];
+    const actions = [...steps.matchAll(/^\t(\w+):/gm)].map((m) => m[1]);
+    assert.deepEqual(actions, ["Charge", "Pay"], indent);
+  }
+});
+
+// Makes renames into Pay-statechart fail as on a FUSE mount, and lets "another run" fill the
+// folder after the run checked it ($RACE=checked), fill it while the run copies ($RACE=copying),
+// or move it aside and put its own folder there while the run copies ($RACE=replaced). The other
+// run's folder has notes.md and its own copy of each name it shares with this run.
+const renameFails = `const fs = require("node:fs");
+const path = require("node:path");
+const target = (p) => path.basename(String(p)) === "Pay-statechart";
+const { renameSync, existsSync, copyFileSync } = fs;
+let raced = false;
+const race = (out, ...names) => {
+  raced = true;
+  fs.mkdirSync(out, { recursive: true });
+  fs.writeFileSync(path.join(out, "notes.md"), "mine\\n");
+  for (const name of names) fs.writeFileSync(path.join(out, name), "theirs\\n");
+};
+fs.renameSync = (from, to) => {
+  if (!target(to)) return renameSync(from, to);
+  throw Object.assign(new Error("EXDEV: cross-device link not permitted"), { code: "EXDEV" });
+};
+fs.existsSync = (p) => {
+  const there = existsSync(p);
+  if (process.env.RACE === "checked" && !raced && target(p)) race(p, "chart.mmd");
+  return there;
+};
+const copied = [];
+fs.copyFileSync = (from, to, mode) => {
+  const out = path.dirname(to);
+  if (!raced && target(out) && copied.push(path.basename(to)) === 2) {
+    if (process.env.RACE === "copying") race(out, path.basename(to));
+    if (process.env.RACE === "replaced") {
+      renameSync(out, out + "-moved");
+      race(out, ...copied);
+    }
+  }
+  return copyFileSync(from, to, mode);
+};
+`;
+
+test("a copy into place on a filesystem that cannot rename keeps files that another run put there", () => {
+  const dir = mkdtempSync(join(tmpdir(), "statechart-"));
+  const tlcEnv = standInTlc(dir);
+  writeFileSync(join(dir, "Pay.tla"), "---- MODULE Pay ----\n====\n");
+  writeFileSync(join(dir, "Pay.cfg"), "SPECIFICATION Spec\n");
+  writeFileSync(join(dir, "Pay.map.mjs"), 'export const state = () => "Cart";\n');
+  writeFileSync(join(dir, "rename-fails.cjs"), renameFails);
+  const out = join(dir, "Pay-statechart");
+  for (const [race, shared] of [
+    ["checked", 1],
+    ["copying", 1],
+    ["replaced", 2],
+  ]) {
+    rmSync(out, { recursive: true, force: true });
+    const r = node("statechart.mjs", ["from-spec", "Pay.tla"], dir, {
+      ...tlcEnv,
+      NODE_OPTIONS: `--require ${join(dir, "rename-fails.cjs")}`,
+      RACE: race,
+    });
+    assert.equal(r.status, 2, `${race}: ${r.stderr}`);
+    const theirs = readdirSync(out).filter((f) => f !== "notes.md");
+    assert.equal(theirs.length, shared, `${race}: ${theirs}`);
+    assert.equal(readFileSync(join(out, "notes.md"), "utf8"), "mine\n", race);
+    for (const f of theirs) assert.equal(readFileSync(join(out, f), "utf8"), "theirs\n", race);
+  }
 });
 
 test("statechart.mjs exits 2 and names a helper script that cannot start", () => {
