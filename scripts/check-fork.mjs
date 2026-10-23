@@ -114,6 +114,27 @@ export const REQUIRED = [
     section: "upstream-behavior-retained",
   },
   {
+    id: "statechart-tlc-folder",
+    file: "skills/statechart/scripts/statechart.mjs",
+    pattern: /others\(path\.join\(dir, "tlc"\), OWN_TLC\)/,
+    hint: "the output folder check reads inside tlc/, so a run never replaces a user's file there",
+    section: "upstream-behavior-retained",
+  },
+  {
+    id: "statechart-input-imports",
+    file: "skills/statechart/scripts/statechart.mjs",
+    pattern: /snapshot\(reads\(f\), inputs\)/,
+    hint: "the input snapshot covers a spec's local EXTENDS and INSTANCE modules and a mapping's relative imports",
+    section: "upstream-behavior-retained",
+  },
+  {
+    id: "statechart-string-escapes",
+    file: "skills/statechart/scripts/lib.mjs",
+    pattern: /const ESCAPED = \{ n: "\\n", t: "\\t", r: "\\r", f: "\\f" \};/,
+    hint: "parseValue decodes TLA string escapes, so \"\\n\" and \"n\" stay different states",
+    section: "upstream-behavior-retained",
+  },
+  {
     id: "xagent-skill",
     file: "skills/xagent/SKILL.md",
     hint: "the xagent skill is a local addition with no upstream counterpart",
