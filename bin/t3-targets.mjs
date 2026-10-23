@@ -6,6 +6,8 @@ const EFFORT_ORDER = ["low", "medium", "high", "xhigh", "max"];
 const FAMILY = /^(claude|gpt|gemini|grok)-/;
 // Its worker must differ in family from the work it checks, which the parent provider's default cannot ensure.
 const CROSS_FAMILY_ROLE = "verification workers";
+// The drivers whose current models orchestrator_capabilities always lists in full, per its description.
+const FULLY_LISTED_DRIVERS = new Set(["codex", "claudeAgent", "muse", "grok"]);
 
 function familyOf(modelId) {
   if (typeof modelId !== "string") return null;
@@ -72,23 +74,47 @@ function modelFor(catalog, providerId, modelId, allowLatest) {
   if (providerId !== catalog.inheritedProviderInstanceId && provider.canRunCrossProviderChildTask !== true) {
     throw new Error(`${label}: cross-provider child tasks are unavailable${constraints ? `: ${constraints}` : ""}`);
   }
-  return allowLatest && modelId.endsWith("@latest")
-    ? latestModel(provider.models, modelId, label)
-    : unique(provider.models, m => m?.id === modelId, label);
+  // Since T3 0.1.2 a provider lists a short list, and omittedModels counts the rest, which only a
+  // search lists.
+  const omitted = provider.omittedModels ?? 0;
+  if (allowLatest && modelId.endsWith("@latest")) {
+    if (omitted > 0 && provider.driverKind !== undefined && !FULLY_LISTED_DRIVERS.has(provider.driverKind)) {
+      throw new Error(`${label}: T3 lists only part of ${providerId}'s models (${omitted} omitted), so @latest cannot see every release; use an exact model ID`);
+    }
+    return latestModel(provider.models, modelId, label);
+  }
+  if (omitted > 0 && !(provider.models ?? []).some(m => m?.id === modelId)) {
+    throw new Error(`${label}: not among the models T3 listed, and ${omitted} more are omitted; call orchestrator_capabilities with search for this model and pass that result as another --catalog`);
+  }
+  return unique(provider.models, m => m?.id === modelId, label);
+}
+
+// The values of a select option: T3 0.1.0 lists {type: "select", options: [{id}]}, and 0.1.2 lists
+// {values}, where a boolean option has [false, true]. null for any option that is not a select.
+function selectChoices(option) {
+  if (option?.type === "select") return (option.options ?? []).map(o => o.id);
+  if (option?.type === undefined && Array.isArray(option?.values) && option.values.every(v => typeof v === "string")) {
+    return option.values;
+  }
+  return null;
+}
+
+// The model's one effort control as {id, choices}, or null when it has none.
+function effortControl(model, label) {
+  const controls = (model.options ?? []).filter(o => EFFORT_IDS.has(o?.id) && selectChoices(o) !== null);
+  if (controls.length > 1) throw new Error(`${label}: ambiguous effort controls in T3 catalog`);
+  return controls.length ? { id: controls[0].id, choices: selectChoices(controls[0]) } : null;
 }
 
 function effortFor(model, requested, label) {
   const result = { requested, sent: null, option: null };
   if (requested === null) return { effort: result, warnings: [] };
-  const controls = (model.options ?? []).filter(o => o?.type === "select" && EFFORT_IDS.has(o.id));
-  if (controls.length > 1) throw new Error(`${label}: ambiguous effort controls in T3 catalog`);
-  if (!controls.length) {
+  const control = effortControl(model, label);
+  if (!control) {
     return { effort: result, warnings: [`${label}: no effort control; requested ${requested} is not sent, so the runtime default or inherited setting applies`] };
   }
-  const control = controls[0];
-  const choices = (control.options ?? []).map(o => o.id);
-  if (!choices.includes(requested)) {
-    throw new Error(`${label}: effort ${requested} is not offered by ${control.id}; choose ${choices.join(", ") || "a supported value"}`);
+  if (!control.choices.includes(requested)) {
+    throw new Error(`${label}: effort ${requested} is not offered by ${control.id}; choose ${control.choices.join(", ") || "a supported value"}`);
   }
   return { effort: { requested, sent: requested, option: control.id }, warnings: [] };
 }
@@ -112,23 +138,64 @@ function workerFor(entry, catalog, requestedEffort, effortCaps) {
   const providerId = inherited ? catalog.inheritedProviderInstanceId : entry.slice(0, slash);
   const modelId = inherited ? catalog.inheritedModel : entry.slice(slash + 1);
   const model = modelFor(catalog, providerId, modelId, !inherited);
+  const label = `${providerId}/${model.id}`;
   if (inherited) {
-    // T3 replaces target.options; catalog control defaults are not parent selections.
-    return {
+    const parent = {
       entry, transport: "t3", target: null,
       resolved: { providerInstanceId: providerId, model: model.id }, family: familyOf(model.id),
-      effort: { requested: requestedEffort, sent: null, option: null },
-      warnings: requestedEffort === null ? [] : [
-        `${providerId}/${model.id}: requested effort ${requestedEffort} is not sent to preserve all parent model options; choose an explicit model target to set effort independently`,
-      ],
+    };
+    const unsent = { requested: requestedEffort, sent: null, option: null };
+    if (requestedEffort === null) return { ...parent, effort: unsent, warnings: [] };
+    // T3 0.1.0 replaced the parent's whole option set with target.options. From 0.1.1 the catalog
+    // lists inheritedOptions, and options sent for the parent's own provider and model override
+    // only the values they name, so effort alone can change.
+    if (!Array.isArray(catalog.inheritedOptions)) {
+      return { ...parent, effort: unsent, warnings: [`${label}: requested effort ${requestedEffort} is not sent to preserve all parent model options; choose an explicit model target to set effort independently`] };
+    }
+    const control = effortControl(model, label);
+    if (!control?.choices.includes(requestedEffort)) {
+      return { ...parent, effort: unsent, warnings: [`${label}: the parent model does not offer effort ${requestedEffort}, so the parent's own setting applies`] };
+    }
+    return {
+      ...parent,
+      target: { providerInstanceId: providerId, model: model.id, options: { [control.id]: requestedEffort } },
+      effort: { requested: requestedEffort, sent: requestedEffort, option: control.id },
+      warnings: [],
     };
   }
-  const { effort, warnings } = effortFor(model, requestedEffort, `${providerId}/${model.id}`);
+  const { effort, warnings } = effortFor(model, requestedEffort, label);
   const target = { providerInstanceId: providerId, model: model.id };
   if (effort.sent !== null) target.options = { [effort.option]: effort.sent };
   return {
     entry, transport: "t3", target,
     resolved: { providerInstanceId: providerId, model: model.id }, family: familyOf(model.id), effort, warnings,
+  };
+}
+
+/**
+ * One catalog from this thread's orchestrator_capabilities results: the default listing first, then
+ * any search results, whose models join their provider's list. Every result must come from the
+ * same thread, so a search cannot change the parent.
+ * @param {object[]} catalogs Raw structured results, default listing first.
+ * @returns {object} The default listing with the searched models added.
+ */
+export function mergeT3Catalogs([listing, ...searches]) {
+  const same = ["parentThreadId", "inheritedProviderInstanceId", "inheritedModel"];
+  for (const search of searches) {
+    const differs = same.find(key => search?.[key] !== listing?.[key]);
+    if (differs !== undefined) throw new Error(`each --catalog must come from the same thread; ${differs} differs`);
+  }
+  if (!searches.length || !Array.isArray(listing?.providers)) return listing;
+  return {
+    ...listing,
+    providers: listing.providers.map(provider => {
+      const models = [...(provider?.models ?? [])];
+      for (const search of searches) {
+        const found = (search.providers ?? []).find(p => p?.providerInstanceId === provider?.providerInstanceId);
+        for (const model of found?.models ?? []) if (!models.some(m => m?.id === model?.id)) models.push(model);
+      }
+      return { ...provider, models };
+    }),
   };
 }
 

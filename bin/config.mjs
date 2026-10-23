@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { resolveT3Targets } from "./t3-targets.mjs";
+import { mergeT3Catalogs, resolveT3Targets } from "./t3-targets.mjs";
 
 const HOSTS = ["codex", "claude"];
 // T3 Code orchestrates over a Codex or Claude host; its section is optional so existing files stay valid.
@@ -360,17 +360,17 @@ export function showConfig({ configPath = getDefaultConfigPath(), host } = {}) {
   };
 }
 
-function parseOptions(args, allowed) {
+function parseOptions(args, allowed, repeatable = new Set()) {
   const values = {};
   for (let i = 0; i < args.length; i += 1) {
     const flag = args[i];
     if (!flag.startsWith("--")) throw new Error(`Unexpected argument: ${flag}`);
     const key = flag.slice(2);
     if (!allowed.has(key)) throw new Error(`Unknown option: ${flag}`);
-    if (Object.hasOwn(values, key)) throw new Error(`Option ${flag} may only be provided once`);
+    if (Object.hasOwn(values, key) && !repeatable.has(key)) throw new Error(`Option ${flag} may only be provided once`);
     const value = args[i + 1];
     if (value === undefined || value.startsWith("--")) throw new Error(`Option ${flag} requires a value`);
-    values[key] = value;
+    values[key] = repeatable.has(key) ? [...(values[key] ?? []), value] : value;
     i += 1;
   }
   return values;
@@ -388,14 +388,20 @@ function printJson(value) {
 function runCli(args) {
   const [command, ...rest] = args;
   if (command === "resolve") {
-    const options = parseOptions(rest, new Set(["host", "config", "catalog", "role", "panel", "effort", "provider", "checked"]));
+    const options = parseOptions(
+      rest,
+      new Set(["host", "config", "catalog", "role", "panel", "effort", "provider", "checked"]),
+      new Set(["catalog"]),
+    );
     if (options.host !== T3) throw new Error("resolve requires --host t3");
     if (!options.catalog) throw new Error("resolve requires --catalog JSON-file from orchestrator_capabilities");
     if (options.effort !== undefined && !REASONING_EFFORTS.has(options.effort)) {
       throw new Error(`effort must be one of ${[...REASONING_EFFORTS].join(", ")}`);
     }
     const shown = showConfig({ host: T3, configPath: options.config ?? getDefaultConfigPath() });
-    const catalog = parseJson(readFileSync(path.resolve(options.catalog), "utf8"), `Catalog ${options.catalog}`);
+    const catalog = mergeT3Catalogs(
+      options.catalog.map(file => parseJson(readFileSync(path.resolve(file), "utf8"), `Catalog ${file}`)),
+    );
     const plan = resolveT3Targets(shown.effective, catalog, options);
     printJson({ path: shown.path, host: T3, ...plan });
     return;
@@ -418,7 +424,7 @@ function runCli(args) {
     printJson(updateConfig({ host: options.host, patch, configPath: options.config ?? getDefaultConfigPath() }));
     return;
   }
-  throw new Error("Usage: config.mjs show --host codex|claude|t3|antigravity [--config path] | resolve --host t3 --catalog JSON-file (--role name | --panel name) [--effort level] [--provider candidate-provider | --checked entry-or-model] [--config path] | init [--config path] | update [--host codex|claude|t3] --input JSON-file [--config path]");
+  throw new Error("Usage: config.mjs show --host codex|claude|t3|antigravity [--config path] | resolve --host t3 --catalog JSON-file [--catalog search-JSON-file]... (--role name | --panel name) [--effort level] [--provider candidate-provider | --checked entry-or-model] [--config path] | init [--config path] | update [--host codex|claude|t3] --input JSON-file [--config path]");
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

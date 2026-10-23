@@ -32,11 +32,16 @@ function fixture(t) {
         models: [{ id: "route/vendor/model", options: [select("thinking", ["low", "high"])] }] },
     ],
   };
-  function run(args = [], { absent = false } = {}) {
+  function run(args = [], { absent = false, searches = [] } = {}) {
     if (!absent) writeFileSync(configPath, JSON.stringify(config));
     writeFileSync(catalogPath, JSON.stringify(catalog));
+    const searchArgs = searches.flatMap((search, i) => {
+      const file = path.join(dir, `search-${i}.json`);
+      writeFileSync(file, JSON.stringify(search));
+      return ["--catalog", file];
+    });
     const before = existsSync(configPath) ? readFileSync(configPath, "utf8") : null;
-    const result = spawnSync(process.execPath, [cli, "resolve", "--host", "t3", "--config", configPath, "--catalog", catalogPath, ...args], { encoding: "utf8" });
+    const result = spawnSync(process.execPath, [cli, "resolve", "--host", "t3", "--config", configPath, "--catalog", catalogPath, ...searchArgs, ...args], { encoding: "utf8" });
     assert.equal(existsSync(configPath) ? readFileSync(configPath, "utf8") : null, before);
     return result;
   }
@@ -415,4 +420,87 @@ test("Given an auxiliary external member, When panels and roles resolve, Then on
   assert.deepEqual(f.resolved(["--panel", "unconfigured"]).workers.map(w => w.auxiliary), [false, false, true]);
   f.config.hosts.t3.roles.feature = "xagent:gemini";
   assert.equal(f.resolved(["--role", "feature"]).workers[0].auxiliary, false);
+});
+
+// T3 0.1.2 lists each model option as {id, values, default}, a boolean one with [false, true], lists
+// the parent's own option values as inheritedOptions, and lists a short list per provider with
+// omittedModels counting the rest.
+function currentFixture(t) {
+  const f = fixture(t);
+  const effortValues = (id, values) => ({ id, values, default: values.at(-1) });
+  const models = ["ordinary", "parent"].map(id => ({
+    id, options: [effortValues("reasoningEffort", ["low", "high"]), { id: "fastMode", values: [false, true], default: false }],
+  }));
+  Object.assign(f.catalog, { parentThreadId: "thread-1", inheritedOptions: [{ id: "fastMode", value: true }] });
+  f.catalog.providers[0] = { ...f.catalog.providers[0], driverKind: "codex", models };
+  f.catalog.providers[1] = { ...f.catalog.providers[1], driverKind: "opencode", omittedModels: 3,
+    models: [{ id: "strong", options: [effortValues("effort", ["medium", "high", "xhigh"])] }] };
+  f.catalog.providers[2].models[0].options = [{ id: "thinking", values: [false, true] }];
+  return f;
+}
+
+test("Given a T3 0.1.2 catalog, When effort is mapped, Then {values} controls carry it and a boolean option never does", t => {
+  const f = currentFixture(t);
+  assert.deepEqual(f.resolved(["--role", "feature"]).workers[0].target,
+    { providerInstanceId: "code", model: "ordinary", options: { reasoningEffort: "high" } });
+  assert.deepEqual(f.resolved(["--role", "hardest tasks", "--effort", "xhigh"]).workers[0].target,
+    { providerInstanceId: "judge", model: "strong", options: { effort: "xhigh" } });
+  const refused = f.run(["--role", "feature", "--effort", "xhigh"]);
+  assert.notEqual(refused.status, 0);
+  assert.match(refused.stderr, /effort xhigh is not offered by reasoningEffort; choose low, high/);
+  f.config.hosts.t3.roles.feature = "custom/route/vendor/model";
+  const boolean = f.resolved(["--role", "feature"]).workers[0];
+  assert.deepEqual(boolean.target, { providerInstanceId: "custom", model: "route/vendor/model" });
+  assert.equal(boolean.effort.sent, null);
+  assert.match(boolean.warnings.join(" "), /no effort control/);
+});
+
+test("Given a T3 0.1.1 or later catalog, When an inherited role requests effort, Then only effort overrides the parent's options", t => {
+  const f = currentFixture(t);
+  f.config.hosts.t3.roles.feature = "inherit-parent";
+  const worker = f.resolved(["--role", "feature"]).workers[0];
+  // The parent's other values, such as fastMode, stay as they are: T3 overrides only the values sent.
+  assert.deepEqual(worker.target, { providerInstanceId: "code", model: "parent", options: { reasoningEffort: "high" } });
+  assert.deepEqual(worker.effort, { requested: "high", sent: "high", option: "reasoningEffort" });
+  assert.deepEqual(worker.warnings, []);
+  const unoffered = f.resolved(["--role", "feature", "--effort", "xhigh"]).workers[0];
+  assert.equal(unoffered.target, null);
+  assert.equal(unoffered.effort.sent, null);
+  assert.match(unoffered.warnings.join(" "), /parent model does not offer effort xhigh.*parent's own setting/);
+  delete f.config.hosts.t3.reasoning_effort;
+  const none = f.resolved(["--role", "feature"]).workers[0];
+  assert.equal(none.target, null);
+  assert.deepEqual(none.warnings, []);
+});
+
+test("Given a short listing, When a target is omitted, Then the preview asks for a search, and a search from this thread adds it", t => {
+  const f = currentFixture(t);
+  f.config.hosts.t3.roles.feature = "judge/legacy";
+  const omitted = f.run(["--role", "feature"]);
+  assert.notEqual(omitted.status, 0);
+  assert.match(omitted.stderr, /judge\/legacy: not among the models T3 listed, and 3 more are omitted; call orchestrator_capabilities with search/);
+  const search = {
+    ...f.catalog, providers: [{ ...f.catalog.providers[1], models: [{ id: "legacy" }], omittedModels: undefined }],
+  };
+  assert.deepEqual(f.resolved(["--role", "feature"], { searches: [search] }).workers[0].target,
+    { providerInstanceId: "judge", model: "legacy" });
+  const elsewhere = f.run(["--role", "feature"], { searches: [{ ...search, parentThreadId: "thread-2" }] });
+  assert.notEqual(elsewhere.status, 0);
+  assert.match(elsewhere.stderr, /same thread; parentThreadId differs/);
+  const single = f.run(["--role", "feature", "--role", "feature"]);
+  assert.match(single.stderr, /--role may only be provided once/);
+});
+
+test("Given a provider listed only in part, When @latest is used, Then it fails, while a fully listed driver still resolves", t => {
+  const f = currentFixture(t);
+  f.catalog.providers[1].models.push({ id: "claude-opus-5-5" });
+  f.config.hosts.t3.roles.feature = "judge/claude-opus@latest";
+  const partial = f.run(["--role", "feature"]);
+  assert.notEqual(partial.status, 0);
+  assert.match(partial.stderr, /only part of judge's models \(3 omitted\).*exact model ID/);
+  // Codex and Claude list every current model; omittedModels then counts only legacy ones.
+  f.catalog.providers[0].omittedModels = 4;
+  f.catalog.providers[0].models.push({ id: "gpt-6.1-sol" }, { id: "gpt-6.2-sol" });
+  f.config.hosts.t3.roles.feature = "code/gpt-sol@latest";
+  assert.equal(f.resolved(["--role", "feature"]).workers[0].target.model, "gpt-6.2-sol");
 });
