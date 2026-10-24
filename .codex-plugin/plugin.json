@@ -9,7 +9,7 @@
   "interface": {
     "displayName": "pstack \u00b7 shared workflows",
     "shortDescription": "Verified engineering workflows and goal-driven execution.",
-    "longDescription": "One shared set of 58 skills and 23 playbooks for Codex and Claude Code, with a common configuration and thin runtime adapters.",
+    "longDescription": "One shared set of 59 skills and 23 playbooks for Codex and Claude Code, with a common configuration and thin runtime adapters.",
     "developerName": "Local adaptation of Lauren Tan / pstack",
     "category": "Productivity",
     "capabilities": [],
