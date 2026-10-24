@@ -160,6 +160,8 @@ const DROPPED = [
   ["statechart-no-tlc-download", "skills/statechart/scripts/tlc-tools.mjs", "if (!installAllowed())", ""],
   ["statechart-no-renderer-download", "skills/statechart/scripts/render.mjs", "if (!installAllowed())", ""],
   ["statechart-absolute-tools", "skills/statechart/scripts/tlc-tools.mjs", "[set.JAVA, set.TLA2TOOLS].map((file) => file && path.resolve(file))", "[set.JAVA, set.TLA2TOOLS]"],
+  ["statechart-map-snapshot", "skills/statechart/scripts/statechart.mjs", '  from.push("--snapshot", inputs.root);', ""],
+  ["statechart-map-snapshot-script", "skills/statechart/scripts/tlc-to-chart.mjs", "if (args.snapshot) loadFromSnapshot(args.snapshot);", ""],
   ["statechart-tlc-folder", "skills/statechart/scripts/statechart.mjs", 'const OWN_FOLDERS = { tlc: OWN_TLC, "tlc/fixed": OWN_TLC, "tlc/against": OWN_TLC };', "const OWN_FOLDERS = {};"],
   ["statechart-string-escapes", "skills/statechart/scripts/lib.mjs", 'const ESCAPED = { n: "\\n", t: "\\t", r: "\\r", f: "\\f" };', "const ESCAPED = {};"],
   ["statechart-copy-own-files", "skills/statechart/scripts/statechart.mjs", "if (identity(file, folder) !== id) continue;", ""],

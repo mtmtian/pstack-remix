@@ -18,7 +18,7 @@ import {
 import { loopSentence, readerStateNamer, repeatsIn } from "./property-loop.mjs";
 import { loadRenderer, renderPng, THEMES } from "./render.mjs";
 import { ruleBook } from "./rule-book.mjs";
-import { Inputs } from "./snapshot.mjs";
+import { Inputs, loadFromSnapshot } from "./snapshot.mjs";
 import { RULES_INVARIANT, SCAFFOLD, withoutComments, writeRulesModule } from "./spec-text.mjs";
 import { cannotRunTlc, findTlc } from "./tlc-tools.mjs";
 
@@ -366,7 +366,7 @@ function rulesAsExpected(now, other, expected) {
   return !unexpected.length && !holds.length;
 }
 
-async function draw({ now, other, uncited, map, work, out, title, comparing, cover }) {
+async function draw({ now, other, uncited, map, inputs, work, out, title, comparing, cover }) {
   const huge = [now, other].find((m) => m?.dotBytes > MAX_STRING_LENGTH);
   const limit = MAX_STRING_LENGTH.toLocaleString("en-US");
   if (huge)
@@ -374,8 +374,11 @@ async function draw({ now, other, uncited, map, work, out, title, comparing, cov
       `${rel(huge.spec)}: TLC's state graph ${huge.stopped ? `passed ${limit} bytes, the most that the command can read, so the command stopped TLC and draws no chart` : `has ${huge.dotBytes.toLocaleString("en-US")} bytes, more than the ${limit} that the command can read, so it draws no chart`}. The rule results above stand. Smaller constants make a smaller graph.`,
     );
   const shown = published(work, out);
+  // The charts read the map and the files it imports from the snapshot, as TLC reads the spec.
+  loadFromSnapshot(inputs.root);
   const mapping = await import(pathToFileURL(path.resolve(map)).href);
   const from = ["--dot", now.dot, "--broken", now.dumpOut, "--map", map, "--spec", now.copy];
+  from.push("--snapshot", inputs.root);
   for (const m of [now, other]) if (m?.next) from.push("--next", m.next);
   from.push(...now.traces.flatMap((t) => ["--traces", t.file]));
   if (other) {
@@ -890,7 +893,7 @@ async function fromSpec(input, { "expect-broken": expected, title, cover, ...fla
       if (second.role === "against") warnUnlisted(now, other);
       uncited = warnUncited(second.role === "fixed" ? [now, other] : [now]);
     }
-    const drawn = await draw({ now, other, uncited, map, work, out, title, cover });
+    const drawn = await draw({ now, other, uncited, map, inputs, work, out, title, cover });
     return finish({ work, out, inputs }, drawn, rulesAsExpected(now, other, expected), renderer);
   });
 }
@@ -918,7 +921,7 @@ async function fromChart(input, { "expect-broken": expected, ...flags }, rendere
   const out = outDir(flags.out, input, name);
   return inWorkFolder(async (work) => {
     const now = await check(tools, model, { work, out }, expected);
-    const drawn = await draw({ now, map, work, out, title: flags.title, comparing: true });
+    const drawn = await draw({ now, map, inputs, work, out, title: flags.title, comparing: true });
     const compared = script(
       "compare-charts.mjs",
       [inputs.copyOf(input), drawn.files.overview],

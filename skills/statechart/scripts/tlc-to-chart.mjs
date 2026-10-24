@@ -39,12 +39,14 @@ import { mapView } from "./map-view.mjs";
 import { stepsIntoBugs, waysLine } from "./ways-in.mjs";
 import { divergence, replaySecond } from "./second-replay.mjs";
 import { readCheck } from "./read-check.mjs";
+import { loadFromSnapshot } from "./snapshot.mjs";
 
 const role = args.fixedDot ? "fix" : args.againstDot ? "against" : null;
 const L = args.label ?? (role === "fix" ? "the fix" : "the spec");
 const within = role === "fix" ? "with" : "in";
 const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 
+if (args.snapshot) loadFromSnapshot(args.snapshot);
 const mapping = await import(pathToFileURL(path.resolve(args.map)).href);
 if (typeof mapping.state !== "function")
   throw new Error("the mapping module must export state(vars)");

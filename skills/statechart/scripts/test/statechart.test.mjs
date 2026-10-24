@@ -1629,6 +1629,62 @@ test("JAVA and TLA2TOOLS relative to where the command runs still name TLC insid
   assert.equal(existsSync(join(dir, "Pay-statechart", "chart.mmd")), true);
 });
 
+test("the charts read the map's snapshot, so a map edited and restored while they draw changes no label", () => {
+  const dir = mkdtempSync(join(tmpdir(), "statechart-"));
+  const tlcEnv = standInTlc(dir);
+  writeFileSync(join(dir, "Pay.tla"), "---- MODULE Pay ----\n====\n");
+  writeFileSync(join(dir, "Pay.cfg"), "SPECIFICATION Spec\n");
+  const map = join(dir, "Pay.map.mjs");
+  writeFileSync(map, 'export const state = () => "Original";\n');
+  // Edits the map just before the first chart script starts and restores it once that script ends.
+  writeFileSync(
+    join(dir, "edit-while-drawing.cjs"),
+    `const cp = require("node:child_process");
+const fs = require("node:fs");
+const { spawnSync } = cp;
+let done = false;
+cp.spawnSync = (command, args, options) => {
+  if (done || !String(args?.[0]).endsWith("tlc-to-chart.mjs")) return spawnSync(command, args, options);
+  done = true;
+  const before = fs.readFileSync(process.env.MAP);
+  fs.writeFileSync(process.env.MAP, 'export const state = () => "Changed";\\n');
+  try {
+    return spawnSync(command, args, options);
+  } finally {
+    fs.writeFileSync(process.env.MAP, before);
+  }
+};
+`,
+  );
+  const r = node("statechart.mjs", ["from-spec", "Pay.tla"], dir, {
+    ...tlcEnv,
+    MAP: map,
+    NODE_OPTIONS: `--require ${join(dir, "edit-while-drawing.cjs")}`,
+  });
+  assert.equal(r.status, 0, r.stderr);
+  const chart = readFileSync(join(dir, "Pay-statechart", "chart.mmd"), "utf8");
+  assert.match(chart, /Original/);
+  assert.doesNotMatch(chart, /Changed/);
+});
+
+test("a map that imports a package by name still loads while the charts read its snapshot", () => {
+  const dir = mkdtempSync(join(tmpdir(), "statechart-"));
+  const tlcEnv = standInTlc(dir);
+  writeFileSync(join(dir, "Pay.tla"), "---- MODULE Pay ----\n====\n");
+  writeFileSync(join(dir, "Pay.cfg"), "SPECIFICATION Spec\n");
+  const pkg = join(dir, "node_modules", "screen-names");
+  mkdirSync(pkg, { recursive: true });
+  writeFileSync(join(pkg, "package.json"), '{ "type": "module", "exports": "./index.js" }\n');
+  writeFileSync(join(pkg, "index.js"), 'export const cart = "Cart";\n');
+  writeFileSync(
+    join(dir, "Pay.map.mjs"),
+    'import { cart } from "screen-names";\nexport const state = () => cart;\n',
+  );
+  const r = node("statechart.mjs", ["from-spec", "Pay.tla"], dir, tlcEnv);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(readFileSync(join(dir, "Pay-statechart", "chart.mmd"), "utf8"), /state "Cart"/);
+});
+
 test("a run whose spec module or mapping import changes while it runs leaves the output folder", () => {
   const dir = mkdtempSync(join(tmpdir(), "statechart-"));
   const tlcEnv = standInTlc(dir);

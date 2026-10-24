@@ -1,7 +1,9 @@
 import fs from "node:fs";
+import { registerHooks } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 
 const imports = (text, dir) =>
   [...text.matchAll(/\b(?:from|import)\s*\(?\s*["'](\.{1,2}\/[^"']+)["']/g)].map((m) =>
@@ -46,6 +48,19 @@ const specFiles = (dir) => {
   }
 };
 
+// Node still resolves each module from where it is, so package imports and package.json apply as
+// before, but takes the source of each one that the snapshot under `root` holds from its copy.
+export function loadFromSnapshot(root) {
+  registerHooks({
+    load(url, context, nextLoad) {
+      const loaded = nextLoad(url, context);
+      if (!url.startsWith("file:") || !["module", "json"].includes(loaded.format)) return loaded;
+      const copy = copyPath(root, fileURLToPath(url));
+      return fs.existsSync(copy) ? { ...loaded, source: fs.readFileSync(copy) } : loaded;
+    },
+  });
+}
+
 export class Inputs {
   #root = fs.mkdtempSync(path.join(os.tmpdir(), "statechart-inputs-"));
   #files = new Set();
@@ -58,6 +73,10 @@ export class Inputs {
   add(files) {
     for (const file of files) if (file) this.#take(path.resolve(file), true);
     return this;
+  }
+
+  get root() {
+    return this.#root;
   }
 
   copyOf(file) {

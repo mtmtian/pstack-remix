@@ -16,6 +16,7 @@ for (let i = 2; i < process.argv.length; i++) {
   const next = () => process.argv[++i];
   if (a === "--dot") args.dot = next();
   else if (a === "--map") args.map = next();
+  else if (a === "--snapshot") args.snapshot = next();
   else if (a === "--traces") args.traces.push(next());
   else if (a === "--broken") args.broken = next();
   else if (a === "--fixed-dot") args.fixedDot = next();

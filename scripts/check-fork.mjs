@@ -128,6 +128,20 @@ export const REQUIRED = [
     section: "upstream-behavior-retained",
   },
   {
+    id: "statechart-map-snapshot",
+    file: "skills/statechart/scripts/statechart.mjs",
+    pattern: /loadFromSnapshot\(inputs\.root\);[^]*from\.push\("--snapshot", inputs\.root\);/,
+    hint: "the charts load the map and its relative imports from the input snapshot",
+    section: "upstream-behavior-retained",
+  },
+  {
+    id: "statechart-map-snapshot-script",
+    file: "skills/statechart/scripts/tlc-to-chart.mjs",
+    pattern: /if \(args\.snapshot\) loadFromSnapshot\(args\.snapshot\);/,
+    hint: "each chart script loads the map from the input snapshot that statechart.mjs passes",
+    section: "upstream-behavior-retained",
+  },
+  {
     id: "statechart-tlc-folder",
     file: "skills/statechart/scripts/statechart.mjs",
     pattern: /const OWN_FOLDERS = \{ tlc: OWN_TLC, "tlc\/fixed": OWN_TLC, "tlc\/against": OWN_TLC \};/,

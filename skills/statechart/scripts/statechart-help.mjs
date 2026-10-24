@@ -296,7 +296,9 @@ TLC
   mise cannot start or fails, the command prints why, the install command, and how to set TLA2TOOLS
   and JAVA instead.
   When the command starts, it copies its input files, which Exit codes lists. TLC checks the
-  copies, so an edit during the run does not change what TLC checks.
+  copies, and the charts load the map and the files it imports from their copies, so an edit
+  during the run does not change what TLC checks or what the charts say. A package that the map
+  imports by name is not an input, and the charts load it from where it is.
   TLC checks each rule with one worker per CPU. When a rule is broken, TLC checks it again with one
   worker, which finds the shortest bug paths, the same on every run. The command then prints how
   many times TLC ran and how long that took.
