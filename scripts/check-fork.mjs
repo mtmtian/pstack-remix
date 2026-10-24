@@ -506,10 +506,8 @@ export function validateSkills(root) {
   const problems = [];
   const contract = path.join(root, "references/runtime.md");
   const skills = path.join(root, "skills");
-  const seen = new Set();
   for (const entry of readdirSync(skills, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
     if (!entry.isDirectory()) continue;
-    seen.add(entry.name);
     const file = path.join(skills, entry.name, "SKILL.md");
     const rel = relative(root, file);
     if (!existsSync(file)) {
@@ -526,7 +524,7 @@ export function validateSkills(root) {
     }
   }
   for (const name of STANDALONE) {
-    if (!seen.has(name)) problems.push(`scripts/check-fork.mjs: STANDALONE lists ${name}, which is not a skill`);
+    if (!existsSync(path.join(skills, name))) problems.push(`scripts/check-fork.mjs: STANDALONE lists ${name}, which is not a skill`);
   }
   for (const file of walk(path.join(root, "agents")).filter((name) => name.endsWith(".md"))) {
     problems.push(...frontmatterProblems(relative(root, file), readFileSync(file, "utf8"), path.basename(file, ".md")));
