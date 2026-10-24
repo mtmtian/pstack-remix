@@ -56,7 +56,7 @@ The [fork guards](./docs/ci.md#fork-guards) reject the denylisted Cursor primiti
 - **Urgency-based fast mode.** Fast mode and priority service tiers cost more and stay off unless the user asks, which also holds on T3.
 - **The Agent Plugins root manifest (#576).** Its `$schema` makes Codex load the package as an Agent Plugin, which truncates each injected skill to 8,000 bytes, and poteto-mode's `SKILL.md` is longer. The local root `plugin.json` stays the Antigravity manifest and carries no version, so upstream's version bumps stay out of it.
 - **The generated Claude Code harness (#637, #705).** Its tree, `docs/harness/claude-code.md`, and the `~/.claude/rules/pstack-models.md` model rule translate Cursor names at run time, while this fork rewrites the shared skills in host-neutral wording, resolves models through `config.json`, and lists transcripts with `bin/transcripts.mjs`. Upstream's repository-root harness and docs checks (#637, #704) sit outside the tracked path; the fork guards check local links instead.
-- **Cursor-only README and guide lines.** The Claude Code and Cursor install lines, the Custom Mode link, the built-in `/autopilot` note, the Cursor `/` menu note, the Cursor-only Benny note, and #806's auto-update note, since Claude Code reads the `pstack-local` directory marketplace in place.
+- **Cursor-only README and guide lines.** The Claude Code and Cursor install lines, the Custom Mode link, the built-in `/autopilot` note, the Cursor `/` menu note, and #806's auto-update note, since Claude Code reads the `pstack-local` directory marketplace in place.
 - **#805's transcript timing in `worktree-audit.sh`.** The local script reads no transcripts, so it runs no `stat` or `date` on them.
 - **statechart's `OutputFolder` model (#791).** The local output-folder check and copy fixes below cover the same ground.
 - **`make-bot-ui` and the Benny automation pack.** Both drive Cursor platform features: make-bot-ui creates a Cursor webhook routine with `update_state`, takes its sender key through a Cursor secret request, and posts to `api2.cursor.sh`; Benny is two Cursor automations for Slack issue reports. The fork's earlier ports kept them as dormant prose with no platform behind them on Codex, Claude Code, or Antigravity, and every sync still had to re-adapt them, so 0.15.32-shared.5 removed both. Host features cover the same jobs where the user's plan offers them (checked 2026-10-25): Claude Code scheduled tasks, a research preview, take an API trigger with a per-task bearer token that a local page's server can POST to; Claude Tag, on Team and Enterprise, takes a Slack bug report to a draft PR; and the Claude Code GitHub Action can triage and fix on issue events. See the [scheduled tasks](https://code.claude.com/docs/en/routines.md), [Claude Tag](https://claude.com/docs/claude-tag/overview.md), and [GitHub Actions](https://code.claude.com/docs/en/github-actions.md) docs.
@@ -83,9 +83,9 @@ Pushes and PRs follow upstream, at the user's request on 2026-10-25 (0.15.32-sha
 
 ### Host-neutral wording
 
-Where upstream names a Cursor primitive, the fork names the host capability, and the denylist keeps the Cursor form out:
+Where upstream names a Cursor primitive, the fork names the host capability; the [denylist](./docs/ci.md#fork-guards) rejects the Cursor forms it lists:
 
-- An optional native host goal and an observed, authorized host scheduler instead of `/goal`, `/loop 1h`, or `/loop until`.
+- An optional native host goal and an observed, authorized host scheduler instead of `/goal` and `/loop 1h`.
 - `<resolved trunk ref>` and the installed playbook instead of `origin/main`.
 - Host collaboration tools instead of `Task` fields, and isolated host workers instead of Cursor cloud agents.
 - The project's verification harness and actually available tools instead of `control-ui`, `control-cli`, and `deslop`.
@@ -143,7 +143,6 @@ Upstream's own fix for a second-model config that skips a rule came with #776, a
 
 - poteto-help uses the Codex and Claude entry points, reads the shared `~/.config/pstack/config.json` policy, links to this checkout, and does not claim Cursor Custom Modes, `/loop`, Cursor model paths, or Cursor delegation tools.
 - `sharpen` keeps upstream's prompt: it hands back the rewritten prompt and does not do the task.
-- `ketchup` lists every waiting call with its link, pick, evidence, and risk and never cuts items to meet a word count; ketchup catch-ups close autopilot ticks and replies.
 - `ketchup-video` is model-invocable, with its video embedded when the host can show it and otherwise linked as a local file.
 - `reflect` never edits a skill inside an installed plugin and copies it to `.agents/skills/<skill>/` or `~/.agents/skills/<skill>/` with the discovery link.
 - `create-formal-verification-skill` writes the generated verify skill in `.agents/skills/` with the discovery link, `maintain-formal-verification-skill` looks in both `.agents/skills/` and `.claude/skills/`, and setup-pstack mentions the create skill once, in the same mention-only form as its verification step.

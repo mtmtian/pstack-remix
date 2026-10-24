@@ -552,7 +552,7 @@ export function validateManifests(root) {
     }
     if (manifest.name !== name) problems.push(`${rel}: name ${JSON.stringify(manifest.name ?? null)} must be ${JSON.stringify(name)}`);
     // An Agent Plugins $schema makes Codex load the checkout as an Agent Plugin,
-    // which truncates each injected skill to 8,000 bytes (ADAPTATION.md, 0.15.21).
+    // which truncates each injected skill to 8,000 bytes (ADAPTATION.md, Not taken from upstream).
     if (rel === "plugin.json" && /agent-plugins\.org/i.test(text)) {
       problems.push(`${rel}: references agent-plugins.org; the root manifest stays the Antigravity manifest without the Agent Plugins $schema`);
     }
