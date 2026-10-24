@@ -90,6 +90,8 @@ test("Given skills that drift from the fork's contract, When validated, Then eac
   edit(dir, "skills/poteto-mode/SKILL.md", (text) => text.replace("name: poteto-mode", "name: Poteto Mode"));
   edit(dir, "skills/sharpen/SKILL.md", (text) => text.replace(/^description: .*$/m, 'description: ""'));
   edit(dir, "skills/ketchup/SKILL.md", (text) => text.split("\n").filter((line) => !line.includes("references/runtime.md")).join("\n"));
+  edit(dir, "skills/tdd/SKILL.md", (text) => text.replace("# ", "Read [the shared runtime contract](../../references/runtime.md) before this workflow.\n\n# "));
+  rmSync(path.join(dir, "skills/teach"), { recursive: true });
   edit(dir, "agents/comment-sicko.md", (text) => text.replace("name: comment-sicko", "name: Comment Sicko"));
   mkdirSync(path.join(dir, "skills/new-upstream-skill/references"), { recursive: true });
   writeFileSync(path.join(dir, "skills/new-upstream-skill/references/notes.md"), "Notes.\n");
@@ -99,7 +101,21 @@ test("Given skills that drift from the fork's contract, When validated, Then eac
     "skills/new-upstream-skill/SKILL.md: missing",
     'skills/poteto-mode/SKILL.md:1: frontmatter name "Poteto Mode" must be "poteto-mode"',
     "skills/sharpen/SKILL.md:1: frontmatter description is missing or empty",
+    "skills/tdd/SKILL.md: links the shared runtime contract, but STANDALONE in scripts/check-fork.mjs lists it; remove one",
+    "scripts/check-fork.mjs: STANDALONE lists teach, which is not a skill",
     'agents/comment-sicko.md:1: frontmatter name "Comment Sicko" must be "comment-sicko"',
+  ]);
+});
+
+test("Given upstream-era Codex metadata that hides a skill, When it lands in a skill, Then model-invocation names it", (t) => {
+  const dir = copyRepo(t);
+  mkdirSync(path.join(dir, "skills/swarm/agents"));
+  writeFileSync(path.join(dir, "skills/swarm/agents/openai.yaml"), "policy:\n  allow_implicit_invocation: false\n");
+  rmSync(path.join(dir, "skills/poteto-help/agents/openai.yaml"));
+
+  assert.deepEqual(scanDenylist(dir), [
+    'skills/swarm/agents/openai.yaml:2: model-invocation: "allow_implicit_invocation: false"; skills stay model-invocable on Claude Code and Codex; poteto-help is the one recorded exception',
+    "skills/poteto-help/agents/openai.yaml: model-invocation: allowed here but no longer matches; remove it from the allow list",
   ]);
 });
 

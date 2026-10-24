@@ -1,6 +1,6 @@
 # Shared pstack runtime
 
-All bundled skills use this contract. Resolve sibling skills from this plugin's `skills/` directory, not an unrelated same-named installed skill. User, project, and host instructions take precedence over this package.
+Bundled workflow skills use this contract; short guidance skills, such as the principles, do not need it. Resolve sibling skills from this plugin's `skills/` directory, not an unrelated same-named installed skill. User, project, and host instructions take precedence over this package.
 
 ## Select the host once, then load its adapter
 

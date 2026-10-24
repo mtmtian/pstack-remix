@@ -3,8 +3,6 @@ name: typescript-best-practices
 description: TypeScript best practices. Use when reading or editing any .ts or .tsx file.
 ---
 
-Read [the shared runtime contract](../../references/runtime.md) before this workflow.
-
 # TypeScript best practices
 
 Apply the **type-system-discipline** principle skill first.
