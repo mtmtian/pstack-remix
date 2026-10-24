@@ -8,7 +8,7 @@ poteto-mode is one person's style. The playbooks, routing, and model roles under
 $automate-me
 ```
 
-You don't describe your style, because [`$automate-me`](../../skills/automate-me/SKILL.md) reads it out of your history. It mines your recent transcripts in the active workspace for repeated preferences, in how you like replies, delegation, verification, code, prose, and process, then asks you which patterns are really you. It drafts `.agents/skills/<your-name>-mode/SKILL.md` through the skill authoring flow in the runtime contract and runs the draft through [`$unslop`](../../skills/unslop/SKILL.md). It can prepare a worktree and PR, but creating the remote PR still requires your authorization and an available forge tool.
+You don't describe your style, because [`$automate-me`](../../skills/automate-me/SKILL.md) reads it out of your history. It mines your recent transcripts in the active workspace for repeated preferences, in how you like replies, delegation, verification, code, prose, and process, then asks you which patterns are really you. It drafts `.agents/skills/<your-name>-mode/SKILL.md` through the skill authoring flow in the [project skills guide](../../references/project-skills.md) and runs the draft through [`$unslop`](../../skills/unslop/SKILL.md). It can prepare a worktree and PR, but creating the remote PR still requires your authorization and an available forge tool.
 
 Run it again whenever your habits drift:
 
