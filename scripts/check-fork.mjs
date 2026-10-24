@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Static guards for upstream syncs. Shipped content must not bring back the
 // Cursor-only instructions ADAPTATION.md replaced and must keep the local
-// decisions it records, every skill keeps its shared runtime contract, local
-// links resolve, and the manifests keep their fork names.
+// decisions it records, every skill outside STANDALONE keeps its shared runtime
+// contract, local links resolve, and the manifests keep their fork names.
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -57,9 +57,9 @@ export const DENYLIST = [
   },
   {
     id: "model-invocation",
-    pattern: /\bdisable-model-invocation\b/,
-    allow: ["skills/poteto-help/SKILL.md"],
-    hint: "skills stay model-invocable; poteto-help is the one recorded exception",
+    pattern: /\bdisable-model-invocation\b|\ballow_implicit_invocation:\s*false\b/,
+    allow: ["skills/poteto-help/SKILL.md", "skills/poteto-help/agents/openai.yaml"],
+    hint: "skills stay model-invocable on Claude Code and Codex; poteto-help is the one recorded exception",
   },
   {
     id: "effort-model-slug",
@@ -72,6 +72,38 @@ export const DENYLIST = [
     hint: "Cursor-only UI; use the host's own output and entry points",
   },
 ];
+
+// Guidance skills that use nothing in the shared runtime contract, so they skip
+// it as upstream's do. A listed skill that links the contract again is reported,
+// so the list cannot outlive the files it describes.
+export const STANDALONE = new Set([
+  "bro",
+  "in-your-own-words",
+  "principle-attack-the-premise",
+  "principle-boundary-discipline",
+  "principle-encode-lessons-in-structure",
+  "principle-exhaust-the-design-space",
+  "principle-experience-first",
+  "principle-explain-the-number",
+  "principle-fix-root-causes",
+  "principle-foundational-thinking",
+  "principle-laziness-protocol",
+  "principle-make-operations-idempotent",
+  "principle-migrate-callers-then-delete-legacy-apis",
+  "principle-minimize-reader-load",
+  "principle-model-the-domain",
+  "principle-never-block-on-the-human",
+  "principle-outcome-oriented-execution",
+  "principle-prove-it-works",
+  "principle-redesign-from-first-principles",
+  "principle-subtract-before-you-add",
+  "principle-test-behavior-not-implementation",
+  "principle-type-system-discipline",
+  "sharpen",
+  "tdd",
+  "teach",
+  "typescript-best-practices",
+]);
 
 // The local decisions an upstream sync must keep: each names a file and, where
 // wording carries the decision, an anchor in it. `section` is the ADAPTATION.md
@@ -474,8 +506,10 @@ export function validateSkills(root) {
   const problems = [];
   const contract = path.join(root, "references/runtime.md");
   const skills = path.join(root, "skills");
+  const seen = new Set();
   for (const entry of readdirSync(skills, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
     if (!entry.isDirectory()) continue;
+    seen.add(entry.name);
     const file = path.join(skills, entry.name, "SKILL.md");
     const rel = relative(root, file);
     if (!existsSync(file)) {
@@ -484,9 +518,15 @@ export function validateSkills(root) {
     }
     const text = readFileSync(file, "utf8");
     problems.push(...frontmatterProblems(rel, text, entry.name));
-    if (!linkTargets(text).some(({ target }) => localPath(file, target)?.resolved === contract)) {
+    const links = linkTargets(text).some(({ target }) => localPath(file, target)?.resolved === contract);
+    if (STANDALONE.has(entry.name)) {
+      if (links) problems.push(`${rel}: links the shared runtime contract, but STANDALONE in scripts/check-fork.mjs lists it; remove one`);
+    } else if (!links) {
       problems.push(`${rel}: no link to the shared runtime contract references/runtime.md`);
     }
+  }
+  for (const name of STANDALONE) {
+    if (!seen.has(name)) problems.push(`scripts/check-fork.mjs: STANDALONE lists ${name}, which is not a skill`);
   }
   for (const file of walk(path.join(root, "agents")).filter((name) => name.endsWith(".md"))) {
     problems.push(...frontmatterProblems(relative(root, file), readFileSync(file, "utf8"), path.basename(file, ".md")));
