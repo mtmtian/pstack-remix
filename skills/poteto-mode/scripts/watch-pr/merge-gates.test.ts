@@ -210,8 +210,8 @@ describe("mergeability GitHub has not computed", () => {
 
 describe("stacks", () => {
   const open = [
-    { number: parsePrNumber(1), headRefName: "one", baseRefName: "main" },
-    { number: parsePrNumber(2), headRefName: "two", baseRefName: "one" },
+    { number: parsePrNumber(1), isCrossRepository: false, headRefName: "one", baseRefName: "main" },
+    { number: parsePrNumber(2), isCrossRepository: false, headRefName: "two", baseRefName: "one" },
   ];
 
   it("--stack stops at an upstack PR that still needs its approval", async () => {

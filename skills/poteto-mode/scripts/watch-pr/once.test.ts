@@ -196,6 +196,7 @@ describe("--once and deadlines", () => {
       options: { ...once, once: false, timeout: 5 },
     });
     await expect(running).rejects.toThrow("native run slept");
-    expect(timeline.slice(-2)).toEqual(["emit:WAITING", "sleep:60"]);
+    // The deadline has passed, so the native sleep is capped at zero seconds.
+    expect(timeline.slice(-2)).toEqual(["emit:WAITING", "sleep:0"]);
   });
 });

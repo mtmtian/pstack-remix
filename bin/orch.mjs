@@ -2994,12 +2994,14 @@ function branchPullRequest({
   target
 }) {
   const rows = listPullRequests({ filter: "--head", branch, target });
-  const row = rows[0];
+  const active = rows.filter((row) => row.state === "OPEN");
+  const candidates = active.length > 0 ? active : rows;
+  const row = candidates[0];
   if (row === undefined) {
     throw new UserError(`branch ${branch} has no pull request; open one with ${target.forge} pr create, or resolve the frontier from a branch whose chain is fully submitted`);
   }
-  if (rows.length > 1) {
-    throw new UserError(`branch ${branch} has multiple pull requests (${rows.map((item) => `#${item.pr}`).join(", ")})${recoveryHint(target.forge)}`);
+  if (candidates.length > 1) {
+    throw new UserError(`branch ${branch} has multiple pull requests (${candidates.map((item) => `#${item.pr}`).join(", ")})${recoveryHint(target.forge)}`);
   }
   return row;
 }

@@ -1080,15 +1080,19 @@ function branchPullRequest({
   target: ForgeTarget;
 }): ForgePullRequest {
   const rows = listPullRequests({ filter: "--head", branch, target });
-  const row = rows[0];
+  // A branch may have closed or merged historical PRs after stack surgery.
+  // Prefer its sole active PR, but retain historical anchors when none is open.
+  const active = rows.filter((row) => row.state === "OPEN");
+  const candidates = active.length > 0 ? active : rows;
+  const row = candidates[0];
   if (row === undefined) {
     throw new UserError(
       `branch ${branch} has no pull request; open one with ${target.forge} pr create, or resolve the frontier from a branch whose chain is fully submitted`
     );
   }
-  if (rows.length > 1) {
+  if (candidates.length > 1) {
     throw new UserError(
-      `branch ${branch} has multiple pull requests (${rows.map((item) => `#${item.pr}`).join(", ")})${recoveryHint(target.forge)}`
+      `branch ${branch} has multiple pull requests (${candidates.map((item) => `#${item.pr}`).join(", ")})${recoveryHint(target.forge)}`
     );
   }
   return row;

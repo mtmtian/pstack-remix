@@ -41,6 +41,8 @@ Present the synthesizer's full Accepted / Rejected / Backlog output and wait for
 
 Report backlog items locally. File them in an external tracker only when the user explicitly authorizes that destination and content.
 
+Never edit a skill inside an installed plugin, such as a host plugin cache. Before approval, show its destination, `.agents/skills/<skill>/` or `~/.agents/skills/<skill>/`, with the discovery link the shared runtime contract describes. After approval, copy the skill folder there and edit the copy. Never open a PR or push.
+
 Follow each approved row's Routing exactly:
 
 - Trivial existing-skill edit (a one-line bullet, a tightened sentence, a stale fact corrected): the parent does it directly.
