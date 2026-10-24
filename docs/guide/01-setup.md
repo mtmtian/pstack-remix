@@ -75,7 +75,7 @@ The repository syncs code and prompts, not `~/.config/pstack/config.json`, crede
 - Codex: `$pstack-codex:poteto-mode fix this CLI bug; reproduce and verify it.`
 - Claude Code: `/pstack:poteto-mode fix this CLI bug; reproduce and verify it.`
 
-Both use the same 23 playbooks. Generated verify skills keep one canonical directory with a non-overwriting Claude discovery link as described in [the runtime](../../references/runtime.md). The host adapter handles delegation, goal state, and scheduling; it does not grant new permissions.
+Both use the same 23 playbooks. Generated verify skills keep one canonical directory with a non-overwriting Claude discovery link as described in [the project skills guide](../../references/project-skills.md). The host adapter handles delegation, goal state, and scheduling; it does not grant new permissions.
 
 ## Sync another machine
 

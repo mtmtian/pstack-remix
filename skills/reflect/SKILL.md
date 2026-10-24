@@ -41,12 +41,12 @@ Present the synthesizer's full Accepted / Rejected / Backlog output and wait for
 
 Report backlog items locally. File them in an external tracker only when the user explicitly authorizes that destination and content.
 
-Never edit a skill inside an installed plugin, such as a host plugin cache. Before approval, show its destination, `.agents/skills/<skill>/` or `~/.agents/skills/<skill>/`, with the discovery link the shared runtime contract describes. After approval, copy the skill folder there and edit the copy. Never open a PR or push.
+Never edit a skill inside an installed plugin, such as a host plugin cache. Before approval, show its destination, `.agents/skills/<skill>/` or `~/.agents/skills/<skill>/`, with the discovery link the [project skills guide](../../references/project-skills.md) describes. After approval, copy the skill folder there and edit the copy. Never open a PR or push.
 
 Follow each approved row's Routing exactly:
 
 - Trivial existing-skill edit (a one-line bullet, a tightened sentence, a stale fact corrected): the parent does it directly.
-- Substantive existing-skill edit (a new section, a new pattern table, more than ~10 lines): hand to the available skill authoring helper described in the runtime contract and run its draft / test / iterate loop.
+- Substantive existing-skill edit (a new section, a new pattern table, more than ~10 lines): hand to the available skill authoring helper described in the [project skills guide](../../references/project-skills.md) and run its draft / test / iterate loop.
 - `tune description: <skill path>` (the skill exists but didn't trigger when it should have): hand to `skill-creator` and run its description-optimization loop.
 - `new skill via skill-creator: <kebab-name>`: hand creation to `skill-creator`. Do not invent the shape ad hoc.
 

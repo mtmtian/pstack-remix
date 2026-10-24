@@ -26,7 +26,7 @@ Collect or discover the provider contract before writing integration code:
 
 If the user has not supplied a contract and no exposed provider tool can return one, produce a local contract draft with placeholders and mark the integration blocked. Never invent an endpoint, bot ID, query string, header, or create flow. A webhook URL is not evidence that a bot was created.
 
-If a browser is needed to inspect a provider console, use the user's `ego-browser` isolated task space. Do not start ordinary Chrome or another default browser. Do not paste a secret into the browser unless the user is actively completing the provider's own credential flow.
+If a browser is needed to inspect a provider console, use the isolated browser the user's instructions name, not the default browser. Do not paste a secret into the browser unless the user is actively completing the provider's own credential flow.
 
 ## Build the local UI and server draft
 
@@ -67,7 +67,7 @@ Before reporting the UI as ready, verify the reviewable artifact includes:
 1. The provider contract and the source of each endpoint and field.
 2. A server-side credential reference with no secret value.
 3. A small, validated JSON payload and documented error behavior.
-4. A browser flow tested in the user's isolated `ego-browser` space when browser work was authorized.
+4. A browser flow tested in the user's isolated browser when browser work was authorized.
 5. A local reachability check, if hosting was authorized.
 6. A single harmless external probe when the exact target and write were already authorized.
 7. A clear blocker for every missing host capability, provider contract, credential, or tailnet prerequisite.

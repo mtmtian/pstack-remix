@@ -22,7 +22,7 @@ Every candidate gets the same prompt, so the prompt is the contract.
 
 Spawn all N subagents in one message with the host's asynchronous spawn mechanism, each with the task, the path to the shared grounding, its own output path, and instructions to produce the artifact and a short rationale naming the alternatives it considered and what it rejected.
 
-If a candidate produces no output, proceed with N-1 and note the dropout. An `xagent:<agent>` candidate is the exception: it follows the shared runtime's retry and unresolved-outcome rule and is never dropped silently.
+If a candidate produces no output, proceed with N-1 and note the dropout. An `xagent:<agent>` candidate is the exception: it follows the [xagent skill](../xagent/SKILL.md#with-pstack)'s retry and unresolved-outcome rule and is never dropped silently.
 
 ## Phase C: Cross-judge
 

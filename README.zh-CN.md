@@ -275,7 +275,7 @@ Comment Sicko 在 Claude Code 中仅有只读工具，在 Codex 中也需要匹�
 
 ## 主控适配与执行边界
 
-[共享运行时](./references/runtime.md) 负责配置、范围、证据和技能发现。[Codex 适配器](./references/codex-runtime.md) 与 [Claude Code 适配器](./references/claude-runtime.md) 分别说明各自的委派、目标和调度接口，不应把一方的工具名直接套给另一方。在 T3 Code 里，[T3 叠加层](./references/t3-runtime.md) 叠在这两个主控之上：只有会话里真的有 T3 的 `orchestrator_capabilities` 和 `delegate_task` 工具时才启用，子任务、定时任务和 PR 等待改走 T3 编排工具，xagent 和其他规则照旧。
+[共享运行时](./references/runtime.md) 负责配置、范围和证据，技能放置与发现见[项目技能说明](./references/project-skills.md)。[Codex 适配器](./references/codex-runtime.md) 与 [Claude Code 适配器](./references/claude-runtime.md) 分别说明各自的委派、目标和调度接口，不应把一方的工具名直接套给另一方。在 T3 Code 里，[T3 叠加层](./references/t3-runtime.md) 叠在这两个主控之上：只有会话里真的有 T3 的 `orchestrator_capabilities` 和 `delegate_task` 工具时才启用，子任务、定时任务和 PR 等待改走 T3 编排工具，xagent 和其他规则照旧。
 
 主控必须亲自读取最终产物和进程终态，按原任务约定处理评审反例。空邮箱、闲置状态、超时或子 Agent 的 `PASS` 都不能单独证明任务完成。仍有范围内缺陷或必要检查缺口时，必须继续修复或明确报告未完成。
 
@@ -285,7 +285,7 @@ Comment Sicko 在 Claude Code 中仅有只读工具，在 Codex 中也需要匹�
 
 `poteto-mode` 提供了一套有明确取舍的工程习惯。需要自己的入口时，可以使用 [`automate-me`](./skills/automate-me/SKILL.md)，从已授权的近期工作记录中提炼 `<你的名字>-mode`；底层继续复用 pstack，个人路由技能与 `poteto-mode` 并存。
 
-模型和角色偏好通过 [`setup-pstack`](./skills/setup-pstack/SKILL.md) 调整，不必修改插件源码。项目新增共享技能遵循[运行时约定](./references/runtime.md)，保留一份权威目录，再接入各主控的发现机制。
+模型和角色偏好通过 [`setup-pstack`](./skills/setup-pstack/SKILL.md) 调整，不必修改插件源码。项目新增共享技能遵循[项目技能说明](./references/project-skills.md)，保留一份权威目录，再接入各主控的发现机制。
 
 ## 跟进上游与验证
 

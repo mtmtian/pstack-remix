@@ -31,7 +31,7 @@ export const DENYLIST = [
     id: "control-drivers",
     pattern: /\bcontrol-(?:ui|cli)\b/,
     allow: ["references/runtime.md"],
-    hint: "use the project's verification harness and the browser named in references/runtime.md",
+    hint: "use the project's verification harness and the browser the user's or host's instructions name",
   },
   {
     id: "cursor-cloud-agents",
