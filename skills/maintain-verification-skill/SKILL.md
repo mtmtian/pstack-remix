@@ -14,7 +14,7 @@ A feature map rots the moment the app changes. This skill is the upkeep loop for
 Pick one, and say which:
 
 - **clean** — every feature got source and live coverage; nothing worth shipping. No branch, no PR.
-- **changed** — proven doc, harness, or map corrections are ready; one PR ships them when PR creation is authorized.
+- **changed** — one PR ships proven doc, harness, or map corrections.
 - **blocked** — coverage could not finish or a proven fix could not ship safely. Say exactly what blocked it.
 
 Product gaps do not change the outcome: report them with whichever outcome applies, and never ship a fix for them from this skill.
@@ -37,6 +37,6 @@ Only edit the verification skill's own directory (its SKILL.md, features/, repla
 
 5. **Triage.** Wrong or missing user-POV description → doc drift, fix it. Working behavior the harness can't drive → harness gap, fix it; a harness fix follows the same helpers rule as generation (scripts executable, invocation documented in the skill body). App behavior that's actually broken → product gap; record it for the user, keep it out of this PR. A stale replay of a feature that works when driven → drift; rewrite the replay from that passing drive, so its actions and checks match what that drive did. A stale replay of a feature that is broken → product gap; keep the replay unchanged, because it reproduces the regression. A feature without a replay whose drive passed in this run may gain one, written from that drive.
 
-6. **Ship or stop.** For changed: re-read every changed file and deliver the proven corrections. Every new or rewritten replay must have exited `0` against the app in this run; it ships as test code for review. Create at most one PR when authorized; otherwise report the local diff and verification evidence. For clean or blocked: no PR, report the outcome, the coverage, and any product gaps honestly.
+6. **Ship or stop.** For changed: re-read every changed file and deliver the proven corrections. Every new or rewritten replay must have exited `0` against the app in this run; it ships as test code for review. Ship them in at most one PR, unless the user keeps the pass local; then report the local diff and verification evidence. For clean or blocked: no PR, report the outcome, the coverage, and any product gaps honestly.
 
 Keep concise run notes (features covered, replays run with their results, unreachable prerequisites, confirmed drift, outcome) next to the run's evidence; don't commit them.

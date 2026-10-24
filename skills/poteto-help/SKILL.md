@@ -105,7 +105,7 @@ Playbooks are steps inside `poteto-mode`, not separate skills. Phrases such as "
 
 `principle-*` skills state one engineering rule that `poteto-mode` can apply and cite. Users usually steer with the principle name, for example, "apply prove it works and show the actual output." Direct invocation remains available.
 
-pstack has no standalone `orchestrate` skill; Orchestrate is a playbook. Goals and recurring schedules come from the active host and remain separate from pstack. Installing or invoking pstack does not authorize external writes or create a schedule.
+pstack has no standalone `orchestrate` skill; Orchestrate is a playbook. Goals and recurring schedules come from the active host and remain separate from pstack. A playbook pushes its own branch and opens its PR, as upstream does; installing or invoking pstack does not authorize merges or other external writes, or create a schedule.
 
 ## Fix a run that went wrong
 

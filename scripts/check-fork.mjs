@@ -196,17 +196,10 @@ export const REQUIRED = [
     section: "maintained-source",
   },
   {
-    id: "pr-authorization",
-    file: "skills/poteto-mode/playbooks/opening-a-pr.md",
-    pattern: /Use when PR delivery is requested or otherwise explicitly authorized\./,
-    hint: "a PR is opened only on request or explicit authorization",
-    section: "upstream-behavior-retained",
-  },
-  {
-    id: "babysit-write-authorization",
-    file: "skills/poteto-mode/playbooks/babysit.md",
-    pattern: /change local code or remote state only to the extent explicitly authorized/,
-    hint: "babysit pushes and replies only within explicit authorization",
+    id: "runtime-remote-boundary",
+    file: "references/runtime.md",
+    pattern: /Never push the trunk directly\. Merges, `--auto`, force-pushes to a branch another person or agent works on/,
+    hint: "playbooks push their own branches and open PRs, but merges, --auto, and force-pushes to shared branches still need authorization",
     section: "upstream-behavior-retained",
   },
   {
@@ -221,13 +214,6 @@ export const REQUIRED = [
     file: "skills/poteto-mode/playbooks/shipping.md",
     pattern: /Arm `--auto` [^.]*only when the user asked for merge-when-ready/,
     hint: "`--auto` is armed only when the user asked for merge-when-ready",
-    section: "upstream-behavior-retained",
-  },
-  {
-    id: "autopilot-push-authorization",
-    file: "skills/poteto-mode/playbooks/autopilot-full.md",
-    pattern: /Within the program's push authorization, force-push only your own branch/,
-    hint: "owners push only within the program's push authorization",
     section: "upstream-behavior-retained",
   },
   {

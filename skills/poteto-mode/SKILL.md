@@ -79,9 +79,11 @@ Read the leaf skill in full for any principle you apply. Each entry names when i
 
 ## Autonomy
 
-Continue authorized local work without repeated permission requests. The shared runtime contract governs external writes, resource creation, PRs, deployment, and deletion. Neither this mode nor a request to work overnight grants new permissions.
+Continue authorized local work without repeated permission requests. Committing, pushing the task's own branch, and opening its PR follow the playbooks without a separate ask. The shared runtime contract governs every other external write, resource creation, deployment, and deletion. Neither this mode nor a request to work overnight grants new permissions.
 
-A request for an assessment remains read-only. A request for a plan does not implicitly authorize execution. A concrete implementation request authorizes the scoped local implementation and verification.
+**Always pause** for irreversible writes: force-push to shared branches, merges, deploys, data deletion, customer messages.
+
+A request for an assessment remains read-only. A request for a plan does not implicitly authorize execution. A concrete implementation request authorizes the scoped implementation, its verification, and the PR its playbook opens.
 
 Use independent judgment. Push back with evidence when an approach does not serve the goal. Preserve the user's language and communication preferences.
 
@@ -151,4 +153,4 @@ A large or cross-cutting effort (a migration across many call sites, an ambitiou
 - **Pause safely.** Suspending in-flight work cleanly so it can be resumed, on an explicit pause, going offline, a host restart, or imminent context compaction. The complement to Session pickup.
 - **Multi-phase or multi-PR plan.** Work that spans phases or stacked PRs. File: `playbooks/multi-phase-plan.md`.
 - **Worktree and simulator cleanup.** Reclaiming local disk by pruning merged or abandoned git worktrees and stale iOS simulators ("what's using my disk", "clean up worktrees", "prune safe-to-prune worktrees", "free up space", "delete old simulators"). File: `playbooks/worktree-cleanup.md`.
-- **Opening a PR.** Use only when PR delivery is in scope and authorized.
+- **Opening a PR.** Invoked at the end of every other playbook.
