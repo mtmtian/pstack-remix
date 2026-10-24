@@ -47,7 +47,7 @@ Goals, process/event waits, and recurring schedules are separate capabilities. F
 
 Prefer the project's existing verification harness. Browser work uses the browser the user's or host's instructions name; CLI/TUI verification uses documented commands and isolated PTYs. Missing control surfaces or credentials are concrete prerequisites, not permission to invent evidence.
 
-Upstream `deslop`, `control-ui`, and `control-cli` dependencies are replaced by direct diff review and actually available tools. `gh` is the default forge; use Origin/Graphite only when present, compatible, and authorized. Do not install optional connectors or activate the dormant Benny pack implicitly.
+Upstream `deslop`, `control-ui`, and `control-cli` dependencies are replaced by direct diff review and actually available tools. `gh` is the default forge; use Origin/Graphite only when present, compatible, and authorized. Do not install optional connectors implicitly.
 
 Use the current task and authorized project artifacts first. Read earlier sessions only as the [prior sessions guide](./session-history.md) describes; do not mine unrelated sessions or write persistent memory without an explicit request. Creating, placing, or substantially editing a skill follows the [project skills guide](./project-skills.md).
 

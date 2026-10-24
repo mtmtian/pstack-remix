@@ -4,7 +4,7 @@ English | [简体中文](./README.zh-CN.md)
 
 One source tree, one configuration, two native host entry points. This independent local adaptation tracks Lauren Tan's MIT-licensed upstream pstack 0.15.32 at [`e73df471`](https://github.com/cursor/plugins/tree/e73df471cd4bd918367e99f3dd9c51bd53ddf5f0/pstack). It is not maintained by Lauren Tan, Cursor, OpenAI, or Anthropic.
 
-The 59 skills, 23 playbooks, engineering principles, agent prompts, and Node helpers are shared. Only the plugin manifests and two short runtime adapters differ. Codex retains its installed `pstack-codex` name; Claude Code uses `pstack` from the same directory.
+The 58 skills, 23 playbooks, engineering principles, agent prompts, and Node helpers are shared. Only the plugin manifests and two short runtime adapters differ. Codex retains its installed `pstack-codex` name; Claude Code uses `pstack` from the same directory.
 
 ## Install and use
 
@@ -124,7 +124,6 @@ $interrogate review this pr.
 | [`$swarm`](./skills/swarm/SKILL.md) | you want N parallel workers across different slices or races, then one aggregated report. |
 | [`$interrogate`](./skills/interrogate/SKILL.md) | you have a diff and want several different models to try to break it, including a strict code-quality lens. |
 | [`$automate-me`](./skills/automate-me/SKILL.md) | you want your own `-mode` skill, drafted from how you've actually worked. |
-| [`$make-bot-ui`](./skills/make-bot-ui/SKILL.md) | you want the optional webhook UI workflow; bot credentials, sender keys, and network exposure remain host-dependent and are not enabled by default. |
 | [`$setup-pstack`](./skills/setup-pstack/SKILL.md) | you want to pick which models pstack uses per role. detects your models and writes a config rule. |
 | [`$reflect`](./skills/reflect/SKILL.md) | a long task landed and you want the recipe captured as a skill edit. |
 | [`$correct`](./skills/correct/SKILL.md) | you keep correcting agents for the same mistakes. mines history for mistake classes, fixes each at the highest level that works (architecture, then types, lint, and ci, then tests, with docs last), and keeps a table pairing each rule with what enforces it. |
@@ -253,10 +252,6 @@ Models are configurable through [setup-pstack](./skills/setup-pstack/SKILL.md), 
 Run [the CI checks locally](./docs/ci.md) with `bash scripts/check.sh` after installing the locked build dependencies. GitHub Actions checks the minimum runtime versions, macOS behavior, TypeScript, and distributed bundle freshness on every PR.
 
 Run `node <plugin-root>/scripts/check-upstream.mjs`. The read-only report compares the pinned `UPSTREAM.json` commit with the latest pstack change. Review the diff once in this shared tree, preserve both host adapters, run `node --test scripts/config.test.mjs`, validate/discover both plugins, then refresh both installations per the [setup guide](./docs/guide/01-setup.md). Do not overwrite this adaptation with the upstream Cursor directory.
-
-## automations
-
-pstack also ships a dormant [Benny automation pack](./automations/benny/). Benny is a complete on-demand configuration package for issue triage and UI evidence. It has not been enabled with remote Slack access or a recurring schedule. Its files are not registered as slash skills. Configure it only through the documented local automation interface after checking the available host connectors and authorization.
 
 ## license
 

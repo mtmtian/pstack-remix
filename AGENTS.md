@@ -6,4 +6,4 @@ This repository is the Codex and Claude Code fork of cursor/plugins `pstack`, pi
 - Upstream sync: run `node scripts/check-upstream.mjs`, then merge each changed file by the rules in [Upstream sync](ADAPTATION.md#upstream-sync). Never copy an upstream directory over this tree.
 - A [fork guard](docs/ci.md#fork-guards) failure means a sync dropped a recorded decision or brought back Cursor-only wording. Fix the text, not the guard.
 - Host caches and installed copies are generated installation artifacts, never edit targets. Edit this checkout.
-- After maintained-source changes, refresh the installations with the commands in the "After maintained-source changes" paragraph under [T3 Code overlay](ADAPTATION.md#t3-code-overlay).
+- After maintained-source changes, refresh the installations with the commands under [Refresh installations](ADAPTATION.md#refresh-installations).
