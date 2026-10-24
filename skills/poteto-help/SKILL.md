@@ -84,7 +84,6 @@ The default for non-trivial work is `poteto-mode`, which routes to other skills 
 | Draft a personal mode from authorized work history | [`automate-me`](../automate-me/SKILL.md) |
 | Turn a finished task's lessons into approved skill edits | [`reflect`](../reflect/SKILL.md) |
 | Prevent repeated engineering mistakes | [`correct`](../correct/SKILL.md) |
-| Build an optional webhook UI workflow | [`make-bot-ui`](../make-bot-ui/SKILL.md) |
 | Dispatch a local external-agent CLI | [`xagent`](../xagent/SKILL.md) |
 | Find the right pstack entry point | `poteto-help` |
 
