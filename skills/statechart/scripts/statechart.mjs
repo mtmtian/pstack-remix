@@ -825,6 +825,8 @@ function listedBreaks(spec, inputs) {
   let headed = false;
   for (const f of files.filter((f) => f.endsWith(".cfg"))) {
     const copy = inputs.copyOf(path.join(dir, f));
+    // A config with no copy went before the snapshot read it, so the listing changed and the run
+    // will not publish.
     if (!fs.existsSync(copy)) continue;
     const cfg = fs.readFileSync(copy, "utf8");
     const module = /^\\\* module:[ \t]*(\w+)[ \t]*$/m.exec(cfg)?.[1] ?? only;
