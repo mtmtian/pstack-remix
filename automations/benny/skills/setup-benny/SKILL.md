@@ -83,7 +83,7 @@ Use only integrations and tools that the current host actually exposes. Check th
 - The configured issue-tracker read/search/write/compensation operations
 - Repository and history reads, tests, and the host's draft-pull-request action
 - The configured control adapter and its seven capabilities in `references/control-adapter.md`
-- The user's isolated `ego-browser` surface for browser UI work
+- The isolated browser the user's instructions name, for browser UI work
 
 Do not turn a placeholder action name into a tool call. Do not use an undocumented endpoint or a private connector. External writes require user authorization for the exact target and scope; if that authorization or capability is absent, prepare a dry-run result and stop.
 

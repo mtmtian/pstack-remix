@@ -9,7 +9,7 @@ Read [the shared runtime contract](../../references/runtime.md) before this work
 
 A guided flow for turning the user's working conventions into a skill agents will follow. The output is one `-mode` skill tailored to them (e.g. `jay-mode`, `priya-mode`).
 
-This skill orchestrates three others: an inline mining pass (see step 1), the runtime contract's skill authoring guidance, and the **unslop** skill (prose discipline). It sequences them. It doesn't replace them.
+This skill orchestrates three others: an inline mining pass (see step 1), the [project skills guide](../../references/project-skills.md), and the **unslop** skill (prose discipline). It sequences them. It doesn't replace them.
 
 ## Flow
 
@@ -27,7 +27,7 @@ Update mode changes the rest of the flow:
 
 ### 1. Mine their history
 
-Use the current conversation or an authorized host thread-history tool. If local transcripts are needed, list candidates with `node <plugin-root>/bin/transcripts.mjs`, as the shared runtime contract describes, with `--since` at the start of the mining window (in update mode, the skill's last edit), and read only the files it lists. Do not scan unrelated projects. If the active transcript is unavailable, use a clearly labeled digest and report the limits of trace verification.
+Use the current conversation or an authorized host thread-history tool. If local transcripts are needed, list candidates with `node <plugin-root>/bin/transcripts.mjs`, as the [prior sessions guide](../../references/session-history.md) describes, with `--since` at the start of the mining window (in update mode, the skill's last edit), and read only the files it lists. Do not scan unrelated projects. If the active transcript is unavailable, use a clearly labeled digest and report the limits of trace verification.
 
 Survey recent agent conversations within that scope for recurring patterns. Run multiple parallel subagents across slices of history (e.g. last 2-4 weeks, split into 3 slices so each has enough material). Set each worker's reasoning effort for the job, per the Subagents section of the **poteto-mode** skill. Each slice mining subagent reads only the transcripts in its slice of the helper's list, looks for the signals below, and returns a short structured list of patterns it saw with evidence pointers. Default signals worth hunting:
 
@@ -65,7 +65,7 @@ The **poteto-mode** skill shows the shape. Read it for granularity. Don't copy i
 
 ### 4. Draft the skill
 
-Use the available skill authoring helper described in the runtime contract to author the skill. Placement:
+Use the available skill authoring helper described in the [project skills guide](../../references/project-skills.md) to author the skill. Placement:
 
 - Path: preserve an existing mode skill's category. For a new mode, use `.agents/skills/<handle>/<handle>-mode/SKILL.md` when the repo has an established personal category for that handle. Otherwise default to `.agents/skills/<handle>-mode/SKILL.md` in the project (or `~/.agents/skills/<handle>-mode/` if the user prefers a personal skill).
 - Handle: the user's first name or chosen identifier.

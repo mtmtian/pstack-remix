@@ -8,7 +8,7 @@ Apply it only when the current session exposes T3's orchestration tools `orchest
 
 ## Resolve policy
 
-Run `node <plugin-root>/bin/config.mjs show --host t3`. The T3 view is common policy plus the optional `hosts.t3` section. It never reads `hosts.codex` or `hosts.claude`, whichever host runs the thread, because those hold host-native IDs. Update it with `update --host t3`, through [setup](../skills/setup-pstack/SKILL.md).
+Run `node <plugin-root>/bin/config.mjs show --host t3`. The T3 view is common policy plus the optional `hosts.t3` section. It never reads `hosts.codex` or `hosts.claude`, whichever host runs the thread, because those hold host-native IDs. Update it with `update --host t3`, through [setup](../skills/setup-pstack/SKILL.md). A difficulty rule shared with the native hosts does not share their model assignments: direct Claude Code still reads `hosts.claude`, and an unconfigured role there inherits its main conversation.
 
 A T3 entry is `inherit-parent`, `auto`, `xagent:<agent>[/<model>]`, or a T3 target `<providerInstanceId>/<modelId>`. Split a target at the first `/`; model IDs may contain more slashes. An entry that starts with `xagent:` is never a T3 target, even with a model.
 

@@ -33,7 +33,7 @@ Write `.agents/skills/verify-<app>/SKILL.md` with YAML frontmatter (`name: verif
 - **Cleanup:** how to tear down instances the run created. Never kill by process name; kill what you started. Cleanup removes instances and scratch state, never the evidence: proof artifacts survive the teardown, in the evidence location the skill names.
 - **Helpers:** any script the skill ships is executable and its invocation is shown in the skill body. A helper the reader has to reverse-engineer is not a helper.
 
-After creating the canonical directory, make it discoverable in Claude Code using the non-overwriting skill link described in the shared runtime contract. Existing skill directories remain authoritative; do not duplicate or overwrite them.
+After creating the canonical directory, make it discoverable in Claude Code using the non-overwriting skill link described in the [project skills guide](../../references/project-skills.md). Existing skill directories remain authoritative; do not duplicate or overwrite them.
 
 ## 3. Seed the feature map
 
