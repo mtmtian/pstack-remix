@@ -2,7 +2,7 @@
 
 **You own the merge frontier. Declare a mode, clear one PR at a time, stop where the human's call begins.** Within poteto-mode, use this bundled playbook rather than an unrelated same-named skill. A request to land or ship is `playbooks/shipping.md`, which begins where this playbook ends.
 
-`check` is read-only. Other modes change local code or remote state only to the extent explicitly authorized; sending review replies and resolving threads require that scope.
+`check` is read-only. The other modes push fixes, reply to review threads, and resolve them on the PRs they watch, as upstream does.
 
 Babysitting starts when the user asks for it, which is normally once a phase or a whole stack is built, not when a PR opens. Finish the stack, get it green here, then land it through Shipping.
 

@@ -74,7 +74,7 @@ the first unresolved check and leave an auditable decision log. I will authorize
 | [pause safely](./skills/poteto-mode/playbooks/pause-safely.md) | suspend in-flight work cleanly so it can be resumed later. |
 | [multi-phase plan](./skills/poteto-mode/playbooks/multi-phase-plan.md) | work that spans phases or stacked PRs. |
 | [worktree cleanup](./skills/poteto-mode/playbooks/worktree-cleanup.md) | reclaim disk by pruning merged or abandoned worktrees and stale ios simulators, safety-gated. |
-| [opening a pr](./skills/poteto-mode/playbooks/opening-a-pr.md) | prepare a ready PR from small ordered commits with a conventional commits title and a briefing-style body when a PR is requested and authorized. |
+| [opening a pr](./skills/poteto-mode/playbooks/opening-a-pr.md) | open a ready PR from small ordered commits with a conventional commits title and a briefing-style body. invoked at the end of every other playbook. |
 
 </details>
 
@@ -238,7 +238,7 @@ twenty-four short skills, one principle each. `poteto-mode` indexes them inline 
 
 [Shared runtime](./references/runtime.md) owns configuration, scope, evidence, and shared skill discovery. [Codex](./references/codex-runtime.md) and [Claude Code](./references/claude-runtime.md) define their native delegation, goal, and scheduling interfaces. Do not turn one host's tool names into instructions for the other. Inside T3 Code, [the T3 overlay](./references/t3-runtime.md) sits on top of either host and dispatches workers, schedules, and PR watches through T3's orchestration tools, with its own `hosts.t3` model section.
 
-Upstream Cursor control helpers are replaced by available project harnesses and host tools. External writes retain the user's authorization boundaries. Installing this package does not create a goal, timer, bot, or webhook.
+Upstream Cursor control helpers are replaced by available project harnesses and host tools. Playbooks push their own branches and open their PRs as upstream does; merges and other external writes retain the user's authorization boundaries. Installing this package does not create a goal, timer, bot, or webhook.
 
 ## make it yours
 

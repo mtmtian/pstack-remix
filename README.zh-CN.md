@@ -114,7 +114,7 @@ node bin/config.mjs show --host t3
 | [安全暂停 pause safely](./skills/poteto-mode/playbooks/pause-safely.md) | 妥善暂停执行，留下可以接续的状态和证据。 |
 | [分阶段计划 multi-phase plan](./skills/poteto-mode/playbooks/multi-phase-plan.md) | 规划跨阶段或跨多个 PR 的任务。 |
 | [工作区清理 worktree cleanup](./skills/poteto-mode/playbooks/worktree-cleanup.md) | 核验安全条件后，清理已合并或废弃的 worktree 和过期 iOS 模拟器。 |
-| [创建 PR opening a pr](./skills/poteto-mode/playbooks/opening-a-pr.md) | 获得创建 PR 的授权后，整理小而有序的提交、规范标题和便于评审的说明。 |
+| [创建 PR opening a pr](./skills/poteto-mode/playbooks/opening-a-pr.md) | 其他流程结束时都会调用：整理小而有序的提交、规范标题和便于评审的说明，推送分支并开出 ready 状态的 PR。 |
 
 </details>
 
@@ -279,7 +279,7 @@ Comment Sicko 在 Claude Code 中仅有只读工具，在 Codex 中也需要匹�
 
 主控必须亲自读取最终产物和进程终态，按原任务约定处理评审反例。空邮箱、闲置状态、超时或子 Agent 的 `PASS` 都不能单独证明任务完成。仍有范围内缺陷或必要检查缺口时，必须继续修复或明确报告未完成。
 
-安装和调用 pstack 不会扩大权限。远程消息、推送、PR 写入、合并、发布、资源创建和破坏性清理，都需要覆盖相应动作与范围的授权。上游依赖的控制工具由实际可用的项目验证工具和主控能力替代，缺失能力要如实报告。
+流程会像上游一样推送自己的分支、开出并更新自己的 PR，不再逐次询问；不直接推送主干。除此之外，安装和调用 pstack 不会扩大权限：合并、`--auto`、对他人分支的 force-push、远程消息、发布、资源创建和破坏性清理，都需要覆盖相应动作与范围的授权。上游依赖的控制工具由实际可用的项目验证工具和主控能力替代，缺失能力要如实报告。
 
 ## 按自己的习惯调整
 

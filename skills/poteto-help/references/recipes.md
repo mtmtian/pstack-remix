@@ -42,7 +42,7 @@ Replace the goal, paths, and checks with the real ones. These examples use `pote
 
 ## Away and back
 
-- `I am stepping away. Finish <goal> in a fresh worktree from <base>. Done means <checks>. Keep a decision log and stop before any external write that I have not authorized.`
+- `I am stepping away. Finish <goal> in a fresh worktree from <base>. Done means <checks>. Keep a decision log, push the branch, and open the PR; stop before any merge or other external write that I have not authorized.`
 - `Show me the work trail and what still needs attention.`
 - `ketchup` catches you up on this chat since your last message and lists every call that waits on you.
 - `Run these independent queue items and report each result before proceeding to another phase.`

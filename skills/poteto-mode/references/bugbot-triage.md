@@ -2,7 +2,7 @@
 
 Use this reference when the Babysit playbook (`../playbooks/babysit.md`) handles Bugbot or review-automation comments. The goal is not to ignore Bugbot by default. The goal is to stop treating every comment as a required code change.
 
-Only perform replies, resolution, dismissal, or remote fixes when the user has authorized that remediation scope. A status-only request returns findings and proposed replies without sending them.
+A status-only request (`check`) returns findings and proposed replies without sending them.
 
 ## Decision rubric
 
