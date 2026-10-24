@@ -81,7 +81,7 @@ Show the draft to the user and take feedback. Expect multiple iterations. Cut ru
 
 ### 6. Land it
 
-Deliver the validated skill at the authorized project or personal location. Create commits or a PR only when that delivery is authorized; preserve unrelated files.
+Deliver the validated skill at the project or personal location the user chose. For a skill in a repository, work in a worktree off the trunk, commit, and open a PR; don't push to the trunk directly. Preserve unrelated files.
 
 ## Guardrails
 

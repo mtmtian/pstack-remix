@@ -20,7 +20,7 @@ Walk through what each line buys you:
 - A finite `/goal` is an explicit native host objective with the lifecycle described by the selected runtime adapter. It preserves the finish condition and checkpoints while the goal is active. It does not grant new authority.
 - "done means..." turns the goal into checks every iteration can run.
 - "fresh worktree off `<base>`" keeps the run from colliding with anything else you have open.
-- "don't ask me before committing" authorizes local commits within the stated scope. It does not authorize pushes, PR creation, merges, deploys, messages, or other remote writes.
+- "don't ask me before committing" confirms local commits within the stated scope. Pushing the run's branch and opening its PR follow the playbooks anyway. It does not authorize merges, deploys, messages, or other remote writes.
 - The [Autonomous run playbook](../../skills/poteto-mode/playbooks/autonomous-run.md) describes how to continue checking a finite task. It does not install a timer, wake a stopped process, or create background scheduling.
 - The escape hatch lets it stop at a genuine dead end and write up why, which beats eight hours of creative goal reinterpretation.
 
