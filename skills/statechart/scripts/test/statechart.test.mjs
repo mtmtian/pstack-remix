@@ -1630,7 +1630,11 @@ test("JAVA and TLA2TOOLS relative to where the command runs still name TLC insid
 });
 
 test("the charts read the map's snapshot, so a map edited and restored while they draw changes no label", () => {
-  const dir = mkdtempSync(join(tmpdir(), "statechart-"));
+  const root = mkdtempSync(join(tmpdir(), "statechart-"));
+  const dir = join(root, "model");
+  mkdirSync(dir);
+  // Node loads a module from its real path, so a spec named through a symlink is covered too.
+  symlinkSync(dir, join(root, "linked"));
   const tlcEnv = standInTlc(dir);
   writeFileSync(join(dir, "Pay.tla"), "---- MODULE Pay ----\n====\n");
   writeFileSync(join(dir, "Pay.cfg"), "SPECIFICATION Spec\n");
@@ -1656,15 +1660,18 @@ cp.spawnSync = (command, args, options) => {
 };
 `,
   );
-  const r = node("statechart.mjs", ["from-spec", "Pay.tla"], dir, {
-    ...tlcEnv,
-    MAP: map,
-    NODE_OPTIONS: `--require ${join(dir, "edit-while-drawing.cjs")}`,
-  });
-  assert.equal(r.status, 0, r.stderr);
-  const chart = readFileSync(join(dir, "Pay-statechart", "chart.mmd"), "utf8");
-  assert.match(chart, /Original/);
-  assert.doesNotMatch(chart, /Changed/);
+  for (const via of ["model", "linked"]) {
+    rmSync(join(dir, "Pay-statechart"), { recursive: true, force: true });
+    const r = node("statechart.mjs", ["from-spec", join(via, "Pay.tla")], root, {
+      ...tlcEnv,
+      MAP: map,
+      NODE_OPTIONS: `--require ${join(dir, "edit-while-drawing.cjs")}`,
+    });
+    assert.equal(r.status, 0, `${via}: ${r.stderr}`);
+    const chart = readFileSync(join(dir, "Pay-statechart", "chart.mmd"), "utf8");
+    assert.match(chart, /Original/, via);
+    assert.doesNotMatch(chart, /Changed/, via);
+  }
 });
 
 test("a map that imports a package by name still loads while the charts read its snapshot", () => {

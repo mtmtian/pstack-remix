@@ -114,6 +114,12 @@ export class Inputs {
     const copy = this.copyOf(file);
     fs.mkdirSync(path.dirname(copy), { recursive: true });
     fs.writeFileSync(copy, content);
+    // Node loads a module from its real path, so loadFromSnapshot looks a copy up by that path.
+    const real = copyPath(this.#root, fs.realpathSync(file));
+    if (real !== copy) {
+      fs.mkdirSync(path.dirname(real), { recursive: true });
+      if (!fs.existsSync(real)) fs.linkSync(copy, real);
+    }
     const found = DEPENDENCIES[path.extname(file)]?.(content.toString("utf8"), path.dirname(file));
     for (const dependency of found ?? []) this.#take(dependency, false);
   }
