@@ -1615,6 +1615,20 @@ console.log("Model checking completed. No error has been found.");
   return { TLA2TOOLS: join(dir, "tla2tools.jar"), JAVA: join(dir, "java") };
 };
 
+test("JAVA and TLA2TOOLS relative to where the command runs still name TLC inside the input snapshot", () => {
+  const dir = mkdtempSync(join(tmpdir(), "statechart-"));
+  standInTlc(dir);
+  writeFileSync(join(dir, "Pay.tla"), "---- MODULE Pay ----\n====\n");
+  writeFileSync(join(dir, "Pay.cfg"), "SPECIFICATION Spec\n");
+  writeFileSync(join(dir, "Pay.map.mjs"), 'export const state = () => "Cart";\n');
+  const r = node("statechart.mjs", ["from-spec", "Pay.tla"], dir, {
+    JAVA: "./java",
+    TLA2TOOLS: "./tla2tools.jar",
+  });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(existsSync(join(dir, "Pay-statechart", "chart.mmd")), true);
+});
+
 test("a run whose spec module or mapping import changes while it runs leaves the output folder", () => {
   const dir = mkdtempSync(join(tmpdir(), "statechart-"));
   const tlcEnv = standInTlc(dir);

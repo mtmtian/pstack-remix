@@ -17,9 +17,11 @@ const indent = (text) => text.replace(/^/gm, "  ");
 export const installAllowed = () => process.env.STATECHART_INSTALL === "1";
 
 export function findTlc() {
-  const { TLA2TOOLS, JAVA } = process.env;
-  for (const [name, file] of Object.entries({ JAVA, TLA2TOOLS }))
+  const set = { JAVA: process.env.JAVA, TLA2TOOLS: process.env.TLA2TOOLS };
+  for (const [name, file] of Object.entries(set))
     if (file && !fs.existsSync(file)) throw new Error(`${name} is ${file}, which does not exist.`);
+  // TLC runs inside the input snapshot, so a path relative to here must not reach it as given.
+  const [JAVA, TLA2TOOLS] = [set.JAVA, set.TLA2TOOLS].map((file) => file && path.resolve(file));
   if (TLA2TOOLS) return { jar: TLA2TOOLS, java: JAVA || "java" };
   const command = (tools) =>
     `cd "$(mktemp -d)" && MISE_CEILING_PATHS="$PWD" mise install ${tools.map((t) => `'${t}'`).join(" ")}`;

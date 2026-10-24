@@ -121,6 +121,13 @@ export const REQUIRED = [
     section: "upstream-behavior-retained",
   },
   {
+    id: "statechart-absolute-tools",
+    file: "skills/statechart/scripts/tlc-tools.mjs",
+    pattern: /\[set\.JAVA, set\.TLA2TOOLS\]\.map\(\(file\) => file && path\.resolve\(file\)\)/,
+    hint: "JAVA and TLA2TOOLS resolve to absolute paths, since TLC runs inside the input snapshot",
+    section: "upstream-behavior-retained",
+  },
+  {
     id: "statechart-tlc-folder",
     file: "skills/statechart/scripts/statechart.mjs",
     pattern: /const OWN_FOLDERS = \{ tlc: OWN_TLC, "tlc\/fixed": OWN_TLC, "tlc\/against": OWN_TLC \};/,
