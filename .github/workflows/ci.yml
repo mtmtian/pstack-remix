@@ -46,6 +46,8 @@ jobs:
         run: |
           brew install coreutils
           echo "$(brew --prefix coreutils)/libexec/gnubin" >> "$GITHUB_PATH"
+      - name: Install the statechart differential test's dependency
+        run: npm install --no-save --no-package-lock fast-check@4.5.3
       - run: bash scripts/check.sh runtime
 
   build:

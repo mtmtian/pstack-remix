@@ -20,7 +20,15 @@ if [[ "$suite" != build ]]; then
   fi
   timeout -k 1 1 true
   node --test scripts/*.test.mjs
-  node --test skills/statechart/scripts/test/*.test.mjs
+  statechart_tests=()
+  for test in skills/statechart/scripts/test/*.test.ts; do
+    if [[ "$test" == */differential.test.ts ]] && ! node --input-type=module -e 'await import("fast-check")' 2>/dev/null; then
+      printf 'Skipping %s: fast-check is not installed.\n' "$test"
+      continue
+    fi
+    statechart_tests+=("$test")
+  done
+  node --disable-warning=ExperimentalWarning --test "${statechart_tests[@]}"
   bash scripts/xagent-classify.test.sh
   for test in scripts/xagent.test.py scripts/xagent-e2e-verify.test.py scripts/e2e-process.test.py scripts/pstack-host-e2e.test.py scripts/pstack-host-e2e-native.test.py; do
     printf '\nRunning %s\n' "$test"

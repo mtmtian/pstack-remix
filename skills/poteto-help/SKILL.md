@@ -76,7 +76,7 @@ The default for non-trivial work is `poteto-mode`, which routes to other skills 
 | Update a verification skill and its feature map | [`maintain-verification-skill`](../maintain-verification-skill/SKILL.md) |
 | Formally verify a race, invariant, or other property that tests rarely reach | [`create-formal-verification-skill`](../create-formal-verification-skill/SKILL.md) |
 | Bring a formal verification back in line after the code it covers changed, and learn whether a failure is drift or a bug | [`maintain-formal-verification-skill`](../maintain-formal-verification-skill/SKILL.md) |
-| Show a PM or designer what the user sees as a chart checked by a model, with each bug drawn as a numbered path, turn an agreed chart into a TLA+ skeleton, or audit the code against its TLA+ spec | [`statechart`](../statechart/SKILL.md) |
+| Show a PM or designer what the user sees as a chart checked by a TLA+ model, with the shortest path to each state that breaks a rule | [`statechart`](../statechart/SKILL.md) |
 | Vet a performance measurement | [`benchmark-checklist`](../benchmark-checklist/SKILL.md) |
 | Design a rigorous run when no playbook fits | [`figure-it-out`](../figure-it-out/SKILL.md) |
 | Keep a decision record for later review | [`show-me-your-work`](../show-me-your-work/SKILL.md) |
