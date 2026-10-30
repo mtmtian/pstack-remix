@@ -148,14 +148,20 @@ export const REQUIRED = [
   {
     id: "statechart-absolute-tools",
     file: "skills/statechart/scripts/run.ts",
-    pattern: /process\.env\.JAVA\?\.includes\("\/"\) \? path\.resolve\(process\.env\.JAVA\)[^]*\{ jar: path\.resolve\(TLA2TOOLS\)/,
+    pattern: /process\.env\.JAVA\?\.includes\("\/"\) \? path\.resolve\(process\.env\.JAVA\) : process\.env\.JAVA;\n\s*if \(TLA2TOOLS\) return \{ jar: path\.resolve\(TLA2TOOLS\)/,
     hint: "JAVA and TLA2TOOLS resolve to absolute paths, since Java runs in TLC's scratch folder",
+    section: "local-decisions",
+  },
+  {
+    id: "statechart-fork-test",
+    file: "skills/statechart/scripts/test/fork.test.ts",
+    hint: "the no-download gate and the absolute tool paths keep their own test",
     section: "local-decisions",
   },
   {
     id: "statechart-ask-before-install",
     file: "skills/statechart/SKILL.md",
-    pattern: /The command downloads nothing on its own\. With `STATECHART_INSTALL=1`[^]*so ask the user before you set it\./,
+    pattern: /The command downloads nothing on its own\. With `STATECHART_INSTALL=1`[^.]*so ask the user before you set it\./,
     hint: "the skill asks the user before setting STATECHART_INSTALL=1",
     section: "local-decisions",
   },
@@ -197,6 +203,13 @@ export const REQUIRED = [
     file: "skills/poteto-mode/playbooks/shipping.md",
     pattern: /Arm `--auto` [^.]*only when the user asked for merge-when-ready/,
     hint: "`--auto` is armed only when the user asked for merge-when-ready",
+    section: "local-decisions",
+  },
+  {
+    id: "orchestrate-merge-authorization",
+    file: "skills/poteto-mode/playbooks/orchestrate.md",
+    pattern: /carries the PR from build to merge, merging only under the run's merge authorization\./,
+    hint: "Orchestrate's PR owners merge only under the run's merge authorization",
     section: "local-decisions",
   },
   {

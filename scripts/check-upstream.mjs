@@ -12,15 +12,16 @@ const api = path => JSON.parse(execFileSync('gh', ['api', path], {encoding: 'utf
 const PAGE = 100;
 const metadata = api(`repos/${repo}`);
 const pathCommits = (sha, page) => api(`repos/${repo}/commits?path=${encodeURIComponent(pinned.path)}&sha=${sha}&per_page=${PAGE}&page=${page}`);
-const latest = pathCommits(metadata.default_branch, 1)[0]?.sha;
+const first = pathCommits(metadata.default_branch, 1);
+const latest = first[0]?.sha;
 if (!latest) throw new Error('No upstream commit found for the tracked path');
 const manifest = api(`repos/${repo}/contents/${pinned.path}/.cursor-plugin/plugin.json?ref=${latest}`);
 const version = JSON.parse(Buffer.from(manifest.content, 'base64').toString()).version;
 
 // The compare endpoint lists at most 300 files for the whole monorepo, so walk the tracked path's own commits back to the pin instead.
 const commits = [];
-for (let page = 1; latest !== pinned.commit; page++) {
-  const batch = pathCommits(latest, page);
+for (let page = 1; ; page++) {
+  const batch = page === 1 ? first : pathCommits(latest, page);
   const at = batch.findIndex(c => c.sha === pinned.commit);
   commits.push(...(at < 0 ? batch : batch.slice(0, at)).map(c => ({sha: c.sha, subject: c.commit.message.split('\n')[0]})));
   if (at >= 0) break;
@@ -28,11 +29,15 @@ for (let page = 1; latest !== pinned.commit; page++) {
 }
 const changed = new Set();
 for (const {sha} of commits) {
+  let listed = 0;
   for (let page = 1; ; page++) {
     const {files} = api(`repos/${repo}/commits/${sha}?per_page=${PAGE}&page=${page}`);
     for (const f of files) for (const name of [f.filename, f.previous_filename]) if (name?.startsWith(pinned.path + '/')) changed.add(name);
+    listed += files.length;
     if (files.length < PAGE) break;
   }
+  // GitHub lists at most 3000 files for one commit.
+  if (listed >= 3000) throw new Error(`Upstream commit ${sha} may change more files than GitHub lists; diff it with git instead`);
 }
 console.log(JSON.stringify({
   checkedAt: new Date().toISOString(), repository: metadata.full_name,

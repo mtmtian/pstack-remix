@@ -121,7 +121,7 @@ Each live lane runs in an isolated worktree or process at the PR head, using onl
 
 - [ ] Root's clean verdict at the exact head SHA.
 - [ ] Bugbot triage done.
-- [ ] Rebased onto current trunk after the verdict, patch-id unchanged.
+- [ ] Rebased after the verdict onto the base it lands on, current trunk or a stacked Autopilot-stack PR's parent PR branch, patch-id unchanged.
 - [ ] <The owner squash-merges its own PR, or hands it to the operator, who lands a stack bottom-up.>
 
 ## Close the program

@@ -26,6 +26,10 @@ if [[ "$suite" != build ]]; then
       printf 'Skipping %s: fast-check is not installed.\n' "$test"
       continue
     fi
+    if [[ "$test" == */render.test.ts && "${STATECHART_INSTALL:-}" != 1 ]]; then
+      printf 'Skipping %s: it installs Pele, Mermaid, and jsdom from npm; set STATECHART_INSTALL=1 to allow that.\n' "$test"
+      continue
+    fi
     statechart_tests+=("$test")
   done
   node --disable-warning=ExperimentalWarning --test "${statechart_tests[@]}"
