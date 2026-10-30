@@ -159,6 +159,21 @@ test("Given upstream's Agent Plugins root manifest, When the guards run, Then th
   assert.match(failed.stderr, /^plugin\.json: references agent-plugins\.org/m);
 });
 
+test("Given a sync that moves only UPSTREAM.json, When guarded, Then each copy still citing the old pin is reported", (t) => {
+  const dir = copyRepo(t);
+  const pin = JSON.parse(readFileSync(path.join(dir, "UPSTREAM.json"), "utf8"));
+  const moved = { ...pin, version: "0.15.99", commit: "0123456789abcdef0123456789abcdef01234567" };
+  writeFileSync(path.join(dir, "UPSTREAM.json"), `${JSON.stringify(moved, null, 2)}\n`);
+  const stale = () => checkFork(dir).map((problem) => problem.split(":")[0]);
+  assert.deepEqual(stale(), ["ADAPTATION.md", "README.md", "README.zh-CN.md"]);
+  // Moving one copy clears only that copy, and the README's short form must move with the full commit.
+  edit(dir, "ADAPTATION.md", (text) => text.replace(`Upstream pstack ${pin.version} at \`${pin.commit}\``, `Upstream pstack ${moved.version} at \`${moved.commit}\``));
+  edit(dir, "README.md", (text) => text.replace(`pstack ${pin.version} at`, `pstack ${moved.version} at`).replace(`/tree/${pin.commit}/`, `/tree/${moved.commit}/`));
+  assert.deepEqual(stale(), ["README.md", "README.zh-CN.md"]);
+  edit(dir, "README.md", (text) => text.replace(`[\`${pin.commit.slice(0, 8)}\`]`, `[\`${moved.commit.slice(0, 8)}\`]`));
+  assert.deepEqual(stale(), ["README.zh-CN.md"]);
+});
+
 test("Given a clean copy, When the CLI runs on it, Then it exits 0", (t) => {
   const dir = copyRepo(t);
   const passed = spawnSync(process.execPath, [cli, dir], { encoding: "utf8" });

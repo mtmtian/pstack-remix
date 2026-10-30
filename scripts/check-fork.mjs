@@ -545,6 +545,37 @@ export function validateManifests(root) {
   return problems;
 }
 
+// UPSTREAM.json holds the pin; each entry is the sentence that cites it elsewhere,
+// so a sync moves UPSTREAM.json and this names every copy left behind.
+const PIN_COPIES = {
+  "ADAPTATION.md": ({ version, commit }) => `Upstream pstack ${version} at \`${commit}\``,
+  "README.md": ({ version, short, tree }) => `upstream pstack ${version} at [\`${short}\`](${tree})`,
+  "README.zh-CN.md": ({ version, short, tree }) => `上游 pstack ${version}，跟踪提交 [\`${short}\`](${tree})`,
+};
+
+export function validatePin(root) {
+  let pin;
+  try {
+    pin = JSON.parse(readFileSync(path.join(root, "UPSTREAM.json"), "utf8"));
+  } catch (error) {
+    return [`UPSTREAM.json: ${error.message}`];
+  }
+  const fields = { ...pin, short: String(pin.commit).slice(0, 8), tree: `${pin.repository}/tree/${pin.commit}/${pin.path}` };
+  const problems = [];
+  for (const [rel, cite] of Object.entries(PIN_COPIES)) {
+    const expected = cite(fields);
+    let text;
+    try {
+      text = readFileSync(path.join(root, rel), "utf8");
+    } catch (error) {
+      problems.push(`${rel}: ${error.message}`);
+      continue;
+    }
+    if (!text.includes(expected)) problems.push(`${rel}: upstream-pin: no ${JSON.stringify(expected)}; cite the version and commit in UPSTREAM.json`);
+  }
+  return problems;
+}
+
 // GitHub's heading anchors: lowercase, punctuation other than `-` and `_` dropped, spaces to `-`.
 function headingSlugs(text) {
   return new Set([...text.matchAll(/^#{1,6}[ \t]+(.+?)[ \t]*$/gm)].map((m) => m[1].toLowerCase().replace(/[^\w\- ]/g, "").replaceAll(" ", "-")));
@@ -565,7 +596,7 @@ export function validateRequired(root) {
 }
 
 export function checkFork(root) {
-  return [...validateManifests(root), ...validateSkills(root), ...validateLinks(root), ...scanDenylist(root), ...validateRequired(root)];
+  return [...validateManifests(root), ...validatePin(root), ...validateSkills(root), ...validateLinks(root), ...scanDenylist(root), ...validateRequired(root)];
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
@@ -575,5 +606,5 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
     console.error(`Fork guards failed:\n${problems.join("\n")}`);
     process.exit(1);
   }
-  console.log(`Fork guards passed: ${DENYLIST.length} denylist rules, ${REQUIRED.length} required local decisions, skill frontmatter and contract links, local Markdown links, manifests.`);
+  console.log(`Fork guards passed: ${DENYLIST.length} denylist rules, ${REQUIRED.length} required local decisions, skill frontmatter and contract links, local Markdown links, manifests, upstream pin.`);
 }
