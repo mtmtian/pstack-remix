@@ -33,7 +33,7 @@ Replace the goal, paths, and checks with the real ones. These examples use `pote
 
 ## Review and ship
 
-- `Interrogate the whole branch against its intent. Do not change anything; report only defects or regressions with evidence.`
+- `Interrogate the whole branch against its intent. Do not change anything; report only defects or regressions a run proves.` Read the Dropped list too.
 - `create-formal-verification-skill prove <property> holds in <module>, even when <steps> interleave or retry.` After merges or refactors in that code: `maintain-formal-verification-skill`.
 - `Swarm: check each package under <dir> with its own check script, then give me one report.`
 - `Open a focused PR with the verification evidence in its description.`

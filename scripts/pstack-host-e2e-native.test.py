@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
@@ -11,19 +12,32 @@ ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = runpy.run_path(str(ROOT / "scripts/pstack-host-e2e-fixtures.py"))
 HARNESS, XAGENT = FIXTURES["HARNESS"], FIXTURES["XAGENT"]
 FIXED_STATS, STALE_STATS, ALL_CHECKS_PASS = FIXTURES["FIXED_STATS"], FIXTURES["STALE_STATS"], FIXTURES["ALL_CHECKS_PASS"]
+TEST_SOURCE = FIXTURES["TEST_SOURCE"]
 CLAUDE_MIXED, CODEX_MIXED = FIXTURES["CLAUDE_MIXED"], FIXTURES["CODEX_MIXED"]
 claude_native_dispatches = HARNESS["claude_native_dispatches"]
 codex_native_dispatches = HARNESS["codex_native_dispatches"]
+claude_parent_commands, codex_parent_commands = HARNESS["claude_parent_commands"], HARNESS["codex_parent_commands"]
 
 
-def agent_call(tool_id, requested, resolved, background=False, finished=True, denied=False, prompt="brief", tools=(), effort=None):
-    """Claude stream-json events for one Agent dispatch, shaped like a real `claude -p --verbose` run."""
+def iso(at=None):
+    """A host log's ISO timestamp for at, in seconds since the epoch, now by default."""
+    moment = datetime.fromtimestamp(at, timezone.utc) if at is not None else datetime.now(timezone.utc)
+    return moment.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def seconds(stamp):
+    """Seconds since the epoch for a timestamp iso wrote."""
+    return datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp()
+
+
+def agent_call(tool_id, requested, resolved, background=False, finished=True, denied=False, prompt="brief", tools=(), effort=None, started=None):
+    """Claude stream-json events for one Agent dispatch, shaped like a real `claude -p --verbose` run, dispatched now unless started says when."""
     arguments = {"description": tool_id, "subagent_type": "general-purpose", "prompt": prompt, "run_in_background": background}
     if requested is not None:
         arguments["model"] = requested
     if effort is not None:
         arguments["effort"] = effort
-    events = [{"type": "assistant", "parent_tool_use_id": None, "message": {"model": "claude-opus-5-5", "content": [
+    events = [{"type": "assistant", "parent_tool_use_id": None, "timestamp": started or iso(), "message": {"model": "claude-opus-5-5", "content": [
         {"type": "tool_use", "id": tool_id, "name": "Agent", "input": arguments},
     ]}}]
     # The subagent's own tool calls and results stream under the Agent call's id, for background agents too.
@@ -51,21 +65,18 @@ def works_in(checkout):
     return [("Bash", {"command": f"cd {checkout} && git diff"}), ("Read", {"file_path": f"{checkout}/stats.py"})]
 
 
-def snapshot_run(checkout):
-    """The snapshot command a native reviewer runs on checkout, and what the real helper prints for it now."""
-    command = f"python3 -B {ROOT / 'scripts/e2e-snapshot.py'} {checkout}"
-    output = subprocess.run([sys.executable, "-B", str(ROOT / "scripts/e2e-snapshot.py"), str(checkout)], check=True, capture_output=True, text=True).stdout
-    return command, output
+def attacks_in(checkout):
+    """An adversary's own tool calls: run the tests, add a repro beside them, and run it."""
+    return [*works_in(checkout), ("Bash", {"command": f"cd {checkout} && python3 -m unittest -q"}),
+            ("Write", {"file_path": f"{checkout}/test_repro.py"}), ("Bash", {"command": f"cd {checkout} && python3 -m unittest test_repro"}, False, "FAILED")]
 
 
-def snapshot_tool(checkout):
-    command, output = snapshot_run(checkout)
-    return ("Bash", {"command": command}, True, output)
-
-
-def reviews_in(checkout):
-    """A read-only review: snapshots of checkout before and after the subagent's own reads."""
-    return [snapshot_tool(checkout), *works_in(checkout), snapshot_tool(checkout)]
+def host_bash(tool_id, command, output="ok", is_error=False):
+    """Stream-json events for a Bash call the host itself made; Claude marks a nonzero exit or a refusal as an error."""
+    return [{"type": "assistant", "parent_tool_use_id": None, "message": {"content": [
+                {"type": "tool_use", "id": tool_id, "name": "Bash", "input": {"command": command}}]}},
+            {"type": "user", "parent_tool_use_id": None, "message": {"content": [
+                {"type": "tool_result", "tool_use_id": tool_id, "is_error": is_error, "content": output}]}}]
 
 
 def writes_in(checkout):
@@ -86,13 +97,16 @@ def claude_stream(*calls):
     return [json.dumps(event) for event in events]
 
 
-def write_codex_rollouts(home, thread, spawns, parent_rollout=True, effort=None, forked=False):
+def write_codex_rollouts(home, thread, spawns, parent_rollout=True, effort=None, forked=False, started=None, parent_commands=()):
     """Write rollouts shaped like `codex exec` sessions; return the matching `--json` host log.
 
     Each spawn is (call, requested model, child thread, model the child ran, finished, *actions), where an action
     is a shell command the child ran, ("run", command, output), or edits(path). A forked child's rollout starts
-    with a copy of the parent's history under the parent's turn id, as Codex writes it.
+    with a copy of the parent's history under the parent's turn id, as Codex writes it. Every rollout line carries
+    started, now by default, as its timestamp. parent_commands are the host's own commands, each a (script, working
+    directory or None, exit code or None for a command Codex declined), which its rollout records as CommandExecution items.
     """
+    stamp = started or iso()
     day = home / "sessions" / "2026" / "10" / "16"
     day.mkdir(parents=True, exist_ok=True)
     parent_turn = f"{thread}-turn"
@@ -133,9 +147,14 @@ def write_codex_rollouts(home, thread, spawns, parent_rollout=True, effort=None,
             events.append({"type": "event_msg", "payload": {"type": "task_complete", "last_agent_message": "done"}})
             parent.append({"type": "event_msg", "payload": {"type": "item_completed", "item": {
                 "type": "SubAgentActivity", "kind": "completed", "id": f"done-{call}", "agent_thread_id": child}}})
-        (day / f"rollout-2026-10-16T04-00-00-{child}.jsonl").write_text("".join(json.dumps(event) + "\n" for event in events))
+        (day / f"rollout-2026-10-16T04-00-00-{child}.jsonl").write_text("".join(json.dumps({"timestamp": stamp, **event}) + "\n" for event in events))
+    for script, cwd, code in parent_commands:
+        parent.append({"type": "event_msg", "payload": {"type": "item_completed", "item": {
+            "type": "CommandExecution", "command": ["/bin/zsh", "-lc", script], "aggregated_output": "FAILED",
+            "status": "declined" if code is None else "completed" if code == 0 else "failed", "exit_code": code,
+            **({"cwd": Path(cwd).as_uri()} if cwd else {})}}})
     if parent_rollout:
-        (day / f"rollout-2026-10-16T04-00-00-{thread}.jsonl").write_text("".join(json.dumps(event) + "\n" for event in parent))
+        (day / f"rollout-2026-10-16T04-00-00-{thread}.jsonl").write_text("".join(json.dumps({"timestamp": stamp, **event}) + "\n" for event in parent))
     return [json.dumps({"type": "thread.started", "thread_id": thread}), json.dumps({"type": "turn.completed"})]
 
 
@@ -143,9 +162,9 @@ class NativeEvidenceTest(FIXTURES["HarnessFixture"]):
     def codex_writes(self, checkout):
         return (f"cd {checkout} && git diff", edits(checkout / "stats.py"))
 
-    def codex_reviews(self, checkout):
-        snapshot = ("run", *snapshot_run(checkout))
-        return (snapshot, f"git -C {checkout} diff", snapshot)
+    def codex_attacks(self, checkout):
+        return (f"git -C {checkout} diff", f"cd {checkout} && python3 -m unittest -q", edits(checkout / "test_repro.py"),
+                ("run", f"cd {checkout} && python3 -m unittest test_repro", "FAILED"))
 
     def native_note(self, name, task):
         """A host's own record of a native worker, laid out as the Codex host wrote it in a live run."""
@@ -164,12 +183,12 @@ class NativeEvidenceTest(FIXTURES["HarnessFixture"]):
 
     def test_given_host_notes_named_meta_json_beside_xagent_receipts_when_collected_then_only_xagent_receipts_count(self):
         collect_xagent_receipts = HARNESS["collect_xagent_receipts"]
-        written = self.xagent_reviews_for(CODEX_MIXED["reviewers"])
-        notes = [self.native_note("native-writer-1", "/root/swarm_writer"), self.native_note("reviewer-native-r1-a1", "/root/interrogate_native_r1")]
+        written = self.xagent_attacks_for(CODEX_MIXED["adversaries"])
+        notes = [self.native_note("native-writer-1", "/root/swarm_writer"), self.native_note("adversary-native-r1-a1", "/root/interrogate_native_r1")]
         home = self.root / "codex-home"
         native, _ = codex_native_dispatches(write_codex_rollouts(home, "thread-third-run", [
             ("call-writer", "gpt-6.1-sol", "thread-writer", "gpt-6.1-sol", True, *self.codex_writes(self.final_checkout("writer-1"))),
-            ("call-review", "gpt-6.1-sol", "thread-review", "gpt-6.1-sol", True, *self.codex_reviews(self.final_checkout("reviewer-native-r1"))),
+            ("call-attack", "gpt-6.1-sol", "thread-attack", "gpt-6.1-sol", True, *self.codex_attacks(self.attack_checkout("adversary-native-r1"))),
         ]), home)
 
         receipts, ignored = collect_xagent_receipts(self.evidence)
@@ -194,46 +213,45 @@ class NativeEvidenceTest(FIXTURES["HarnessFixture"]):
         self.assertEqual([command.command for command in still_open.commands], ["echo still"])
 
     def test_given_mixed_claude_policy_when_stream_shows_native_dispatches_and_xagent_receipts_then_all_checks_pass(self):
-        receipts = self.xagent_reviews_for(CLAUDE_MIXED["reviewers"])
+        receipts = self.xagent_attacks_for(CLAUDE_MIXED["adversaries"])
         native, gap = claude_native_dispatches(claude_stream(
             self.native_writer(self.final_checkout("writer-native")),
-            agent_call("toolu_review", "opus", "claude-opus-5-5", background=True, tools=reviews_in(self.final_checkout("review-native"))),
+            agent_call("toolu_attack", "opus", "claude-opus-5-5", background=True, tools=attacks_in(self.attack_checkout("attack-native"))),
         ))
         self.assertIsNone(gap)
         self.assertEqual(self.valid_receipts(receipts, native_dispatches=native, **CLAUDE_MIXED), ALL_CHECKS_PASS)
 
     def test_given_mixed_codex_policy_when_rollouts_show_native_dispatches_and_xagent_receipts_then_all_checks_pass(self):
-        receipts = self.xagent_reviews_for(CODEX_MIXED["reviewers"])
+        receipts = self.xagent_attacks_for(CODEX_MIXED["adversaries"])
         home = self.root / "codex-home"
         log = write_codex_rollouts(home, "thread-host", [
             ("call-writer", "gpt-6.1-sol", "thread-writer", "gpt-6.1-sol", True, *self.codex_writes(self.final_checkout("writer-native"))),
-            ("call-review", "gpt-6.1-sol", "thread-review", "gpt-6.1-sol", True, *self.codex_reviews(self.final_checkout("review-native"))),
+            ("call-attack", "gpt-6.1-sol", "thread-attack", "gpt-6.1-sol", True, *self.codex_attacks(self.attack_checkout("attack-native"))),
         ])
         native, gap = codex_native_dispatches(log, home)
         self.assertIsNone(gap)
         self.assertEqual([(d.requested, d.resolved, d.status) for d in native], [("gpt-6.1-sol", "gpt-6.1-sol", "completed")] * 2)
-        self.assertTrue(all(self.valid_receipts(receipts, native_dispatches=native, **CODEX_MIXED).values()))
+        self.assertEqual(self.valid_receipts(receipts, native_dispatches=native, **CODEX_MIXED), ALL_CHECKS_PASS)
 
     def test_given_an_all_native_policy_when_every_agent_call_completes_then_no_xagent_receipt_is_required(self):
         self.write_final_parent()
         native, gap = claude_native_dispatches(claude_stream(self.native_writer(self.final_checkout("writer-native")), *(
-            agent_call(f"toolu_review_{index}", "opus", "claude-opus-5-5", tools=reviews_in(self.final_checkout(f"review-{index}"))) for index in range(2))))
+            agent_call(f"toolu_attack_{index}", "opus", "claude-opus-5-5", tools=attacks_in(self.attack_checkout(f"attack-{index}"))) for index in range(2))))
         self.assertIsNone(gap)
-        self.assertEqual(self.valid_receipts([], native_dispatches=native, writer="opus", reviewers=("opus", "opus")), ALL_CHECKS_PASS)
+        self.assertEqual(self.valid_receipts([], native_dispatches=native, writer="opus", adversaries=("opus", "opus")), ALL_CHECKS_PASS)
 
-    def test_given_one_agent_with_two_models_sharing_a_reviewer_worktree_when_checked_then_ownership_fails(self):
-        shared = self.add_worktree("shared-claude")
-        (shared / "stats.py").write_text(FIXED_STATS)
+    def test_given_one_agent_with_two_models_sharing_an_adversary_worktree_when_checked_then_ownership_fails(self):
+        shared = self.attack_checkout("shared-claude")
         self.write_final_parent()
         receipts = [
-            self.receipt("claude", "ro", shared, name="claude-default"),
-            self.receipt("claude", "ro", shared, name="claude-opus", model="opus"),
+            self.receipt("claude", "rw", shared, name="claude-default"),
+            self.receipt("claude", "rw", shared, name="claude-opus", model="opus"),
         ]
         native, _ = claude_native_dispatches(claude_stream(self.native_writer(self.final_checkout("writer-native"))))
-        checks = self.valid_receipts(receipts, native_dispatches=native, writer="opus", reviewers=("xagent:claude", "xagent:claude/opus"))
-        # Different models are different workers, and the second review slot cannot reuse the first one's checkout either.
+        checks = self.valid_receipts(receipts, native_dispatches=native, writer="opus", adversaries=("xagent:claude", "xagent:claude/opus"))
+        # Different models are different workers, and the second adversary slot cannot reuse the first one's checkout either.
         self.assertFalse(checks["receipt_workspaces_owned"])
-        self.assertFalse(checks["configured_reviewers_dispatched"])
+        self.assertFalse(checks["configured_adversaries_dispatched"])
 
     def test_given_codex_reports_a_claude_style_model_id_when_checked_then_only_claude_resolves_aliases(self):
         self.write_final_parent()
@@ -243,193 +261,208 @@ class NativeEvidenceTest(FIXTURES["HarnessFixture"]):
             ("call-writer", "opus", "thread-alias-w", "claude-opus-5-5", True, *self.codex_writes(writer_checkout))]), home)
         self.assertIsNone(gap)
         claude, _ = claude_native_dispatches(claude_stream(self.native_writer(writer_checkout)))
-        self.assertFalse(self.valid_receipts([], native_dispatches=codex, writer="opus", reviewers=())["configured_writer_dispatched"])
-        self.assertTrue(self.valid_receipts([], native_dispatches=claude, writer="opus", reviewers=())["configured_writer_dispatched"])
+        self.assertFalse(self.valid_receipts([], native_dispatches=codex, writer="opus", adversaries=())["configured_writer_dispatched"])
+        self.assertTrue(self.valid_receipts([], native_dispatches=claude, writer="opus", adversaries=())["configured_writer_dispatched"])
 
-    def test_given_claude_native_reviews_when_their_subagents_work_in_checkouts_then_only_one_final_checkout_at_the_base_counts(self):
+    def test_given_claude_native_attacks_when_their_subagents_work_in_checkouts_then_only_one_final_checkout_at_the_base_counts(self):
         self.write_final_parent()
-        final = self.final_checkout("review-final")
-        stale = self.final_checkout("review-stale", stats=STALE_STATS)
-        committed = self.committed_checkout("review-committed")
-        brief = self.scope / "briefs" / "review.md"
+        final = self.attack_checkout("attack-final")
+        stale = self.final_checkout("attack-stale", stats=STALE_STATS)
+        committed = self.committed_checkout("attack-committed")
+        brief = self.scope / "briefs" / "attack.md"
         brief.parent.mkdir()
-        brief.write_text(f"Your exclusive read-only worktree: {stale}\n")
+        brief.write_text(f"Your exclusive worktree: {stale}\n")
         writer = self.native_writer(self.final_checkout("writer-native"))
         for name, tools, counted in (
-            ("final checkout", reviews_in(final), True),
-            ("brief outside any checkout, then the final checkout", [("Read", {"file_path": str(brief)}), *reviews_in(final)], True),
-            ("parent checkout and the final checkout", [("Bash", {"command": f"git -C {self.parent} status"}), *reviews_in(final)], True),
-            ("checkout reviewed before the last change", reviews_in(stale), False),
-            ("final checkout without snapshots", works_in(final), False),
-            ("checkout moved off the fixture base", reviews_in(committed), False),
-            ("final and stale checkouts", [*reviews_in(final), *works_in(stale)], False),
-            ("final checkout it edited", writes_in(final), False),
+            ("final checkout", attacks_in(final), True),
+            ("brief outside any checkout, then the final checkout", [("Read", {"file_path": str(brief)}), *attacks_in(final)], True),
+            ("parent checkout and the final checkout", [("Bash", {"command": f"git -C {self.parent} status"}), *attacks_in(final)], True),
+            # An attack that found nothing to run still attacked the final version.
+            ("final checkout, reads only", works_in(final), True),
+            ("checkout attacked before the last change", attacks_in(stale), False),
+            ("checkout moved off the fixture base", attacks_in(committed), False),
+            ("final and stale checkouts", [*attacks_in(final), *works_in(stale)], False),
+            ("final checkout whose stats.py it edited", writes_in(final), False),
             ("relative and missing paths only", [("Bash", {"command": "cat stats.py"}), ("Read", {"file_path": f"{final}/notes/missing.md"})], False),
         ):
             with self.subTest(name):
-                native, _ = claude_native_dispatches(claude_stream(writer, agent_call("toolu_review", "opus", "claude-opus-5-5", tools=tools)))
-                checks = self.valid_receipts([], native_dispatches=native, writer="opus", reviewers=("opus",))
+                native, _ = claude_native_dispatches(claude_stream(writer, agent_call("toolu_attack", "opus", "claude-opus-5-5", tools=tools)))
+                checks = self.valid_receipts([], native_dispatches=native, writer="opus", adversaries=("opus",))
                 self.assertTrue(checks["configured_writer_dispatched"])
-                self.assertEqual(checks["configured_reviewers_dispatched"], counted)
+                self.assertEqual(checks["configured_adversaries_dispatched"], counted)
 
-    def test_given_codex_native_reviews_when_their_own_commands_name_checkouts_then_only_a_final_version_counts(self):
-        # Codex encrypts the task payload in both rollouts, so the child's own commands show where it reviewed.
+    def test_given_codex_native_attacks_when_their_own_commands_name_checkouts_then_only_a_final_version_counts(self):
+        # Codex encrypts the task payload in both rollouts, so the child's own commands show where it attacked.
         self.write_final_parent()
-        final = self.final_checkout("review-final")
-        stale = self.final_checkout("review-stale", stats=STALE_STATS)
+        final = self.attack_checkout("attack-final")
+        stale = self.final_checkout("attack-stale", stats=STALE_STATS)
         writer_checkout = self.final_checkout("writer-native")
         home = self.root / "codex-home"
         for index, (name, commands, counted) in enumerate((
-            ("final checkout", self.codex_reviews(final), True),
-            ("checkout reviewed before the last change", self.codex_reviews(stale), False),
+            ("final checkout", self.codex_attacks(final), True),
+            ("checkout attacked before the last change", self.codex_attacks(stale), False),
             ("no command", [], False),
         )):
             with self.subTest(name):
                 thread = f"thread-bind-{index}"
-                # The review comes first, so the writer must not take the only attempt that can review.
+                # The attack comes first, and the writer still finds its own attempt.
                 native, gap = codex_native_dispatches(write_codex_rollouts(home, thread, [
-                    (f"{thread}-review", "gpt-6.1-sol", f"{thread}-r", "gpt-6.1-sol", True, *commands),
+                    (f"{thread}-attack", "gpt-6.1-sol", f"{thread}-a", "gpt-6.1-sol", True, *commands),
                     (f"{thread}-writer", "gpt-6.1-sol", f"{thread}-w", "gpt-6.1-sol", True, *self.codex_writes(writer_checkout)),
                 ]), home)
                 self.assertIsNone(gap)
-                checks = self.valid_receipts([], native_dispatches=native, writer="gpt-6.1-sol", reviewers=("gpt-6.1-sol",))
+                checks = self.valid_receipts([], native_dispatches=native, writer="gpt-6.1-sol", adversaries=("gpt-6.1-sol",))
                 self.assertTrue(checks["configured_writer_dispatched"])
-                self.assertEqual(checks["configured_reviewers_dispatched"], counted)
+                self.assertEqual(checks["configured_adversaries_dispatched"], counted)
 
-    # Scenarios A-E from the second review round: a native review is bound by its subagent's own tool calls.
-    def test_given_a_native_writer_and_an_unrelated_agent_call_when_nothing_was_reviewed_then_the_review_slot_stays_empty(self):
+    # Scenarios A-E from the second review round: a native worker is bound by its subagent's own tool calls.
+    def test_given_a_native_writer_and_an_unrelated_agent_call_when_nothing_was_attacked_then_the_adversary_slot_stays_empty(self):
         self.write_final_parent()
         writer_checkout = self.final_checkout("writer-native")
         native, _ = claude_native_dispatches(claude_stream(
             self.native_writer(writer_checkout),
             agent_call("toolu_summary", "opus", "claude-opus-5-5", prompt="Summarize the plan."),
         ))
-        checks = self.valid_receipts([], native_dispatches=native, writer="opus", reviewers=("opus",))
+        checks = self.valid_receipts([], native_dispatches=native, writer="opus", adversaries=("opus",))
         self.assertTrue(checks["configured_writer_dispatched"])
-        self.assertFalse(checks["configured_reviewers_dispatched"])
+        self.assertFalse(checks["configured_adversaries_dispatched"])
 
-    def test_given_two_native_reviews_working_in_one_checkout_when_checked_then_only_one_review_counts(self):
+    def test_given_two_native_attacks_working_in_one_checkout_when_checked_then_only_one_attack_counts(self):
         self.write_final_parent()
         writer_checkout = self.final_checkout("writer-native")
-        shared = self.final_checkout("review-shared")
+        shared = self.attack_checkout("attack-shared")
         native, _ = claude_native_dispatches(claude_stream(self.native_writer(writer_checkout), *(
-            agent_call(f"toolu_review_{index}", "opus", "claude-opus-5-5", prompt=f"Review {shared}.", tools=reviews_in(shared)) for index in range(2))))
-        checks = self.valid_receipts([], native_dispatches=native, writer="opus", reviewers=("opus", "opus"))
-        self.assertFalse(checks["configured_reviewers_dispatched"])
+            agent_call(f"toolu_attack_{index}", "opus", "claude-opus-5-5", prompt=f"Attack {shared}.", tools=attacks_in(shared)) for index in range(2))))
+        checks = self.valid_receipts([], native_dispatches=native, writer="opus", adversaries=("opus", "opus"))
+        self.assertTrue(checks["receipt_workspaces_owned"])
+        self.assertFalse(checks["configured_adversaries_dispatched"])
 
-    def test_given_a_native_review_working_in_the_xagent_writers_checkout_when_checked_then_ownership_fails(self):
+    def test_given_a_native_attack_working_in_the_xagent_writers_checkout_when_checked_then_ownership_fails(self):
         writer_checkout = self.final_checkout("writer-codex")
         self.write_final_parent()
-        writer = self.receipt("codex", "rw", writer_checkout)
+        writer = self.writer_receipt("codex", writer_checkout)
         native, _ = claude_native_dispatches(claude_stream(
-            agent_call("toolu_review", "opus", "claude-opus-5-5", prompt=f"Review {writer_checkout}.", tools=works_in(writer_checkout))))
-        checks = self.valid_receipts([writer], native_dispatches=native, writer="xagent:codex", reviewers=("opus",))
+            agent_call("toolu_attack", "opus", "claude-opus-5-5", prompt=f"Attack {writer_checkout}.", tools=attacks_in(writer_checkout))))
+        checks = self.valid_receipts([writer], native_dispatches=native, writer="xagent:codex", adversaries=("opus",))
         self.assertFalse(checks["receipt_workspaces_owned"])
 
-    def test_given_a_review_prompt_that_mentions_a_committed_checkout_when_the_review_worked_elsewhere_then_it_counts(self):
+    def test_given_an_attack_prompt_that_mentions_a_committed_checkout_when_the_attack_worked_elsewhere_then_it_counts(self):
         self.write_final_parent()
         writer_checkout, committed = self.final_checkout("writer-native"), self.committed_checkout("writer-committed")
-        review_checkout = self.final_checkout("review-native")
+        attack_checkout = self.attack_checkout("attack-native")
         native, _ = claude_native_dispatches(claude_stream(
             self.native_writer(writer_checkout),
-            agent_call("toolu_review", "opus", "claude-opus-5-5", tools=reviews_in(review_checkout),
-                       prompt=f"An earlier writer committed in {committed}. Review the uncommitted patch in {review_checkout}."),
+            agent_call("toolu_attack", "opus", "claude-opus-5-5", tools=attacks_in(attack_checkout),
+                       prompt=f"An earlier writer committed in {committed}. Attack the uncommitted patch in {attack_checkout}."),
         ))
-        self.assertEqual(self.valid_receipts([], native_dispatches=native, writer="opus", reviewers=("opus",)), ALL_CHECKS_PASS)
+        self.assertEqual(self.valid_receipts([], native_dispatches=native, writer="opus", adversaries=("opus",)), ALL_CHECKS_PASS)
 
-    def test_given_a_review_that_writes_notes_naming_an_old_checkout_when_checked_then_its_own_checkout_decides(self):
+    def test_given_an_attack_that_writes_notes_naming_an_old_checkout_when_checked_then_its_own_checkout_decides(self):
         self.write_final_parent()
         writer_checkout = self.final_checkout("writer-native")
-        stale = self.final_checkout("review-stale", stats=STALE_STATS)
-        review_checkout = self.final_checkout("review-native")
-        notes = self.scope / "evidence" / "review-notes.md"
-        notes.write_text(f"An earlier draft was reviewed in {stale}.\n")
+        stale = self.final_checkout("attack-stale", stats=STALE_STATS)
+        attack_checkout = self.attack_checkout("attack-native")
+        notes = self.scope / "evidence" / "attack-notes.md"
+        notes.write_text(f"An earlier draft was attacked in {stale}.\n")
         native, _ = claude_native_dispatches(claude_stream(
             self.native_writer(writer_checkout),
-            agent_call("toolu_review", "opus", "claude-opus-5-5", prompt=f"Review {review_checkout} and keep notes in {notes}.",
-                       tools=[*reviews_in(review_checkout), ("Write", {"file_path": str(notes)})]),
+            agent_call("toolu_attack", "opus", "claude-opus-5-5", prompt=f"Attack {attack_checkout} and keep notes in {notes}.",
+                       tools=[*attacks_in(attack_checkout), ("Write", {"file_path": str(notes)})]),
         ))
-        self.assertEqual(self.valid_receipts([], native_dispatches=native, writer="opus", reviewers=("opus",)), ALL_CHECKS_PASS)
+        self.assertEqual(self.valid_receipts([], native_dispatches=native, writer="opus", adversaries=("opus",)), ALL_CHECKS_PASS)
 
-    def test_given_a_host_that_dispatched_only_reviews_when_checked_then_no_review_fills_the_writer_slot(self):
+    def test_given_a_host_that_dispatched_only_attacks_when_checked_then_no_attack_fills_the_writer_slot(self):
         # Codex review of 78ecce9, P1: a writer slot needs a dispatch that edited its own checkout.
         self.write_final_parent()
-        reviews = [self.final_checkout(f"review-{index}") for index in range(2)]
+        attacks = [self.attack_checkout(f"attack-{index}") for index in range(2)]
         claude, _ = claude_native_dispatches(claude_stream(*(
-            agent_call(f"toolu_review_{index}", "opus", "claude-opus-5-5", tools=reviews_in(checkout)) for index, checkout in enumerate(reviews))))
+            agent_call(f"toolu_attack_{index}", "opus", "claude-opus-5-5", tools=attacks_in(checkout)) for index, checkout in enumerate(attacks))))
         home = self.root / "codex-home"
-        codex, _ = codex_native_dispatches(write_codex_rollouts(home, "thread-reviews-only", [
-            (f"call-review-{index}", "gpt-6.1-sol", f"thread-review-{index}", "gpt-6.1-sol", True, *self.codex_reviews(checkout))
-            for index, checkout in enumerate(reviews)]), home)
+        codex, _ = codex_native_dispatches(write_codex_rollouts(home, "thread-attacks-only", [
+            (f"call-attack-{index}", "gpt-6.1-sol", f"thread-attack-{index}", "gpt-6.1-sol", True, *self.codex_attacks(checkout))
+            for index, checkout in enumerate(attacks)]), home)
         for host, native, model in (("claude", claude, "opus"), ("codex", codex, "gpt-6.1-sol")):
             with self.subTest(host):
-                checks = self.valid_receipts([], native_dispatches=native, writer=model, reviewers=(model,))
+                checks = self.valid_receipts([], native_dispatches=native, writer=model, adversaries=(model,))
                 self.assertFalse(checks["configured_writer_dispatched"])
-                self.assertTrue(checks["configured_reviewers_dispatched"])
+                self.assertTrue(checks["configured_adversaries_dispatched"])
 
     def test_given_a_policy_effort_when_a_worker_records_none_then_it_fills_no_role(self):
         # Codex review of 78ecce9, P1: any level counts, since poteto-mode adjusts it per task, but it must be passed.
         self.write_final_parent()
         writer_checkout = self.final_checkout("writer-native")
-        review_checkout = self.final_checkout("review-native")
+        attack_checkout = self.attack_checkout("attack-native")
         home = self.root / "codex-home"
         for index, (effort, policy, counted) in enumerate(((None, "xhigh", False), ("high", "xhigh", True), (None, None, True), ("turbo", "xhigh", False))):
             with self.subTest(effort=effort, policy=policy):
                 writer = self.final_checkout(f"writer-codex-{index}")
-                review = self.final_checkout(f"review-grok-{index}")
-                receipts = [self.receipt("codex", "rw", writer, name=f"rw-codex-{index}", effort=effort),
-                            self.receipt("grok", "ro", review, name=f"ro-grok-{index}", effort=effort)]
-                checks = self.valid_receipts(receipts, reviewers=("xagent:grok",), effort=policy)
-                self.assertEqual((checks["configured_writer_dispatched"], checks["configured_reviewers_dispatched"]), (counted, counted))
+                attack = self.attack_checkout(f"attack-grok-{index}")
+                receipts = [self.writer_receipt("codex", writer, name=f"rw-codex-{index}", effort=effort),
+                            self.receipt("grok", "rw", attack, name=f"rw-grok-{index}", effort=effort)]
+                checks = self.valid_receipts(receipts, adversaries=("xagent:grok",), effort=policy)
+                self.assertEqual((checks["configured_writer_dispatched"], checks["configured_adversaries_dispatched"]), (counted, counted))
                 claude, _ = claude_native_dispatches(claude_stream(
                     agent_call("toolu_writer", "opus", "claude-opus-5-5", tools=writes_in(writer_checkout), effort=effort),
-                    agent_call("toolu_review", "opus", "claude-opus-5-5", tools=reviews_in(review_checkout), effort=effort)))
+                    agent_call("toolu_attack", "opus", "claude-opus-5-5", tools=attacks_in(attack_checkout), effort=effort)))
                 codex, _ = codex_native_dispatches(write_codex_rollouts(home, f"thread-effort-{index}", [
                     (f"effort-{index}-writer", "gpt-6.1-sol", f"effort-{index}-w", "gpt-6.1-sol", True, *self.codex_writes(writer_checkout)),
-                    (f"effort-{index}-review", "gpt-6.1-sol", f"effort-{index}-r", "gpt-6.1-sol", True, *self.codex_reviews(review_checkout)),
+                    (f"effort-{index}-attack", "gpt-6.1-sol", f"effort-{index}-a", "gpt-6.1-sol", True, *self.codex_attacks(attack_checkout)),
                 ], effort=effort), home)
                 for native, model in ((claude, "opus"), (codex, "gpt-6.1-sol")):
-                    checks = self.valid_receipts([], native_dispatches=native, writer=model, reviewers=(model,), effort=policy)
-                    self.assertEqual((checks["configured_writer_dispatched"], checks["configured_reviewers_dispatched"]), (counted, counted))
+                    checks = self.valid_receipts([], native_dispatches=native, writer=model, adversaries=(model,), effort=policy)
+                    self.assertEqual((checks["configured_writer_dispatched"], checks["configured_adversaries_dispatched"]), (counted, counted))
 
     def test_given_a_native_writer_sent_back_to_its_own_worktree_when_checked_then_the_follow_up_keeps_its_owner(self):
         # Third review round, scenario G: like an xagent retry, a writer's follow-up fix may reuse its worktree.
         self.write_final_parent()
-        writer_checkout, review_checkout = self.final_checkout("writer-native"), self.final_checkout("review-native")
+        writer_checkout, attack_checkout = self.final_checkout("writer-native"), self.attack_checkout("attack-native")
         native, _ = claude_native_dispatches(claude_stream(
             self.native_writer(writer_checkout),
-            agent_call("toolu_review", "opus", "claude-opus-5-5", tools=reviews_in(review_checkout)),
-            agent_call("toolu_fix", "opus", "claude-opus-5-5", prompt=f"Address the review in {writer_checkout}.", tools=writes_in(writer_checkout)),
+            agent_call("toolu_attack", "opus", "claude-opus-5-5", tools=attacks_in(attack_checkout)),
+            agent_call("toolu_fix", "opus", "claude-opus-5-5", prompt=f"Address the finding in {writer_checkout}.", tools=writes_in(writer_checkout)),
         ))
-        self.assertEqual(self.valid_receipts([], native_dispatches=native, writer="opus", reviewers=("opus",)), ALL_CHECKS_PASS)
+        self.assertEqual(self.valid_receipts([], native_dispatches=native, writer="opus", adversaries=("opus",)), ALL_CHECKS_PASS)
 
-    def test_given_a_review_by_the_writers_model_in_the_writers_worktree_when_checked_then_ownership_fails(self):
-        # One worker writing and reviewing is two owners, so a review cannot reuse the writer's worktree.
+    def test_given_an_attack_by_the_writers_model_in_the_writers_worktree_when_checked_then_the_workflow_fails(self):
+        # One worker is one owner, so it may share the worktree, but the adversary slot then has no checkout of its own.
         self.write_final_parent()
         writer_checkout = self.final_checkout("writer-native")
+        (writer_checkout / "test_repro.py").write_text(FIXTURES["REPRO_TEST"])
+        for name, tools in (("reads only", works_in(writer_checkout)), ("adds a repro", attacks_in(writer_checkout))):
+            with self.subTest(name):
+                native, _ = claude_native_dispatches(claude_stream(
+                    self.native_writer(writer_checkout), agent_call("toolu_attack", "opus", "claude-opus-5-5", tools=tools)))
+                checks = self.valid_receipts([], native_dispatches=native, writer="opus", adversaries=("opus",))
+                self.assertEqual((checks["receipt_workspaces_owned"], checks["configured_writer_dispatched"], checks["configured_adversaries_dispatched"]),
+                                 (True, True, False))
+
+    def test_given_a_native_attack_retried_in_its_worktree_when_only_the_retry_adds_a_repro_then_both_keep_one_owner(self):
+        # thermos round 1: whether an attempt edited a file does not split one worker into two owners.
+        self.write_final_parent()
+        writer, checkout = self.native_writer(self.final_checkout("writer-native")), self.attack_checkout("attack-native")
         native, _ = claude_native_dispatches(claude_stream(
-            self.native_writer(writer_checkout), agent_call("toolu_review", "opus", "claude-opus-5-5", tools=works_in(writer_checkout))))
-        self.assertFalse(self.valid_receipts([], native_dispatches=native, writer="opus", reviewers=("opus",))["receipt_workspaces_owned"])
+            writer, agent_call("toolu_attack", "opus", None, denied=True, tools=works_in(checkout)),
+            agent_call("toolu_retry", "opus", "claude-opus-5-5", tools=attacks_in(checkout))))
+        self.assertEqual(self.valid_receipts([], native_dispatches=native, writer="opus", adversaries=("opus",)), ALL_CHECKS_PASS)
 
     def test_given_a_shell_written_writer_and_an_edit_somewhere_else_when_checked_then_the_workflow_fails(self):
-        # Third review round, scenario F: a shell edit fills no writer slot, and without snapshots its worktree is no review.
+        # A shell edit fills no writer slot (third review round, scenario F). Its worktree, written during the attempt, holds no attack either.
         self.write_final_parent()
         shell_written = self.final_checkout("writer-shell")
         elsewhere = self.scope / "scratch"
         elsewhere.mkdir()
         self.git(elsewhere, "init", "-q")
         (elsewhere / "stats.py").write_text(FIXED_STATS)
+        started = iso()
+        shell_writer = agent_call("toolu_writer", "opus", "claude-opus-5-5", tools=[("Bash", {"command": f"cat > {shell_written}/stats.py <<'EOF'"})], started=started)
+        self.write_after(shell_written / "stats.py", FIXED_STATS, seconds(started))
         native, _ = claude_native_dispatches(claude_stream(
-            agent_call("toolu_writer", "opus", "claude-opus-5-5", tools=[("Bash", {"command": f"cat > {shell_written}/stats.py <<'EOF'"})]),
-            agent_call("toolu_other", "opus", "claude-opus-5-5", tools=[("Edit", {"file_path": f"{elsewhere}/stats.py"})]),
-        ))
-        self.assertFalse(self.valid_receipts([], native_dispatches=native, writer="opus", reviewers=("opus",))["configured_writer_dispatched"])
-        # The same with the other edit in a proper worktree at the base: it may write, but nothing reviewed.
-        native, _ = claude_native_dispatches(claude_stream(
-            agent_call("toolu_writer", "opus", "claude-opus-5-5", tools=[("Bash", {"command": f"cat > {shell_written}/stats.py <<'EOF'"})]),
-            self.native_writer(self.final_checkout("writer-elsewhere"))))
-        checks = self.valid_receipts([], native_dispatches=native, writer="opus", reviewers=("opus",))
-        self.assertEqual((checks["configured_writer_dispatched"], checks["configured_reviewers_dispatched"]), (True, False))
+            shell_writer, agent_call("toolu_other", "opus", "claude-opus-5-5", tools=[("Edit", {"file_path": f"{elsewhere}/stats.py"})])))
+        self.assertFalse(self.valid_receipts([], native_dispatches=native, writer="opus", adversaries=("opus",))["configured_writer_dispatched"])
+        # The same with the other edit in a proper worktree at the base: it may write, but nothing attacked.
+        native, _ = claude_native_dispatches(claude_stream(shell_writer, self.native_writer(self.final_checkout("writer-elsewhere"))))
+        checks = self.valid_receipts([], native_dispatches=native, writer="opus", adversaries=("opus",))
+        self.assertEqual((checks["configured_writer_dispatched"], checks["configured_adversaries_dispatched"]), (True, False))
 
     def test_given_native_writer_evidence_when_checked_then_only_a_successful_edit_in_a_worktree_at_the_base_writes(self):
         self.write_final_parent()
@@ -447,83 +480,124 @@ class NativeEvidenceTest(FIXTURES["HarnessFixture"]):
         ):
             with self.subTest(name):
                 native, _ = claude_native_dispatches(claude_stream(agent_call("toolu_writer", "opus", "claude-opus-5-5", tools=tools)))
-                self.assertEqual(self.valid_receipts([], native_dispatches=native, writer="opus", reviewers=())["configured_writer_dispatched"], writes)
-
-    def test_given_snapshot_commands_written_differently_when_checked_then_any_python_run_of_the_tool_counts(self):
-        # Fourth review round, S2-S5: the checkout is the one the tool printed, and only a Python run of the tool counts.
-        self.write_final_parent()
-        writer, checkout = self.native_writer(self.final_checkout("writer-native")), self.final_checkout("review-native")
-        tool = ROOT / "scripts/e2e-snapshot.py"
-        _, line = snapshot_run(checkout)
-        for name, command, counted in (
-            ("cd into the worktree first", f"cd {checkout} && python3 -B {tool} .", True),
-            ("python instead of python3", f"python -B {tool} {checkout}", True),
-            ("without -B", f"python3 {tool} {checkout}", True),
-            ("an echoed snapshot line", f"echo {line.strip()}", False),
-            ("the tool beside a file holding a forged line", f"cat {tool} {self.scope / 'forged.txt'}", False),
-            ("the tool followed by an echoed line", f"python3 -B {tool} {checkout}-missing; echo {line.strip()}", False),
-            ("a change before the tool in the same command", f"cd {checkout} && sed -i.bak 's/x/x/' stats.py && python3 -B {tool} .", False),
-        ):
-            with self.subTest(name):
-                snapshot = ("Bash", {"command": command}, True, line)
-                native, _ = claude_native_dispatches(claude_stream(
-                    writer, agent_call("toolu_review", "opus", "claude-opus-5-5", tools=[snapshot, *works_in(checkout), snapshot])))
-                self.assertEqual(self.valid_receipts([], native_dispatches=native, writer="opus", reviewers=("opus",))["configured_reviewers_dispatched"], counted)
+                self.assertEqual(self.valid_receipts([], native_dispatches=native, writer="opus", adversaries=())["configured_writer_dispatched"], writes)
 
     def test_given_dispatches_from_a_second_load_of_the_evidence_module_when_checked_then_the_result_is_the_same(self):
         # Fourth review round: the role checks read a dispatch's fields, not the identity of a class runpy loaded.
         self.write_final_parent()
         stream = claude_stream(self.native_writer(self.final_checkout("writer-native")),
-                               agent_call("toolu_review", "opus", "claude-opus-5-5", tools=reviews_in(self.final_checkout("review-native"))))
+                               agent_call("toolu_attack", "opus", "claude-opus-5-5", tools=attacks_in(self.attack_checkout("attack-native"))))
         second_load, _ = runpy.run_path(str(ROOT / "scripts/e2e-native-evidence.py"))["claude_native_dispatches"](stream)
-        self.assertEqual(self.valid_receipts([], native_dispatches=second_load, writer="opus", reviewers=("opus",)), ALL_CHECKS_PASS)
+        self.assertEqual(self.valid_receipts([], native_dispatches=second_load, writer="opus", adversaries=("opus",)), ALL_CHECKS_PASS)
 
-    def test_given_a_native_review_that_changed_its_checkout_through_the_shell_when_checked_then_it_is_not_a_review(self):
-        # Codex review of fc4805e, P1: like xagent, a native review's own snapshots must show its checkout unchanged and final.
+    def native_attack(self, host, checkout, started):
+        """A native writer and one native attack on checkout dispatched at started, as the host's log shows them, with
+        the model both ran."""
+        writer_checkout = self.final_checkout(f"writer-{host}-{checkout.parent.name}")
+        if host == "claude":
+            return claude_native_dispatches(claude_stream(
+                self.native_writer(writer_checkout), agent_call("toolu_attack", "opus", "claude-opus-5-5", tools=attacks_in(checkout), started=started)))[0], "opus"
+        home, thread = self.root / "codex-home", f"thread-{checkout.parent.name}"
+        return codex_native_dispatches(write_codex_rollouts(home, thread, [
+            (f"{thread}-writer", "gpt-6.1-sol", f"{thread}-w", "gpt-6.1-sol", True, *self.codex_writes(writer_checkout)),
+            (f"{thread}-attack", "gpt-6.1-sol", f"{thread}-a", "gpt-6.1-sol", True, *self.codex_attacks(checkout)),
+        ], started=started), home)[0], "gpt-6.1-sol"
+
+    def test_given_a_native_attack_whose_checkout_was_written_after_its_dispatch_when_checked_then_it_is_not_an_attack(self):
+        # The files an attack ran against must predate its dispatch.
         self.write_final_parent()
-        writer, read_only = self.native_writer(self.final_checkout("writer-native")), self.final_checkout("review-read-only")
-        changed = self.final_checkout("review-changed", stats=STALE_STATS)
-        before = snapshot_tool(changed)
-        sed = f"sed -i.bak 's/sum(xs) \\/ len(xs)/sum(xs) * 1 \\/ len(xs)/' {changed}/stats.py"
-        (changed / "stats.py").write_text(FIXED_STATS)
-        after = snapshot_tool(changed)
-        for name, tools, counted in (
-            ("read-only review", reviews_in(read_only), True),
-            ("a single snapshot", [snapshot_tool(read_only)], False),
-            ("edited between its snapshots", [before, ("Bash", {"command": sed}), after], False),
-            ("edited before its first snapshot", [("Bash", {"command": sed}), after, *works_in(changed), after], False),
-            ("changed after its last snapshot", [before, *works_in(changed), before], False),
+        for index, (name, written, early, counted) in enumerate((
+            ("checkout left alone", None, False, True),
+            ("stats.py rewritten with the same bytes", ("stats.py", FIXED_STATS), False, False),
+            ("stats.py changed back", ("stats.py", STALE_STATS), False, False),
+            ("test_stats.py rewritten with the same bytes", ("test_stats.py", TEST_SOURCE), False, False),
+            # A reused worktree: the attack was dispatched before the final version arrived, and its re-attack dropped out.
+            ("dispatched before the final version arrived", None, True, False),
+        )):
+            for host in ("claude", "codex"):
+                with self.subTest(name, host=host):
+                    checkout = self.attack_checkout(f"attack-{host}-{index}")
+                    started = iso((checkout / "stats.py").stat().st_mtime - 30) if early else iso()
+                    native, model = self.native_attack(host, checkout, started)
+                    if written:
+                        self.write_after(checkout / written[0], written[1], seconds(started))
+                    checks = self.valid_receipts([], native_dispatches=native, writer=model, adversaries=(model,))
+                    self.assertTrue(checks["configured_writer_dispatched"])
+                    self.assertEqual(checks["configured_adversaries_dispatched"], counted)
+
+    def test_given_a_claude_findings_ledger_when_checked_then_only_the_hosts_own_bash_rerun_counts(self):
+        self.write_final_parent()
+        attack = self.attack_checkout("attack-native")
+        rerun = f"cd {attack} && python3 -m unittest test_repro"
+        finding = {"adversary": "opus", "worktree": str(attack), "command": rerun, "kept": True}
+        writer = self.native_writer(self.final_checkout("writer-native"))
+        # The adversary ran the same command itself, under its Agent call.
+        adversary = agent_call("toolu_attack", "opus", "claude-opus-5-5", tools=attacks_in(attack))
+        ledger = f"cat > {self.scope}/findings.json <<'EOF'\n{json.dumps([finding])}\nEOF"
+        # A live Claude parent reran every finding in one script through a shell variable, so no call is the ledger's command.
+        batched = f'W={attack.parent}\necho "### 1"; cd $W/{attack.name} && python3 -m unittest test_repro; echo "exit $?"'
+        failed = "Exit code 1\nFAILED (failures=1)"
+        denied = "Claude requested permissions to use Bash, but you haven't granted it yet."
+        # Each call is (command, output, is_error); a call counts as run unless Claude stopped it before it ran.
+        for name, ran, counted in (
+            ("the host reran it, and the repro failed", [(rerun, failed, True), (ledger, "ok", False)], True),
+            ("only the adversary ran it, and the host wrote the ledger", [(ledger, "ok", False)], False),
+            ("the host reran it inside a batch through a shell variable", [(batched, failed, True), (ledger, "ok", False)], False),
+            # Codex review of d328f92: a call Claude refused never ran.
+            ("the host's rerun was refused before it ran", [(rerun, denied, True), (ledger, "ok", False)], False),
         ):
             with self.subTest(name):
-                native, _ = claude_native_dispatches(claude_stream(writer, agent_call("toolu_review", "opus", "claude-opus-5-5", tools=tools)))
-                self.assertEqual(self.valid_receipts([], native_dispatches=native, writer="opus", reviewers=("opus",))["configured_reviewers_dispatched"], counted)
+                lines = claude_stream(writer, adversary, *(host_bash(f"toolu_host_{index}", *call) for index, call in enumerate(ran)))
+                parent_commands = claude_parent_commands(lines)
+                # Only the host's own calls that ran, each with its output; the adversary's identical command is not among them.
+                self.assertEqual([(command.command, command.output) for command in parent_commands],
+                                 [(command, output) for command, output, _ in ran if output != denied])
+                native, _ = claude_native_dispatches(lines)
+                checks = self.valid_receipts([], native_dispatches=native, writer="opus", adversaries=("opus",), findings=[finding],
+                                             parent_commands=parent_commands)
+                self.assertEqual(checks, {**ALL_CHECKS_PASS, "findings_rerun_by_parent": counted})
+
+    def test_given_a_codex_findings_ledger_when_checked_then_only_the_hosts_own_rollout_commands_count(self):
+        self.write_final_parent()
+        attack = self.attack_checkout("attack-native")
+        writer_checkout = self.final_checkout("writer-native")
         home = self.root / "codex-home"
-        writer_checkout = self.final_checkout("writer-codex")
-        for index, (name, actions, counted) in enumerate((
-            ("read-only review", self.codex_reviews(read_only), True),
-            ("edited between its snapshots", [("run", before[1]["command"], before[3]), sed, ("run", after[1]["command"], after[3])], False),
+        named = f"cd {attack} && python3 -m unittest test_repro"
+        for index, (name, parent_commands, command, counted) in enumerate((
+            ("the host reran it naming the worktree", [(named, None, 1)], named, True),
+            ("the host reran it with the worktree as its working directory", [("python3 -m unittest test_repro", attack, 1)], "python3 -m unittest test_repro", True),
+            # The child ran the same command in its own rollout.
+            ("only the adversary ran it", [], named, False),
+            ("the host's rerun was declined", [(named, None, None)], named, False),
         )):
-            with self.subTest(f"codex {name}"):
-                native, _ = codex_native_dispatches(write_codex_rollouts(home, f"thread-shell-{index}", [
-                    (f"shell-{index}-writer", "gpt-6.1-sol", f"shell-{index}-w", "gpt-6.1-sol", True, *self.codex_writes(writer_checkout)),
-                    (f"shell-{index}-review", "gpt-6.1-sol", f"shell-{index}-r", "gpt-6.1-sol", True, *actions)]), home)
-                self.assertEqual(self.valid_receipts([], native_dispatches=native, writer="gpt-6.1-sol", reviewers=("gpt-6.1-sol",))["configured_reviewers_dispatched"], counted)
+            with self.subTest(name):
+                log = write_codex_rollouts(home, f"thread-findings-{index}", [
+                    (f"findings-{index}-writer", "gpt-6.1-sol", f"findings-{index}-w", "gpt-6.1-sol", True, *self.codex_writes(writer_checkout)),
+                    (f"findings-{index}-attack", "gpt-6.1-sol", f"findings-{index}-a", "gpt-6.1-sol", True, *self.codex_attacks(attack)),
+                ], parent_commands=parent_commands)
+                native, _ = codex_native_dispatches(log, home)
+                ran = codex_parent_commands(log, home)
+                self.assertEqual([command.command for command in ran], [script for script, _, code in parent_commands if code is not None])
+                finding = {"adversary": "gpt-6.1-sol", "worktree": str(attack), "command": command, "kept": False}
+                checks = self.valid_receipts([], native_dispatches=native, writer="gpt-6.1-sol", adversaries=("gpt-6.1-sol",), findings=[finding],
+                                             parent_commands=ran)
+                self.assertEqual(checks, {**ALL_CHECKS_PASS, "findings_rerun_by_parent": counted})
 
     def test_given_mixed_policy_when_a_native_dispatch_is_missing_unfinished_or_denied_then_its_role_fails(self):
-        receipts = self.xagent_reviews_for(CLAUDE_MIXED["reviewers"])
+        receipts = self.xagent_attacks_for(CLAUDE_MIXED["adversaries"])
         writer = self.native_writer(self.final_checkout("writer-native"))
-        review_checkout = self.final_checkout("review-native")
+        attack_checkout = self.attack_checkout("attack-native")
         cases = {
-            "writer only": (claude_stream(writer), {"configured_writer_dispatched": True, "configured_reviewers_dispatched": False}),
-            "no dispatch": (claude_stream(), {"configured_writer_dispatched": False, "configured_reviewers_dispatched": False}),
-            "reviewer never joined": (
-                claude_stream(writer, agent_call("toolu_review", "opus", "claude-opus-5-5", background=True, finished=False, tools=reviews_in(review_checkout))),
-                {"configured_reviewers_dispatched": False, "all_attempts_terminal": False},
+            "writer only": (claude_stream(writer), {"configured_writer_dispatched": True, "configured_adversaries_dispatched": False}),
+            "no dispatch": (claude_stream(), {"configured_writer_dispatched": False, "configured_adversaries_dispatched": False}),
+            "adversary never joined": (
+                claude_stream(writer, agent_call("toolu_attack", "opus", "claude-opus-5-5", background=True, finished=False, tools=attacks_in(attack_checkout))),
+                {"configured_adversaries_dispatched": False, "all_attempts_terminal": False},
             ),
-            # A completed review cannot stand in for the denied writer.
+            # A completed attack cannot stand in for the denied writer.
             "Agent tool denied": (
-                claude_stream(agent_call("toolu_writer", "opus", None, denied=True), agent_call("toolu_review", "opus", "claude-opus-5-5", tools=reviews_in(review_checkout))),
-                {"configured_writer_dispatched": False, "configured_reviewers_dispatched": True, "all_attempts_terminal": True},
+                claude_stream(agent_call("toolu_writer", "opus", None, denied=True), agent_call("toolu_attack", "opus", "claude-opus-5-5", tools=attacks_in(attack_checkout))),
+                {"configured_writer_dispatched": False, "configured_adversaries_dispatched": True, "all_attempts_terminal": True},
             ),
         }
         for name, (log, expected) in cases.items():
@@ -535,14 +609,14 @@ class NativeEvidenceTest(FIXTURES["HarnessFixture"]):
                 self.assertEqual({key: checks[key] for key in expected}, expected)
 
     def test_given_codex_host_without_rollout_evidence_when_checked_then_native_roles_fail_with_a_reported_gap(self):
-        receipts = self.xagent_reviews_for(CODEX_MIXED["reviewers"])
+        receipts = self.xagent_attacks_for(CODEX_MIXED["adversaries"])
         home = self.root / "codex-home"
         cases = {
             "no thread id": ([json.dumps({"type": "turn.completed"})], True),
             "ephemeral host": (write_codex_rollouts(home, "thread-ephemeral", [], parent_rollout=False), True),
             "child rollout missing": (write_codex_rollouts(home, "thread-orphan", [
                 ("call-writer", "gpt-6.1-sol", "thread-lost-writer", None, True),
-                ("call-review", "gpt-6.1-sol", "thread-lost-review", None, True),
+                ("call-attack", "gpt-6.1-sol", "thread-lost-attack", None, True),
             ]), False),
         }
         for name, (log, reports_gap) in cases.items():
@@ -552,24 +626,24 @@ class NativeEvidenceTest(FIXTURES["HarnessFixture"]):
                 self.assertTrue(all(d.resolved is None for d in native), native)
                 checks = self.valid_receipts(receipts, native_dispatches=native, **CODEX_MIXED)
                 self.assertFalse(checks["configured_writer_dispatched"])
-                self.assertFalse(checks["configured_reviewers_dispatched"])
+                self.assertFalse(checks["configured_adversaries_dispatched"])
 
     def test_given_native_dispatch_with_wrong_model_when_checked_then_it_cannot_fill_the_configured_role(self):
-        receipts = self.xagent_reviews_for(CLAUDE_MIXED["reviewers"])
-        writer_checkout, review_checkout = self.final_checkout("writer-native"), self.final_checkout("review-native")
+        receipts = self.xagent_attacks_for(CLAUDE_MIXED["adversaries"])
+        writer_checkout, attack_checkout = self.final_checkout("writer-native"), self.attack_checkout("attack-native")
         writer = self.native_writer(writer_checkout)
-        # Each review worked in a final checkout, so only its model keeps it from the review slot.
-        for name, reviewer in {
-            "requested another alias": agent_call("toolu_review", "sonnet", "claude-sonnet-5-5", tools=reviews_in(review_checkout)),
-            "resolved another model": agent_call("toolu_review", "opus", "claude-sonnet-5-5", tools=reviews_in(review_checkout)),
-            "inherited instead of pinned": agent_call("toolu_review", None, "claude-opus-5-5", tools=reviews_in(review_checkout)),
-            "no resolved model": agent_call("toolu_review", "opus", None, tools=reviews_in(review_checkout)),
+        # Each attack worked in a final checkout, so only its model keeps it from the adversary slot.
+        for name, adversary in {
+            "requested another alias": agent_call("toolu_attack", "sonnet", "claude-sonnet-5-5", tools=attacks_in(attack_checkout)),
+            "resolved another model": agent_call("toolu_attack", "opus", "claude-sonnet-5-5", tools=attacks_in(attack_checkout)),
+            "inherited instead of pinned": agent_call("toolu_attack", None, "claude-opus-5-5", tools=attacks_in(attack_checkout)),
+            "no resolved model": agent_call("toolu_attack", "opus", None, tools=attacks_in(attack_checkout)),
         }.items():
             with self.subTest(name):
-                native, _ = claude_native_dispatches(claude_stream(writer, reviewer))
+                native, _ = claude_native_dispatches(claude_stream(writer, adversary))
                 checks = self.valid_receipts(receipts, native_dispatches=native, **CLAUDE_MIXED)
                 self.assertTrue(checks["configured_writer_dispatched"])
-                self.assertFalse(checks["configured_reviewers_dispatched"])
+                self.assertFalse(checks["configured_adversaries_dispatched"])
         home = self.root / "codex-home"
         for index, (name, requested, actual) in enumerate((
             ("child ran another model", "gpt-6.1-sol", "gpt-6-luna"),
@@ -579,13 +653,13 @@ class NativeEvidenceTest(FIXTURES["HarnessFixture"]):
                 thread = f"thread-mismatch-{index}"
                 log = write_codex_rollouts(home, thread, [
                     (f"{thread}-writer", "gpt-6.1-sol", f"{thread}-w", "gpt-6.1-sol", True, *self.codex_writes(writer_checkout)),
-                    (f"{thread}-review", requested, f"{thread}-r", actual, True, *self.codex_reviews(review_checkout)),
+                    (f"{thread}-attack", requested, f"{thread}-a", actual, True, *self.codex_attacks(attack_checkout)),
                 ])
                 native, gap = codex_native_dispatches(log, home)
                 self.assertIsNone(gap)
-                checks = self.valid_receipts(receipts, native_dispatches=native, writer=CODEX_MIXED["writer"], reviewers=("gpt-6.1-sol",))
+                checks = self.valid_receipts(receipts, native_dispatches=native, writer=CODEX_MIXED["writer"], adversaries=("gpt-6.1-sol",))
                 self.assertTrue(checks["configured_writer_dispatched"])
-                self.assertFalse(checks["configured_reviewers_dispatched"])
+                self.assertFalse(checks["configured_adversaries_dispatched"])
 
     def test_given_stub_hosts_when_exercised_then_launch_settings_prompt_rules_and_native_evidence_match_the_checks(self):
         binaries = self.root / "bin"
@@ -631,18 +705,24 @@ class NativeEvidenceTest(FIXTURES["HarnessFixture"]):
                 launch = json.loads(captured.read_text())
                 self.assertEqual(launch["ephemeral"], "1")
                 report = json.loads((run / host / "checks.json").read_text())
-                # Reviewer receipts only count at the fixture base against the final source, so the brief must say so.
+                # Attacks only count at the fixture base against the final source, so the brief must say so.
                 prompt = " ".join(launch["prompt"].split())
                 # Live grok-4.7 reviews took 409 to over 900 seconds, so the cap matches xagent's 900-second default.
                 self.assertIn("Limit each worker to 900 seconds and at most one retry", prompt)
                 # A foreground wait covers one attempt, so the retry has to start in a call of its own.
                 self.assertIn("then run an allowed retry in a new call", prompt)
                 self.assertIn(f"exclusive worktree checked out at fixture base {report['base']}, with the proposed patch applied as uncommitted changes", prompt)
-                self.assertIn("every configured reviewer must review the final version again", prompt)
-                self.assertIn("A native writer changes files only with its host's file-edit tool", prompt)
+                self.assertIn("every configured adversary must attack the final version again in a new worktree prepared the same way", prompt)
+                self.assertIn("A native writer changes stats.py only with its host's file-edit tool", prompt)
                 self.assertIn(f"exclusive worktree at fixture base {report['base']} and have it leave its change uncommitted", prompt)
-                self.assertIn(f"a native reviewer changes no files and runs python3 -B {ROOT / 'scripts/e2e-snapshot.py'} <its worktree> "
-                              "as its first and as its last shell command", prompt)
+                self.assertIn("Adversaries leave stats.py and test_stats.py unchanged and keep their repro files beside them in their own worktree", prompt)
+                # The parent's reruns are the evidence, so the brief asks for a ledger that names each worktree.
+                # A live Claude parent batched its reruns in one script with shell variables, which no ledger entry can quote.
+                self.assertIn("in a shell call of its own that runs only that command: cd <that adversary's worktree as an absolute path> "
+                              "&& <the finding's command>, with no shell variables", prompt)
+                self.assertIn(f"Record every rerun in {run / host / 'findings.json'}", prompt)
+                self.assertIn('"command" (that shell call\'s command string, copied verbatim)', prompt)
+                self.assertIn("Write [] when no adversary reported a finding", prompt)
                 self.assertIn("pass an effort to every worker, native or xagent; dispatch each native worker as an agent type "
                               "whose definition sets no effort of its own", prompt)
                 if host == "claude":
@@ -662,6 +742,10 @@ class NativeEvidenceTest(FIXTURES["HarnessFixture"]):
                 self.assertIsNone(evidence["gap"])
                 self.assertEqual([(d["requested"], d["resolved"], d["status"]) for d in evidence["dispatches"]],
                                  [(*expected_native[host], "completed")])
+                # The stub wrote no ledger, so no rerun evidence exists.
+                self.assertIsNone(report["findings"])
+                self.assertEqual(report["parent_commands"], [])
+                self.assertFalse(report["checks"]["findings_rerun_by_parent"])
 
 
 if __name__ == "__main__":

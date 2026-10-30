@@ -1,10 +1,12 @@
 """Shared fixtures for the host harness tests: a synthetic parent checkout, linked worktrees and xagent receipts."""
 import hashlib
 import json
+import os
 from pathlib import Path
 import runpy
 import subprocess
 import tempfile
+import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -33,14 +35,24 @@ def mean(xs):
 
 STALE_STATS = "def mean(xs):\n    return sum(xs) / len(xs)\n"
 
+# A repro an adversary adds beside the fixture's files, as a failing test an allowlisted test command runs.
+REPRO_TEST = '''import unittest
+from stats import mean
+
+class OverflowTest(unittest.TestCase):
+    def test_large_floats(self):
+        self.assertEqual(mean([1e308, 1e308]), 1e308)
+'''
+
 ALL_CHECKS_PASS = {
     "all_attempts_terminal": True,
     "configured_writer_dispatched": True,
-    "configured_reviewers_dispatched": True,
+    "configured_adversaries_dispatched": True,
     "receipt_workspaces_owned": True,
+    "findings_rerun_by_parent": True,
 }
-CLAUDE_MIXED = dict(writer="opus", reviewers=("opus", "xagent:codex/gpt-6.1-sol", "xagent:grok/magpie/likecode-grok/grok-4.7"))
-CODEX_MIXED = dict(writer="gpt-6.1-sol", reviewers=("gpt-6.1-sol", "xagent:claude/opus", "xagent:grok/magpie/likecode-grok/grok-4.7"))
+CLAUDE_MIXED = dict(writer="opus", adversaries=("opus", "xagent:codex/gpt-6.1-sol", "xagent:grok/magpie/likecode-grok/grok-4.7"))
+CODEX_MIXED = dict(writer="gpt-6.1-sol", adversaries=("gpt-6.1-sol", "xagent:claude/opus", "xagent:grok/magpie/likecode-grok/grok-4.7"))
 
 
 class HarnessFixture(unittest.TestCase):
@@ -93,18 +105,25 @@ class HarnessFixture(unittest.TestCase):
             result.update(snapshot_before=digest, snapshot_after=digest)
         result.update(overrides)
         receipt_path.write_text(json.dumps(result) + "\n")
+        # xagent rewrites meta.json when the attempt ends, which here is two seconds after it started.
+        self.ran(result, self.started(result), self.started(result) + 2)
         return result
 
-    def valid_receipts(self, receipts, writer="xagent:codex", reviewers=("xagent:claude", "xagent:grok"), native_dispatches=(), effort=None):
+    def valid_receipts(self, receipts, writer="xagent:codex", adversaries=("xagent:claude", "xagent:grok"), native_dispatches=(), effort=None,
+                       findings=(), parent_commands=()):
         return HARNESS["validate_receipts"](
-            receipts, self.scope, self.parent, self.base, writer, list(reviewers),
-            (self.parent / "stats.py").read_bytes(), TEST_SOURCE.encode(), native_dispatches, effort is not None,
+            receipts, self.scope, self.parent, self.base, writer, list(adversaries),
+            (self.parent / "stats.py").read_bytes(), TEST_SOURCE.encode(),
+            findings=findings, native_dispatches=native_dispatches, effort_required=effort is not None, parent_commands=parent_commands,
         )
 
     def final_checkout(self, name, stats=FIXED_STATS):
-        """A worktree at the fixture base with stats.py changed but uncommitted."""
+        """A worktree at the fixture base with stats.py changed but uncommitted, written a minute before any attempt in it."""
         checkout = self.add_worktree(name)
         (checkout / "stats.py").write_text(stats)
+        earlier = time.time() - 60
+        for path in (checkout / "stats.py", checkout / "test_stats.py"):
+            os.utime(path, (earlier, earlier))
         return checkout
 
     def committed_checkout(self, name):
@@ -113,17 +132,41 @@ class HarnessFixture(unittest.TestCase):
         self.git(checkout, "-c", "user.name=fixture", "-c", "user.email=fixture@local", "-c", "commit.gpgsign=false", "commit", "-qam", "writer commit")
         return checkout
 
-    def xagent_reviews_for(self, reviewers):
-        """Final-code receipts for the policy's xagent reviewers; native entries get none."""
+    def attack_checkout(self, name):
+        """A final-version worktree where an adversary has added a repro test beside the fixture's files."""
+        checkout = self.final_checkout(name)
+        (checkout / "test_repro.py").write_text(REPRO_TEST)
+        return checkout
+
+    def ran(self, receipt, start, end):
+        """Set when the xagent attempt behind receipt ran, in seconds since the epoch: prompt.md's mtime, then meta.json's."""
+        for path, at in ((Path(receipt["path"]).parent / "prompt.md", start), (Path(receipt["path"]), end)):
+            os.utime(path, (at, at))
+
+    def started(self, receipt):
+        """When the xagent attempt behind receipt started: its prompt.md's mtime."""
+        return (Path(receipt["path"]).parent / "prompt.md").stat().st_mtime
+
+    def write_after(self, path, content, started):
+        """Write path as an edit during an attempt that started at started, in seconds since the epoch: a second later."""
+        path.write_text(content)
+        os.utime(path, (started + 1, started + 1))
+
+    def writer_receipt(self, agent, checkout, name=None, **overrides):
+        """An xagent writer's rw receipt, with the repair it wrote to checkout's stats.py after it started."""
+        written = self.receipt(agent, "rw", checkout, name=name, **overrides)
+        self.write_after(checkout / "stats.py", FIXED_STATS, self.started(written))
+        return written
+
+    def xagent_attacks_for(self, adversaries):
+        """Final-code rw receipts for the policy's xagent adversaries; native entries get none."""
         self.write_final_parent()
         receipts = []
-        for value in reviewers:
+        for value in adversaries:
             if not value.startswith("xagent:"):
                 continue
             agent, model = XAGENT["agent_spec"](value.removeprefix("xagent:"))
-            checkout = self.add_worktree(f"review-{agent}")
-            (checkout / "stats.py").write_text(FIXED_STATS)
-            receipts.append(self.receipt(agent, "ro", checkout, model=model))
+            receipts.append(self.receipt(agent, "rw", self.attack_checkout(f"attack-{agent}"), name=f"attack-{agent}-out", model=model))
         return receipts
 
     def write_verifier_receipt(self, final_hash):

@@ -6,14 +6,24 @@ shared policy on synthetic fixtures. The run records source hashes, policy,
 worker receipts and independent tests. It never changes preferences. A run
 passes only on the evidence below; the host's own report never counts.
 
-Parent and reviewers. The parent verified the final source, and each configured
-reviewer saw it in a separate worktree.
+Parent, writer and adversaries. The parent verified the final source, the
+configured writer repaired it in a worktree of its own, and each configured
+interrogate adversary attacked the final version in a separate worktree.
 
 xagent entries are checked through their receipts. A meta.json counts as an
 xagent attempt when either marker bin/xagent creates first (prompt.md,
 agent.log) sits beside it, so a broken attempt still fails. Attempts are keyed
-by mode, agent and model; any other meta.json under the evidence directory is
-listed as ignored.
+by agent and model; any other meta.json under the evidence directory is listed
+as ignored. An attempt runs from its prompt.md's mtime, which xagent writes
+before it starts the agent and never again, to its meta.json's, written when it
+ends. A usable attempt writes when its checkout's stats.py was last written
+during a run of that worker's attempts in that checkout, with test_stats.py
+unchanged, so a retry that only verifies the repair a dropped attempt left
+there still writes. A run xagent dropped as model_mismatch is
+another model's, so it counts for no one. A later write outside those runs,
+such as the parent fixing a finding in the writer's worktree, leaves the slot
+empty, so the brief has the parent fix findings in its own checkout or send
+them back to the writer.
 
 Native entries are checked through the host's own log, parsed by
 scripts/e2e-native-evidence.py: Claude's stream-json Agent calls and their
@@ -25,45 +35,65 @@ runs without --ephemeral.
   Codex child rollout, whose task payload is encrypted. Those calls must use
   exactly one checkout under the run other than the parent, and it must be a
   linked worktree at the fixture base.
-- Writer or reviewer. The dispatch writes when it edited that checkout with its
+- Writer. The dispatch writes when it edited that checkout's stats.py with its
   host's file-edit tool and the edit succeeded (Claude Write/Edit with a
-  successful tool result, a completed Codex FileChange). It reviews when it
-  edited nothing there and the checkout holds the final stats.py. Shell edits
-  are not writer evidence, so a writer that edits only through the shell cannot
-  fill the writer slot.
-- Review bracket. A native review brackets its work, as xagent's
-  snapshot_before and snapshot_after do. Its subagent's own first and last
-  shell commands in that worktree run the absolute path of
-  scripts/e2e-snapshot.py with a Python interpreter, optionally after a cd and
-  with nothing else in the same command. Every other shell command there falls
-  between them, and every snapshot the tool prints for that worktree (leaving
-  ignored test receipts and caches out) matches the worktree's state when the
-  run ends. A shell edit during a review, before it, or after it therefore stops
-  it counting.
-- Snapshot provenance. The snapshot lines come from the subagent's own tool
-  results or Codex aggregated_output, which the host cannot write. An echoed
-  line does not count, because it never ran the tool. Forging one would take
-  rewriting the tool or shadowing python3 on PATH, which is outside the threat
-  model of an acceptance test for cooperating agents.
+  successful tool result, a completed Codex FileChange), leaving test_stats.py
+  unchanged. Shell edits are not writer evidence, so a writer that edits only
+  through the shell cannot fill the writer slot. Each dispatch is judged on
+  its own edits, so a follow-up that only verifies an earlier dispatch's
+  repair fills no slot.
+
+Adversaries. An adversary proves each finding with a run, so it may add repro
+files to its worktree, and an xagent adversary runs rw: ro is plan mode for
+claude and gemini, which runs no commands, so an ro receipt fills no slot. An
+attempt attacked the final version when its checkout holds the final stats.py
+and the fixture's test_stats.py, neither written after the attempt started: an
+xagent attempt's start as above, a native one's its dispatch's timestamp in the
+host's log (Claude's Agent call, the Codex parent rollout's spawn_agent). A
+worktree brought to the final version after its attack therefore holds no
+attack on it, as when a re-interrogation in a reused worktree drops out. An
+attack meets the writer test, and fills no adversary slot, only when stats.py
+there was last written during an earlier run of that worker, as when a
+dropped attack rewrote it or the parent copied a fix in with its mtime kept
+while that attack ran; the brief therefore gives each re-attack a fresh
+worktree. Forging a time would take touching the files or rewriting the
+host's log, which is outside the threat model of an acceptance test for
+cooperating agents.
+
+Parent reruns. The parent records each finding it reran in findings.json: the
+adversary's policy entry, its worktree, the exact command the parent ran, and
+whether it kept the finding. Each entry needs a shell command the parent ran
+itself, read from the host's own records (Claude's top-level Bash calls, the
+Codex parent rollout's command items), that is the entry's command, ignoring
+whitespace, and names that worktree by an absolute path or as its working
+directory; an attempt by that adversary must have used the worktree. A command
+that only quotes the rerun, such as the one that writes the ledger, is not a
+rerun, nor is one the host stopped before it ran: Claude's result must be no
+error or report the exit code, and Codex must record an exit code. An empty
+list passes, since no findings is a valid result; whether the list is
+complete is the host's claim, bounded by the final independent checks.
 
 Effort. When the effective policy sets reasoning_effort, a worker fills a role
 only if its xagent receipt, Claude Agent call or Codex spawn_agent records an
 effort level. The level itself may differ, since poteto-mode adjusts it per
 task.
 
-Ownership. Each checkout belongs to one owner, a worker (kind, agent and model)
-in one mode, so an xagent retry or a native writer's follow-up fix may reuse its
-worktree. Each configured writer or reviewer slot needs an attempt in a checkout
-no other slot used, so two reviews in one worktree count once. A missing log or
-a dispatch that used no path is reported as a gap and fails the check.
+Ownership. Each checkout belongs to one owner, a worker (kind, agent and
+model), so an xagent retry or a native writer's follow-up fix may reuse its
+worktree. Each configured writer or adversary slot needs an attempt in a
+checkout no other slot used, so two attacks in one worktree count once, and a
+worker cannot attack its own fix. A missing log or a dispatch that used no path
+is reported as a gap and fails the check; a native dispatch with no timestamp
+is reported as a gap and cannot fill an adversary slot.
 
 Time limits. Each worker attempt gets xagent's default limit with one retry,
 not doubled. The outer host process runs under timeout with a kill-after limit;
-the default --host-timeout lets the writer, review and post-fix re-review rounds
-each retry, and --help prints its arithmetic. Verification commands run through
-scripts/e2e-process.py with a default deadline (--check-timeout),
-process-group termination and bounded output collection. A verification
-timeout remains a failed check with logs and exit code 124.
+the default --host-timeout lets the writer, interrogation and post-fix
+re-interrogation rounds each retry, and --help prints its arithmetic.
+Verification commands run through scripts/e2e-process.py with a default
+deadline (--check-timeout), process-group termination and bounded output
+collection. A verification timeout remains a failed check with logs and exit
+code 124.
 """
 from __future__ import annotations
 
@@ -71,14 +101,13 @@ import argparse
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, fields
+from datetime import datetime
 import hashlib
 import json
 import math
 import os
 from pathlib import Path
-import re
 import runpy
-import shlex
 import subprocess
 import sys
 
@@ -104,24 +133,25 @@ class MeanTest(unittest.TestCase):
 '''
 XAGENT = runpy.run_path(str(ROOT / "bin/xagent"))
 CLASSIFY = XAGENT["classify"]
-SNAPSHOT = XAGENT["snapshot"]
 NATIVE = runpy.run_path(str(ROOT / "scripts/e2e-native-evidence.py"))
 NativeDispatch = NATIVE["NativeDispatch"]
+ShellCommand = NATIVE["ShellCommand"]
 claude_native_dispatches = NATIVE["claude_native_dispatches"]
 codex_native_dispatches = NATIVE["codex_native_dispatches"]
+claude_parent_commands = NATIVE["claude_parent_commands"]
+codex_parent_commands = NATIVE["codex_parent_commands"]
 checkouts_touched = NATIVE["checkouts_touched"]
 # The fields the role checks read; another runpy load of the module makes an equal dispatch of a different class.
 NATIVE_FIELDS = tuple(field.name for field in fields(NativeDispatch))
-# A native reviewer brackets its work with this command, as xagent records snapshot_before and snapshot_after.
-SNAPSHOT_TOOL = ROOT / "scripts/e2e-snapshot.py"
-SNAPSHOT_LINE = re.compile(r"^PSTACK_E2E_SNAPSHOT ([0-9a-f]{64}) (.+)$", re.MULTILINE)
+# One findings.json entry: a finding the parent reran, with the command it ran and its verdict.
+FINDING_FIELDS = {"adversary": str, "worktree": str, "command": str, "kept": bool}
 # Each worker attempt gets xagent's own default limit and at most one retry; the retry is not doubled.
 WORKER_LIMIT_SECONDS = XAGENT["DEFAULT_TIMEOUT"]
-# Per attempt, on top of its limit and xagent's termination grace: process start-up and xagent's before/after snapshots.
+# Per attempt, on top of its limit and xagent's termination grace: process start-up and xagent's receipt and logs.
 ATTEMPT_OVERHEAD_SECONDS = 30
 # The longest one attempt can take, so one foreground wait in the host must outlast it.
 ATTEMPT_SECONDS = WORKER_LIMIT_SECONDS + XAGENT["TERMINATION_GRACE"] + ATTEMPT_OVERHEAD_SECONDS
-# Worst case: the writer, review and post-fix re-review rounds run in sequence, each an attempt plus one retry.
+# Worst case: the writer, interrogation and post-fix re-interrogation rounds run in sequence, each an attempt plus one retry.
 WORST_CASE_ATTEMPTS = 3 * 2
 # The host's own start-up, patch integration and reasoning between rounds.
 HOST_WORK_SECONDS = 600
@@ -333,130 +363,158 @@ def route(value):
 
 
 def expected_roles(effective):
-    """Return the configured swarm writer and interrogate reviewers, falling back to the helper's own defaults."""
+    """Return the configured swarm writer and interrogate adversaries, falling back to the helper's own defaults."""
     return (effective["roles"].get("swarm workers", effective["defaultModel"]),
             effective["panels"].get("interrogate reviewers", effective["defaultPanel"]))
+
+
+def load_findings(path):
+    """Return the parent's findings ledger, or None when it is missing or an entry lacks a field of the right type."""
+    try:
+        findings = json.loads(Path(path).read_text())
+    except (OSError, UnicodeError, ValueError):
+        return None
+    valid = isinstance(findings, list) and all(
+        isinstance(entry, dict) and all(isinstance(entry.get(key), kind) for key, kind in FINDING_FIELDS.items())
+        and entry["command"].strip() for entry in findings)
+    return findings if valid else None
 
 
 @dataclass(frozen=True)
 class Attempt:
     """One worker attempt from an xagent receipt or a native host dispatch, as the role and ownership checks see it."""
     kind: str  # xagent or native
-    mode: str | None  # rw or ro: an xagent receipt's mode, or whether a native subagent edited its checkout
     worker: tuple[str | None, str | None]  # (agent, model); a native dispatch names no agent
     effort: str | None
     terminal: bool
     checkouts: frozenset[Path]  # the checkouts it worked in
-    role: str | None  # the slot it can fill, its mode, when the attempt is usable; otherwise None
+    role: str | None  # the slot it can fill, writer or adversary; None when the attempt can fill none
 
     @property
     def owner(self):
-        # One worker in one mode, so retries and follow-up fixes may reuse a worktree that nobody else may use.
-        return self.kind, self.mode, self.worker
+        # One worker, so retries and follow-up fixes may reuse a worktree that nobody else may use.
+        return self.kind, self.worker
 
 
-def _final_version(checkout, final_stats, test_file):
+def _holds(path, expected):
     try:
-        return (checkout / "stats.py").read_bytes() == final_stats and (checkout / "test_stats.py").read_bytes() == test_file
+        return path.read_bytes() == expected
     except OSError:
         return False
 
 
-def _reviewed_final_version(receipt, workdir, final_stats, test_file):
+def _held_since(checkout, started, final_stats, test_file):
+    """Whether checkout holds the final stats.py and the fixture's test_stats.py, neither written after started."""
     try:
-        before, after = receipt.get("snapshot_before"), receipt.get("snapshot_after")
-        return (receipt.get("changed_workdir") is False and isinstance(before, str) and before == after
-                and SNAPSHOT(workdir, Path(receipt["path"]).parent.resolve()) == after
-                and _final_version(workdir, final_stats, test_file))
-    except (OSError, ValueError, KeyError, subprocess.CalledProcessError):
+        return started is not None and all(_holds(path, expected) and path.stat().st_mtime <= started
+                                           for path, expected in ((checkout / "stats.py", final_stats), (checkout / "test_stats.py", test_file)))
+    except OSError:
         return False
 
 
-def _xagent_attempt(receipt, workdir, final_stats, test_file):
+def _role(checkout, started, repaired, final_stats, test_file):
+    """writer when the attempt repaired stats.py and left the fixture's tests alone; adversary when it attacked the
+    final version, holding it since started; None otherwise."""
+    if repaired and _holds(checkout / "test_stats.py", test_file):
+        return "writer"
+    return "adversary" if _held_since(checkout, started, final_stats, test_file) else None
+
+
+def _mtime(path):
+    try:
+        return Path(path).stat().st_mtime
+    except (OSError, TypeError, ValueError):
+        return None
+
+
+def _timestamp(value):
+    """Seconds since the epoch for a host log's ISO timestamp, or None."""
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def _xagent_run(receipt):
+    """When an xagent attempt ran: from its prompt.md, which xagent writes before it starts the agent and never again,
+    to its meta.json, which it writes when the attempt ends. Either is None when unknown."""
+    path = receipt.get("path") if isinstance(receipt, dict) else None
+    if not isinstance(path, str):
+        return None, None
+    return _mtime(Path(path).parent / "prompt.md"), _mtime(path)
+
+
+def _xagent_attempt(receipt, workdir, repaired, final_stats, test_file):
     if not isinstance(receipt, dict):
-        return Attempt("xagent", None, (None, None), None, False, frozenset(), None)
-    mode = receipt.get("mode") if receipt.get("mode") in ("rw", "ro") else None
+        return Attempt("xagent", (None, None), None, False, frozenset(), None)
     terminal = receipt.get("completed") is True and receipt.get("status") in ("PASS", "ISSUES", "BLOCKED", "DROPOUT")
-    # ISSUES may carry a usable patch or review; final parent checks and reviews remain mandatory.
-    usable = (workdir is not None and terminal and receipt.get("status") in ("PASS", "ISSUES")
+    # ISSUES may carry a usable patch or findings; final parent checks remain mandatory. Writers and adversaries both run rw.
+    usable = (workdir is not None and terminal and receipt.get("mode") == "rw" and receipt.get("status") in ("PASS", "ISSUES")
               and type(receipt.get("exit")) is int and receipt.get("exit") == 0)
-    if usable and mode == "ro":
-        usable = _reviewed_final_version(receipt, workdir, final_stats, test_file)
-    return Attempt("xagent", mode, (receipt.get("agent"), receipt.get("model")), receipt.get("effort"), terminal,
-                   frozenset({workdir} if workdir else ()), mode if usable else None)
+    role = None
+    if usable:
+        started, _ = _xagent_run(receipt)
+        role = _role(workdir, started, repaired, final_stats, test_file)
+    return Attempt("xagent", (receipt.get("agent"), receipt.get("model")), receipt.get("effort"), terminal,
+                   frozenset({workdir} if workdir else ()), role)
 
 
-def _snapshot_printed(command):
-    """Return (checkout, digest) when command ran the snapshot tool and printed its line, else None.
-
-    The command may first cd somewhere and use any Python interpreter and flags, but nothing else may run before or
-    after the tool, so it can neither change the checkout nor print a line of its own. The checkout is the one the tool printed.
-    """
-    try:
-        lexer = shlex.shlex(command.command, posix=True, punctuation_chars=True)
-        lexer.whitespace_split = True
-        words = list(lexer)
-    except ValueError:
-        return None
-    if words[:1] == ["cd"] and len(words) > 2 and words[2] in ("&&", ";"):
-        words = words[3:]
-    if not words or not re.fullmatch(r"python(3(\.\d+)?)?", Path(words[0]).name):
-        return None
-    # Every other word is an interpreter flag, so no second command shares the line.
-    arguments = [word for word in words[1:] if not word.startswith("-")]
-    if not 1 <= len(arguments) <= 2 or not Path(arguments[0]).is_absolute() or Path(arguments[0]).resolve() != SNAPSHOT_TOOL:
-        return None
-    match = SNAPSHOT_LINE.search(command.output or "")
-    return (Path(match.group(2)).resolve(), match.group(1)) if match and Path(match.group(2)).is_absolute() else None
-
-
-def _reviewed_unchanged(dispatch, checkout, run_scope, parent):
-    """Whether the subagent's own shell commands in checkout sit between its snapshots of it, all matching its state now."""
-    try:
-        now, marks, between = SNAPSHOT(checkout, checkout.parent), [], []
-        for index, command in enumerate(dispatch.commands):
-            printed = _snapshot_printed(command)
-            if printed and printed[0] == checkout:
-                marks.append((index, printed[1]))
-            elif checkout in checkouts_touched(command.paths, run_scope, parent):
-                between.append(index)
-        return (len(marks) >= 2 and all(digest == now for _, digest in marks)
-                and all(marks[0][0] < index < marks[-1][0] for index in between))
-    except (OSError, ValueError, subprocess.CalledProcessError):
-        return False
+def _xagent_attempts(receipts, workdirs, final_stats, test_file):
+    """Each receipt's attempt, given its validated worktree. An attempt repaired its worktree when stats.py there was
+    last written during a run of the same worker there, so a retry may only verify the repair a dropped attempt left,
+    while the parent's copy of a later fix between two attacks, or a run xagent dropped because another model
+    answered, is no repair."""
+    runs = {}
+    for receipt, workdir in zip(receipts, workdirs):
+        if workdir is not None and receipt.get("reason") != "model_mismatch":
+            runs.setdefault((receipt.get("agent"), receipt.get("model"), workdir), []).append(_xagent_run(receipt))
+    attempts = []
+    for receipt, workdir in zip(receipts, workdirs):
+        written = _mtime(workdir / "stats.py") if workdir is not None else None
+        repaired = written is not None and any(None not in (start, end) and start < written <= end
+                                               for start, end in runs.get((receipt.get("agent"), receipt.get("model"), workdir), ()))
+        attempts.append(_xagent_attempt(receipt, workdir, repaired, final_stats, test_file))
+    return attempts
 
 
 def _native_attempt(dispatch, run_scope, parent, base, parent_common, final_stats, test_file):
-    """A native dispatch writes when its subagent edited the one checkout it used, and reviews when it edited nothing
-    there; either way the checkout must be a linked worktree at the fixture base, and a review must hold the final
-    version, bracketed by the subagent's own matching snapshots of it."""
+    """A native dispatch writes when its subagent repaired stats.py in the one checkout it used, and attacks when that
+    checkout held the final version from the dispatch on; either way the checkout must be a linked worktree at the
+    fixture base."""
     if not all(hasattr(dispatch, name) for name in NATIVE_FIELDS):
-        return Attempt("native", None, (None, None), None, False, frozenset(), None)
+        return Attempt("native", (None, None), None, False, frozenset(), None)
     try:
         checkouts = frozenset(checkouts_touched(dispatch.paths_touched, run_scope, parent))
-        edited = checkouts_touched(dispatch.paths_edited, run_scope, parent)
     except (OSError, RuntimeError, TypeError, ValueError):
-        checkouts, edited = frozenset(), set()
-    # Its own edits decide the mode whether or not it finished, as an xagent receipt records its mode up front.
-    mode = "rw" if edited else "ro"
+        checkouts = frozenset()
     role = None
     if dispatch.usable and len(checkouts) == 1:
         (checkout,) = checkouts
-        # A writer's edits must include the repair itself, with the fixture's tests left alone.
+        # A writer's edits must include the repair itself.
         repaired = (checkout / "stats.py") in {Path(path).resolve() for path in dispatch.paths_edited if Path(path).is_absolute()}
-        if _linked_worktree_at_base(checkout, run_scope, parent, base, parent_common) and (
-                (repaired and (checkout / "test_stats.py").read_bytes() == test_file) if mode == "rw"
-                else _final_version(checkout, final_stats, test_file) and _reviewed_unchanged(dispatch, checkout, run_scope, parent)):
-            role = mode
-    return Attempt("native", mode, (None, dispatch.requested), dispatch.effort, dispatch.status in ("completed", "failed"), checkouts, role)
+        if _linked_worktree_at_base(checkout, run_scope, parent, base, parent_common):
+            role = _role(checkout, _timestamp(dispatch.started), repaired, final_stats, test_file)
+    return Attempt("native", (None, dispatch.requested), dispatch.effort, dispatch.status in ("completed", "failed"), checkouts, role)
 
 
-def validate_receipts(receipts, run_scope, parent, base, expected_writer, expected_reviewers, final_stats, test_file,
-                      native_dispatches=(), effort_required=False):
-    """Check that every attempt finished, each configured slot took a usable attempt in a checkout of its own, and each
-    checkout has one owner.
+def _rerun_by_parent(entry, attempts, parent_commands, run_scope, parent):
+    """Whether the parent itself ran exactly entry's command, naming the worktree of an attempt by entry's adversary."""
+    worktree = Path(entry["worktree"]).resolve()
+    adversary = route(entry["adversary"])
+    # Equal up to whitespace, so a command that only quotes the rerun, as a heredoc writing the ledger does, is no rerun.
+    wanted = entry["command"].split()
+    return (any((attempt.kind, attempt.worker) == adversary and worktree in attempt.checkouts for attempt in attempts)
+            and any(command.command.split() == wanted and worktree in checkouts_touched(command.paths, run_scope, parent)
+                    for command in parent_commands))
+
+
+def validate_receipts(receipts, run_scope, parent, base, expected_writer, expected_adversaries, final_stats, test_file, *,
+                      findings, native_dispatches=(), effort_required=False, parent_commands=()):
+    """Check that every attempt finished, each configured slot took a usable attempt in a checkout of its own, each
+    checkout has one owner, and the parent itself reran every finding in its ledger.
 
     When the policy sets a reasoning effort, an attempt fills a slot only if it records one; poteto-mode adjusts the level per task.
+    findings is the parent's ledger from load_findings, None when it was missing or malformed.
     """
     try:
         run_scope, parent = Path(run_scope).resolve(), Path(parent).resolve()
@@ -464,8 +522,8 @@ def validate_receipts(receipts, run_scope, parent, base, expected_writer, expect
         parent_top = _git_output(parent, "rev-parse", "--show-toplevel")
         if not parent_top or Path(parent_top).resolve() != parent:
             parent_common = None
-        attempts = [_xagent_attempt(receipt, _valid_linked_worktree(receipt, run_scope, parent, base, parent_common), final_stats, test_file)
-                    for receipt in receipts]
+        attempts = _xagent_attempts(receipts, [_valid_linked_worktree(receipt, run_scope, parent, base, parent_common) for receipt in receipts],
+                                    final_stats, test_file)
         attempts += [_native_attempt(dispatch, run_scope, parent, base, parent_common, final_stats, test_file) for dispatch in native_dispatches]
         # Every xagent receipt needs its own linked worktree, and each checkout belongs to one owner across all attempts.
         workspaces_valid, claims = parent_common is not None, {}
@@ -476,33 +534,36 @@ def validate_receipts(receipts, run_scope, parent, base, expected_writer, expect
                 workspaces_valid = claims.setdefault(checkout, attempt.owner) == attempt.owner and workspaces_valid
         pool, taken = list(attempts), set()
 
-        def take(value, mode):
+        def take(value, role):
             # A slot cannot use a checkout another slot used, so every configured worker had a worktree of its own.
             wanted = route(value)
             for index, attempt in enumerate(pool):
-                if (wanted == (attempt.kind, attempt.worker) and attempt.role == mode and not attempt.checkouts & taken
+                if (wanted == (attempt.kind, attempt.worker) and attempt.role == role and not attempt.checkouts & taken
                         and (not effort_required or attempt.effort in XAGENT["EFFORTS"])):
                     taken.update(pool.pop(index).checkouts)
                     return True
             return False
 
-        writer_ok = take(expected_writer, "rw")
-        reviewers = expected_reviewers if isinstance(expected_reviewers, list) else []
-        reviewer_ok = bool(reviewers)
-        for value in reviewers:
-            reviewer_ok = take(value, "ro") and reviewer_ok
+        writer_ok = take(expected_writer, "writer")
+        adversaries = expected_adversaries if isinstance(expected_adversaries, list) else []
+        adversaries_ok = bool(adversaries)
+        for value in adversaries:
+            adversaries_ok = take(value, "adversary") and adversaries_ok
         return {
             "all_attempts_terminal": bool(attempts) and all(attempt.terminal for attempt in attempts),
             "configured_writer_dispatched": writer_ok,
-            "configured_reviewers_dispatched": reviewer_ok,
+            "configured_adversaries_dispatched": adversaries_ok,
             "receipt_workspaces_owned": workspaces_valid,
+            "findings_rerun_by_parent": findings is not None and all(
+                _rerun_by_parent(entry, attempts, parent_commands, run_scope, parent) for entry in findings),
         }
     except (OSError, RuntimeError, TypeError, ValueError):
         return {
             "all_attempts_terminal": False,
             "configured_writer_dispatched": False,
-            "configured_reviewers_dispatched": False,
+            "configured_adversaries_dispatched": False,
             "receipt_workspaces_owned": False,
+            "findings_rerun_by_parent": False,
         }
 
 
@@ -522,6 +583,7 @@ class HostAdapter:
     env: dict[str, str]
     save_reply: Callable[[Path, list[str]], None]  # leaves the host's final reply in the run directory's result.md
     dispatches: Callable[[list[str]], tuple[list[NativeDispatch], str | None]]  # host log lines -> (native dispatches, gap)
+    parent_commands: Callable[[list[str]], list[ShellCommand]]  # host log lines -> the shell commands the host itself ran
 
 
 HOSTS = {
@@ -533,6 +595,7 @@ HOSTS = {
         env={"BASH_MAX_TIMEOUT_MS": str(ATTEMPT_SECONDS * 1000)},
         save_reply=_save_claude_reply,
         dispatches=claude_native_dispatches,
+        parent_commands=claude_parent_commands,
     ),
     # Not --ephemeral: spawn_agent evidence for native workers exists only in the persisted session rollout.
     "codex": HostAdapter(
@@ -540,6 +603,7 @@ HOSTS = {
         env={},
         save_reply=lambda directory, host_log: None,
         dispatches=lambda host_log: codex_native_dispatches(host_log, os.environ.get("CODEX_HOME") or Path.home() / ".codex"),
+        parent_commands=lambda host_log: codex_parent_commands(host_log, os.environ.get("CODEX_HOME") or Path.home() / ".codex"),
     ),
 }
 
@@ -583,20 +647,27 @@ the parent owns the contract probe and final verification commands below.
 Give the writer an exclusive worktree at fixture base {base} and have it leave its change uncommitted there;
 keep all worktrees and outputs under {directory}.
 The parent checkout is {work}. Integrate the worker's patch locally, then run python3 -m unittest yourself.
-Use interrogate on the resulting change with all configured reviewers, selected from the effective policy.
-Give each reviewer its own exclusive worktree checked out at fixture base {base}, with the proposed patch applied
+Use interrogate on the resulting change with every configured adversary, selected from the effective policy.
+Give each adversary its own exclusive worktree checked out at fixture base {base}, with the proposed patch applied
 as uncommitted changes; do not commit the patch or check out a writer commit. Preserve parent and worker evidence.
-Fix any real in-scope findings and rerun the affected check; do not count a dropout, cancelled run, or missing evidence as a pass.
-If stats.py changes after any review, every configured reviewer must review the final version again in a new worktree
-prepared the same way; a review of an earlier version does not count.
-Both host controllers run one-shot/headless. Do not send the final reply until every external command and reviewer
+Adversaries leave stats.py and test_stats.py unchanged and keep their repro files beside them in their own worktree.
+Rerun each finding's command yourself before you keep or drop it, in a shell call of its own that runs only that
+command: cd <that adversary's worktree as an absolute path> && <the finding's command>, with no shell variables, or the
+command alone with the worktree as the working directory where your shell tool takes one.
+Record every rerun in {directory}/findings.json: a JSON list with one object per finding, holding "adversary" (its
+policy entry), "worktree" (the absolute path of its worktree), "command" (that shell call's command string, copied
+verbatim) and "kept" (true or false). Write [] when no adversary reported a finding.
+Fix any verified in-scope findings in your own checkout, or send them back to the writer, and rerun the affected check; do not count a dropout, cancelled run, or missing evidence as a pass.
+If stats.py changes after any interrogation, every configured adversary must attack the final version again in a new
+worktree prepared the same way; an attack on an earlier version does not count.
+Both host controllers run one-shot/headless. Do not send the final reply until every external command and adversary
 has completed and you have inspected its terminal output and receipt. When running xagent commands in parallel,
 start them with & in one foreground Bash call, capture every PID, and wait for every PID; give the call a timeout
 longer than the {WORKER_LIMIT_SECONDS}-second attempt limit plus termination grace. Inspect each receipt, then run an allowed
 retry in a new call. Do not promise later notifications, rely on Monitor or shell sentinels, or use TaskOutput (it is not an available tool).
 Follow the host adapter's supported tools and wait behavior.
 
-After all integrations, fixes, and configured reviews are complete, personally run the final parent verification
+After all integrations, fixes, and configured attacks are complete, personally run the final parent verification
 from the parent checkout by executing exactly: python3 {verifier} {work}
 The helper runs python3 -B -m unittest -q and the contract probe, writes separate stdout/stderr logs plus
 {directory}/parent-verification.json, and exits nonzero if the real cwd, stable stats.py hash, or either check fails.
@@ -610,14 +681,13 @@ including sending this synthetic code and the standalone briefs to the locally c
 No extra confirmation is needed for those calls. Do not push, publish, change global settings, contact people, or edit the candidate plugin.
 Workers must remain leaves. Do not replace configured external agents with native workers.
 A policy entry without the xagent: prefix is a native worker: dispatch it with your host's own subagent tool and
-pass that exact model, omitting the model only for inherit-parent or auto. A native writer changes files only with its
-host's file-edit tool (Write or Edit in Claude Code, apply_patch in Codex); a native reviewer changes no files and runs
-python3 -B {SNAPSHOT_TOOL} <its worktree> as its first and as its last shell command in that worktree,
-each as a command of its own.
+pass that exact model, omitting the model only for inherit-parent or auto. A native writer changes stats.py only with
+its host's file-edit tool (Write or Edit in Claude Code, apply_patch in Codex).
 When the effective policy sets reasoning_effort, pass an effort to every worker, native or xagent; dispatch each native
 worker as an agent type whose definition sets no effort of its own, so that effort applies.
 Report the resolved routes, actual worker receipt paths, findings, your own test output, and any gaps.
-End with PSTACK_E2E: PASS only if the repair, all configured reviews and your independent tests are complete,
+End with PSTACK_E2E: PASS only if the repair, every configured adversary's attack on the final version, your reruns
+of their findings and your independent tests are complete,
 with no unresolved reproduced violation of the stated contract; otherwise PSTACK_E2E: FAIL.
 '''
     (directory / "prompt.md").write_text(prompt)
@@ -634,23 +704,20 @@ with no unresolved reproduced violation of the stated contract; otherwise PSTACK
         reply = ""
     receipts, ignored_meta = collect_xagent_receipts(evidence)
     native, native_gap = adapter.dispatches(host_log)
-    expected_writer, expected_reviewers = expected_roles(policy["effective"])
+    parent_commands = adapter.parent_commands(host_log)
+    findings = load_findings(directory / "findings.json")
+    expected_writer, expected_adversaries = expected_roles(policy["effective"])
     try:
         test_file_preserved = (work / "test_stats.py").read_text() == TEST
     except (OSError, UnicodeError):
         test_file_preserved = False
     final_stats = (work / "stats.py").read_bytes() if (work / "stats.py").is_file() else b""
     receipt_checks = validate_receipts(
-        receipts,
-        directory,
-        work,
-        base,
-        expected_writer,
-        expected_reviewers,
-        final_stats,
-        TEST.encode(),
-        native,
-        policy["effective"].get("reasoning_effort") is not None,
+        receipts, directory, work, base, expected_writer, expected_adversaries, final_stats, TEST.encode(),
+        findings=findings,
+        native_dispatches=native,
+        effort_required=policy["effective"].get("reasoning_effort") is not None,
+        parent_commands=parent_commands,
     )
     parent_verification_valid = validate_parent_verification(directory, work)
     checks = {
@@ -668,6 +735,8 @@ with no unresolved reproduced violation of the stated contract; otherwise PSTACK
     checks["finite_number_contract_preserved"] = contract.returncode == 0
     report = {"host": host, "exit": finished.returncode, "base": base, "policy": policy["effective"], "checks": checks, "receipts": receipts,
               "ignored_meta": ignored_meta, "native_evidence": {"gap": native_gap, "dispatches": [asdict(dispatch) for dispatch in native]},
+              # The parent's ledger, beside the commands it ran in checkouts under the run, so a reader can match each rerun.
+              "findings": findings, "parent_commands": [asdict(command) for command in parent_commands if checkouts_touched(command.paths, directory, work)],
               "verification": {"tests_exit_code": verification.returncode, "contract_exit_code": contract.returncode, "timeout_seconds": check_timeout}}
     (directory / "checks.json").write_text(json.dumps(report, indent=2) + "\n")
     for name, passed in checks.items():
@@ -677,6 +746,8 @@ with no unresolved reproduced violation of the stated contract; otherwise PSTACK
     for dispatch in native:
         if not dispatch.paths_touched:
             print(f"GAP {host}: native dispatch {dispatch.id} used no path, so it cannot fill a role", flush=True)
+        if dispatch.started is None:
+            print(f"GAP {host}: native dispatch {dispatch.id} has no timestamp, so it cannot fill an adversary slot", flush=True)
     for path in ignored_meta:
         print(f"IGNORED {host}: {path} was not written by xagent", flush=True)
     return all(checks.values())
@@ -701,7 +772,7 @@ def main():
     if any(run.iterdir()):
         parser.error("use a new empty run directory")
     sources = ["bin/xagent", "bin/xagent-pi-guard.ts", "references/runtime.md", "references/claude-runtime.md", "references/codex-runtime.md", "skills/xagent/SKILL.md", "skills/swarm/SKILL.md", "skills/interrogate/SKILL.md", "scripts/pstack-host-e2e.py", "scripts/pstack-host-e2e.test.py", "scripts/pstack-host-e2e-native.test.py",
-               "scripts/pstack-host-e2e-fixtures.py", "scripts/e2e-native-evidence.py", "scripts/e2e-snapshot.py", "scripts/e2e-process.py"]
+               "scripts/pstack-host-e2e-fixtures.py", "scripts/e2e-native-evidence.py", "scripts/e2e-process.py"]
     (run / "source-hashes.json").write_text(json.dumps({name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest() for name in sources}, indent=2) + "\n")
     hosts = options.host or list(HOSTS)
     with ThreadPoolExecutor(max_workers=len(hosts)) as pool:

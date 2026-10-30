@@ -42,7 +42,7 @@ Each worker owns one package. The parent waits for every slice and returns one `
 $interrogate the whole branch, but skeptically. don't change anything yet. no nitpicks unless it's an actual bug or regression in behavior.
 ```
 
-The qualifiers do real work. "don't change anything yet" keeps it read-only, and the nitpick rule pre-filters the noise so `Act on` findings are worth your time.
+The qualifiers do real work. "don't change anything yet" keeps it read-only, and the nitpick rule pre-filters the noise so the verified findings are worth your time.
 
 ## Prove a property tests rarely reach
 
@@ -110,7 +110,7 @@ To watch the catch-up instead, run [`$ketchup-video`](../../skills/ketchup-video
 - **A vague finish condition.** "make it better" gives `/goal` nothing to check. Give a command or artifact that can pass or fail. A goal is finite work, not a timer.
 - **Parallel agents in one worktree.** They overwrite each other, and nobody can tell which agent changed what. Say "own worktree per attempt" and the isolation is free.
 - **Using `$arena` for coverage.** `$arena` repeats one design or code brief, then picks a base and grafts the best parts. `$swarm` partitions slices or declared race arms and aggregates one report.
-- **Accepting every review comment.** Bots and humans both file real catches and noise in one list. `$interrogate` sorts findings into act-on and dismissed buckets with reasons, and you can override either way.
+- **Accepting every review comment.** Bots and humans both file real catches and noise in one list. `$interrogate` keeps only the findings a rerun proves and lists what it dropped and why, and you can override either way.
 - **Treating `auto` as a model slug.** `auto` and `inherit-parent` mean "omit the model field so the subagent inherits the parent chat model." [Setup](./01-setup.md) covers the roles and the pstack-specific JSON file.
 - **Reporting success off a green build.** A build proves it compiles. Ask for the real command, flow, stored value, or profile, and expect the evidence in the reply.
 - **Writing a `SKILL.md` freehand.** Route it through the [Authoring or modifying a skill playbook](../../skills/poteto-mode/playbooks/authoring-a-skill.md) so validation and review happen.

@@ -65,7 +65,7 @@ The default for non-trivial work is `poteto-mode`, which routes to other skills 
 | Settle types and module boundaries before implementation | [`architect`](../architect/SKILL.md) |
 | Compare several attempts at one brief | [`arena`](../arena/SKILL.md) |
 | Split work across independent slices or races | [`swarm`](../swarm/SKILL.md) |
-| Ask independent reviewers to find defects in a diff | [`interrogate`](../interrogate/SKILL.md) |
+| Have different models try to break a diff, keeping only findings a run proves | [`interrogate`](../interrogate/SKILL.md) |
 | Fix a bug test-first when a cheap test path exists | [`tdd`](../tdd/SKILL.md) |
 | Apply TypeScript-specific rules | [`typescript-best-practices`](../typescript-best-practices/SKILL.md) |
 | Remove comments before an independent review | [`no-comments`](../no-comments/SKILL.md) |
@@ -94,7 +94,7 @@ Close calls:
 - `how` explains current behavior; `why` traces the reasons; `teach` turns one or both into a plain explanation.
 - `arena` gives each worker the same brief and compares attempts; `swarm` assigns slices or a race and aggregates evidence.
 - `architect` settles a design and normally continues into implementation; add a review checkpoint if the user wants to approve the design first.
-- `interrogate` reviews the diff; `blast-radius` investigates possible breakage outside it and proves a key safety fact.
+- `interrogate` tries to break the diff; `blast-radius` investigates possible breakage outside it and proves a key safety fact.
 - `recall` rebuilds context across recent chats; `ketchup` covers only this chat since the user's last message; resuming one specific task or branch uses the Session pickup playbook.
 - `figure-it-out` designs one rigorous run; the Orchestrate playbook handles a program spanning multiple phases or PRs.
 

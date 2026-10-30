@@ -173,6 +173,27 @@ export const REQUIRED = [
     section: "local-decisions",
   },
   {
+    id: "interrogate-policy-panel",
+    file: "skills/interrogate/SKILL.md",
+    pattern: /Read the `interrogate reviewers` list from the effective policy from `node <plugin-root>\/bin\/config\.mjs show --host <codex\|claude\|t3>` in place of `arena runners`/,
+    hint: "interrogate reads its adversaries from the effective policy, not from upstream's model sheet",
+    section: "interrogate",
+  },
+  {
+    id: "interrogate-adversaries-rw",
+    file: "skills/interrogate/SKILL.md",
+    pattern: /Spawn each adversary as a worker that can edit files and run commands in its own worktree; an `xagent:<agent>` adversary runs `rw`[^\n]*adversary runs only the commands in `<plugin-root>\/bin\/xagent-allowed-commands`/,
+    hint: "each adversary edits and runs commands in its own worktree; an xagent one runs rw, within its agent's allowlist",
+    section: "interrogate",
+  },
+  {
+    id: "interrogate-parent-rerun",
+    file: "skills/interrogate/SKILL.md",
+    pattern: /Verify each finding per arena Phase F by rerunning its command yourself in that adversary's worktree\./,
+    hint: "the parent reruns each finding's command itself, in that adversary's worktree",
+    section: "interrogate",
+  },
+  {
     id: "xagent-skill",
     file: "skills/xagent/SKILL.md",
     hint: "the xagent skill is a local addition with no upstream counterpart",
