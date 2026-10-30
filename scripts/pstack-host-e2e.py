@@ -19,11 +19,11 @@ before it starts the agent and never again, to its meta.json's, written when it
 ends. A usable attempt writes when its checkout's stats.py was last written
 during a run of that worker's attempts in that checkout, with test_stats.py
 unchanged, so a retry that only verifies the repair a dropped attempt left
-there still writes. A run xagent dropped as model_mismatch is
-another model's, so it counts for no one. A later write outside those runs,
-such as the parent fixing a finding in the writer's worktree, leaves the slot
-empty, so the brief has the parent fix findings in its own checkout or send
-them back to the writer.
+there still writes. A run xagent dropped as model_mismatch was another model's,
+so its window is no run of that worker; the receipt itself is still checked
+like any other. A later write outside those runs, such as the parent fixing a
+finding in the writer's worktree, leaves the slot empty, so the brief has the
+parent fix findings in its own checkout.
 
 Native entries are checked through the host's own log, parsed by
 scripts/e2e-native-evidence.py: Claude's stream-json Agent calls and their
@@ -69,9 +69,11 @@ whitespace, and names that worktree by an absolute path or as its working
 directory; an attempt by that adversary must have used the worktree. A command
 that only quotes the rerun, such as the one that writes the ledger, is not a
 rerun, nor is one the host stopped before it ran: Claude's result must be no
-error or report the exit code, and Codex must record an exit code. An empty
-list passes, since no findings is a valid result; whether the list is
-complete is the host's claim, bounded by the final independent checks.
+error or report the exit code, and Codex must record an exit code. checks.json
+lists the parent's commands in the run's checkouts with whether each ran, so a
+refused rerun shows apart from a missing one. An empty list passes, since no
+findings is a valid result; whether the list is complete is the host's claim,
+bounded by the final independent checks.
 
 Effort. When the effective policy sets reasoning_effort, a worker fills a role
 only if its xagent receipt, Claude Agent call or Codex spawn_agent records an
@@ -464,15 +466,19 @@ def _xagent_attempts(receipts, workdirs, final_stats, test_file):
     last written during a run of the same worker there, so a retry may only verify the repair a dropped attempt left,
     while the parent's copy of a later fix between two attacks, or a run xagent dropped because another model
     answered, is no repair."""
+    def worker(receipt, workdir):
+        # Only a well-formed receipt has a validated worktree, so call this once workdir is known.
+        return receipt.get("agent"), receipt.get("model"), workdir
+
     runs = {}
     for receipt, workdir in zip(receipts, workdirs):
         if workdir is not None and receipt.get("reason") != "model_mismatch":
-            runs.setdefault((receipt.get("agent"), receipt.get("model"), workdir), []).append(_xagent_run(receipt))
+            runs.setdefault(worker(receipt, workdir), []).append(_xagent_run(receipt))
     attempts = []
     for receipt, workdir in zip(receipts, workdirs):
         written = _mtime(workdir / "stats.py") if workdir is not None else None
         repaired = written is not None and any(None not in (start, end) and start < written <= end
-                                               for start, end in runs.get((receipt.get("agent"), receipt.get("model"), workdir), ()))
+                                               for start, end in runs.get(worker(receipt, workdir), ()))
         attempts.append(_xagent_attempt(receipt, workdir, repaired, final_stats, test_file))
     return attempts
 
@@ -504,7 +510,7 @@ def _rerun_by_parent(entry, attempts, parent_commands, run_scope, parent):
     # Equal up to whitespace, so a command that only quotes the rerun, as a heredoc writing the ledger does, is no rerun.
     wanted = entry["command"].split()
     return (any((attempt.kind, attempt.worker) == adversary and worktree in attempt.checkouts for attempt in attempts)
-            and any(command.command.split() == wanted and worktree in checkouts_touched(command.paths, run_scope, parent)
+            and any(command.ran and command.command.split() == wanted and worktree in checkouts_touched(command.paths, run_scope, parent)
                     for command in parent_commands))
 
 
@@ -657,7 +663,7 @@ command alone with the worktree as the working directory where your shell tool t
 Record every rerun in {directory}/findings.json: a JSON list with one object per finding, holding "adversary" (its
 policy entry), "worktree" (the absolute path of its worktree), "command" (that shell call's command string, copied
 verbatim) and "kept" (true or false). Write [] when no adversary reported a finding.
-Fix any verified in-scope findings in your own checkout, or send them back to the writer, and rerun the affected check; do not count a dropout, cancelled run, or missing evidence as a pass.
+Fix any verified in-scope findings in your own checkout and rerun the affected check; do not count a dropout, cancelled run, or missing evidence as a pass.
 If stats.py changes after any interrogation, every configured adversary must attack the final version again in a new
 worktree prepared the same way; an attack on an earlier version does not count.
 Both host controllers run one-shot/headless. Do not send the final reply until every external command and adversary
@@ -735,7 +741,8 @@ with no unresolved reproduced violation of the stated contract; otherwise PSTACK
     checks["finite_number_contract_preserved"] = contract.returncode == 0
     report = {"host": host, "exit": finished.returncode, "base": base, "policy": policy["effective"], "checks": checks, "receipts": receipts,
               "ignored_meta": ignored_meta, "native_evidence": {"gap": native_gap, "dispatches": [asdict(dispatch) for dispatch in native]},
-              # The parent's ledger, beside the commands it ran in checkouts under the run, so a reader can match each rerun.
+              # The parent's ledger, beside its commands in checkouts under the run and whether each ran, so a reader can
+              # match each rerun and tell a refused one from a missing one.
               "findings": findings, "parent_commands": [asdict(command) for command in parent_commands if checkouts_touched(command.paths, directory, work)],
               "verification": {"tests_exit_code": verification.returncode, "contract_exit_code": contract.returncode, "timeout_seconds": check_timeout}}
     (directory / "checks.json").write_text(json.dumps(report, indent=2) + "\n")

@@ -260,16 +260,25 @@ class HostHarnessAcceptanceTest(FIXTURES["HarnessFixture"]):
         self.ran(retry, later, later + 2)
         attacks = self.xagent_attacks_for(("xagent:claude", "xagent:grok"))
         self.assertEqual(self.valid_receipts([dropped, retry, *attacks]), ALL_CHECKS_PASS)
-        # thermos round 3: a run xagent dropped because another model answered is not the configured worker's repair.
-        other = self.add_worktree("writer-other")
-        mismatched = self.writer_receipt("codex", other, name="writer-other-1", status="DROPOUT", exit=3, reason="model_mismatch")
-        verified = self.receipt("codex", "rw", other, name="writer-other-2")
-        self.ran(verified, later, later + 2)
-        self.assertFalse(self.valid_receipts([mismatched, verified, *attacks])["configured_writer_dispatched"])
         # A write between the two runs, as when the parent copies a fix in, is not that worker's repair.
         between = self.started(dropped) + 300
         os.utime(checkout / "stats.py", (between, between))
         self.assertFalse(self.valid_receipts([dropped, retry, *attacks])["configured_writer_dispatched"])
+
+    def test_given_an_xagent_writer_run_another_model_answered_when_the_retry_only_verifies_then_the_writer_slot_stays_empty(self):
+        # thermos round 3: xagent drops a pinned run as model_mismatch when the CLI answered with another model.
+        checkout = self.add_worktree("writer")
+        mismatched = self.writer_receipt("codex", checkout, name="writer-1", model="gpt-6.1-sol", status="DROPOUT",
+                                         reason="model_mismatch", resolved_models=["gpt-6-luna"])
+        retry = self.receipt("codex", "rw", checkout, name="writer-2", model="gpt-6.1-sol", resolved_models=["gpt-6.1-sol"])
+        later = self.started(mismatched) + 600
+        self.ran(retry, later, later + 2)
+        attacks = self.xagent_attacks_for(("xagent:claude", "xagent:grok"))
+        checks = self.valid_receipts([mismatched, retry, *attacks], writer="xagent:codex/gpt-6.1-sol")
+        self.assertEqual(checks, {**ALL_CHECKS_PASS, "configured_writer_dispatched": False})
+        # The same repair in a run of the pinned model, dropped for a timeout, is that worker's, so the retry fills the slot.
+        timed_out = {**mismatched, "reason": "timeout", "timed_out": True, "resolved_models": ["gpt-6.1-sol"]}
+        self.assertEqual(self.valid_receipts([timed_out, retry, *attacks], writer="xagent:codex/gpt-6.1-sol"), ALL_CHECKS_PASS)
 
     def test_given_one_xagent_agent_as_writer_and_adversary_when_it_only_attacked_then_the_writer_slot_stays_empty(self):
         # thermos round 1: an attack on an earlier patch, then the re-attack the brief requires after a fix, and no writer.
@@ -315,26 +324,29 @@ class HostHarnessAcceptanceTest(FIXTURES["HarnessFixture"]):
         receipts = [self.writer_receipt("codex", writer), self.receipt("claude", "rw", attack_a), self.receipt("grok", "rw", attack_b)]
         rerun = f"cd {attack_a} && python3 -m unittest test_repro"
         finding = {"adversary": "xagent:claude", "worktree": str(attack_a), "command": rerun, "kept": True}
-        ran = [ShellCommand(rerun, [str(attack_a)])]
-        self.assertEqual(self.valid_receipts(receipts, findings=[finding], parent_commands=ran), ALL_CHECKS_PASS)
+        reruns = [ShellCommand(rerun, [str(attack_a)], ran=True)]
+        self.assertEqual(self.valid_receipts(receipts, findings=[finding], parent_commands=reruns), ALL_CHECKS_PASS)
         self.assertTrue(self.valid_receipts(receipts, findings=[], parent_commands=())["findings_rerun_by_parent"])
         # Whitespace aside, the ledger holds the command as it ran, here in the worktree as its working directory.
-        in_worktree = [ShellCommand("python3  -m unittest test_repro\n", [str(attack_a)])]
+        in_worktree = [ShellCommand("python3  -m unittest test_repro\n", [str(attack_a)], ran=True)]
         self.assertTrue(self.valid_receipts(receipts, findings=[{**finding, "command": "python3 -m unittest test_repro"}],
                                             parent_commands=in_worktree)["findings_rerun_by_parent"])
         ledger = json.dumps([finding])
         for case, findings, commands in (
-            ("no ledger", None, ran),
+            ("no ledger", None, reruns),
             ("the parent never ran it", [finding], ()),
-            ("the parent ran another command", [{**finding, "command": f"cd {attack_a} && python3 -m unittest test_other"}], ran),
+            # thermos round 4: the host stopped the call before it ran, as a permission rule does.
+            ("the parent's rerun was refused", [finding], [ShellCommand(rerun, [str(attack_a)])]),
+            ("the parent ran another command", [{**finding, "command": f"cd {attack_a} && python3 -m unittest test_other"}], reruns),
             ("the rerun ran in another worktree", [{**finding, "command": "python3 -m unittest test_repro"}],
-             [ShellCommand("python3 -m unittest test_repro", [str(attack_b)])]),
-            ("the worktree is another adversary's", [{**finding, "adversary": "xagent:grok"}], ran),
+             [ShellCommand("python3 -m unittest test_repro", [str(attack_b)], ran=True)]),
+            ("the worktree is another adversary's", [{**finding, "adversary": "xagent:grok"}], reruns),
             # thermos round 1: commands that only mention the rerun, or run more than it.
-            ("only the heredoc that wrote the ledger", [finding], [ShellCommand(f"cat > {self.scope}/findings.json <<'EOF'\n{ledger}\nEOF", [str(attack_a)])]),
-            ("only an echo of it", [finding], [ShellCommand(f"echo '{rerun}'", [str(attack_a)])]),
+            ("only the heredoc that wrote the ledger", [finding],
+             [ShellCommand(f"cat > {self.scope}/findings.json <<'EOF'\n{ledger}\nEOF", [str(attack_a)], ran=True)]),
+            ("only an echo of it", [finding], [ShellCommand(f"echo '{rerun}'", [str(attack_a)], ran=True)]),
             ("a setup command that contains it", [{**finding, "command": "python3 -m unittest"}],
-             [ShellCommand(f"cd {attack_a} && git status && python3 -m unittest", [str(attack_a)])]),
+             [ShellCommand(f"cd {attack_a} && git status && python3 -m unittest", [str(attack_a)], ran=True)]),
         ):
             with self.subTest(case):
                 self.assertFalse(self.valid_receipts(receipts, findings=findings, parent_commands=commands)["findings_rerun_by_parent"])

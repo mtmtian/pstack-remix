@@ -21,10 +21,16 @@ CLAUDE_EXIT = re.compile(r"Exit code -?\d+\b")
 
 @dataclass
 class ShellCommand:
-    """One shell command a subagent or the host ran itself, with the paths it named and the start of its output."""
+    """One shell command a subagent or the host called, with the paths it named and the start of its output.
+
+    ran is whether the host's record shows the command ran: a Claude result with no error or one that reports the
+    command's exit code, or a Codex exit code. A call a permission rule or hook stopped, one Codex declined, and one
+    with no result did not run.
+    """
     command: str
     paths: list[str]
     output: str | None = None
+    ran: bool = False
 
 
 @dataclass
@@ -95,7 +101,7 @@ def claude_native_dispatches(lines):
                     if not block.get("is_error"):
                         edited[parent].update(paths)
                 if block.get("type") == "tool_result" and block.get("tool_use_id") in shells:
-                    shells.pop(block["tool_use_id"]).output = _text(block.get("content"))
+                    _claude_result(shells.pop(block["tool_use_id"]), block)
             results = [block for block in blocks if block.get("type") == "tool_result" and block.get("tool_use_id") in dispatches]
             # tool_use_result describes the event's single tool result; an ambiguous event stays pending.
             if len(results) != 1:
@@ -124,11 +130,9 @@ def claude_native_dispatches(lines):
 
 
 def claude_parent_commands(lines):
-    """Return the Bash commands the host itself ran, from `claude -p --output-format stream-json --verbose` output.
+    """Return the Bash calls the host itself made, in call order, from `claude -p --output-format stream-json --verbose` output.
 
     A subagent's tool calls stream under its Agent call's id, so only calls with no parent_tool_use_id are the host's.
-    A call ran when its tool_result is no error or reports the command's exit code, so a call that a permission rule
-    or hook stopped before it ran, or one with no result, is left out.
     """
     commands, pending = [], {}
     for event in json_events(lines):
@@ -136,20 +140,24 @@ def claude_parent_commands(lines):
             arguments = block.get("input") if isinstance(block.get("input"), dict) else {}
             if (event.get("type") == "assistant" and event.get("parent_tool_use_id") is None and block.get("type") == "tool_use"
                     and block.get("name") == "Bash" and isinstance(arguments.get("command"), str)):
-                pending[block.get("id")] = arguments["command"]
+                pending[block.get("id")] = ShellCommand(arguments["command"], ABSOLUTE_PATH.findall(arguments["command"]))
+                commands.append(pending[block.get("id")])
             elif event.get("type") == "user" and block.get("type") == "tool_result" and block.get("tool_use_id") in pending:
-                script, output = pending.pop(block["tool_use_id"]), _text(block.get("content"))
-                if not block.get("is_error") or CLAUDE_EXIT.match(output or ""):
-                    commands.append(ShellCommand(script, ABSOLUTE_PATH.findall(script), output))
+                _claude_result(pending.pop(block["tool_use_id"]), block)
     return commands
 
 
+def _claude_result(command, block):
+    """Record a Bash call's tool_result on its command. It ran unless Claude reports an error that gives no exit code."""
+    command.output = _text(block.get("content"))
+    command.ran = not block.get("is_error") or CLAUDE_EXIT.match(command.output or "") is not None
+
+
 def codex_parent_commands(lines, codex_home):
-    """Return the shell commands the host itself ran, from its own session rollout, each with its working directory.
+    """Return the shell commands the host itself called, from its own session rollout, each with its working directory.
 
     The rollout holds only the host's own items, as the `codex exec --json` stream does, and adds the cwd that a
-    command run with a workdir names nowhere else. A command ran when Codex recorded its exit code, so one it
-    declined is left out.
+    command run with a workdir names nowhere else.
     """
     try:
         thread, rollouts, gap = _codex_rollouts(lines, codex_home)
@@ -157,21 +165,21 @@ def codex_parent_commands(lines, codex_home):
             return []
         return [_codex_command(payload["item"]) for _, payload, _ in _payloads(rollouts[thread])
                 if payload.get("type") == "item_completed" and isinstance(payload.get("item"), dict)
-                and payload["item"].get("type") == "CommandExecution" and type(payload["item"].get("exit_code")) is int
-                and payload.get("thread_id") in (None, thread)]
+                and payload["item"].get("type") == "CommandExecution" and payload.get("thread_id") in (None, thread)]
     except OSError:
         return []
 
 
 def _codex_command(item):
-    """A Codex CommandExecution item as a ShellCommand: its script, the paths it names, and its cwd."""
+    """A Codex CommandExecution item as a ShellCommand: its script, the paths it names, and its cwd. It ran when Codex
+    recorded its exit code; one Codex declined has none."""
     command = item.get("command")
     # Codex runs each command as [shell, -lc, script].
     script = str(command[-1]) if isinstance(command, list) and command else str(command or "")
     paths = ABSOLUTE_PATH.findall(" ".join(map(str, command)) if isinstance(command, list) else script)
     if isinstance(item.get("cwd"), str):
         paths.append(unquote(urlparse(item["cwd"]).path))
-    return ShellCommand(script, paths, _text(item.get("aggregated_output", item.get("stdout"))))
+    return ShellCommand(script, paths, _text(item.get("aggregated_output", item.get("stdout"))), type(item.get("exit_code")) is int)
 
 
 def _text(content):
