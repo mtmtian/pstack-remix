@@ -2,7 +2,7 @@
 
 English | [简体中文](./README.zh-CN.md)
 
-One source tree, one configuration, two native host entry points. This independent local adaptation tracks Lauren Tan's MIT-licensed upstream pstack 0.15.32 at [`e73df471`](https://github.com/cursor/plugins/tree/e73df471cd4bd918367e99f3dd9c51bd53ddf5f0/pstack). It is not maintained by Lauren Tan, Cursor, OpenAI, or Anthropic.
+One source tree, one configuration, two native host entry points. This independent local adaptation tracks Lauren Tan's MIT-licensed upstream pstack 0.15.36 at [`c742dd61`](https://github.com/cursor/plugins/tree/c742dd61706fbacc1b95f1a20b7b988cf096ce6c/pstack). It is not maintained by Lauren Tan, Cursor, OpenAI, or Anthropic.
 
 The 58 skills, 23 playbooks, engineering principles, agent prompts, and Node helpers are shared. Only the plugin manifests and two short runtime adapters differ. Codex retains its installed `pstack-codex` name; Claude Code uses `pstack` from the same directory.
 

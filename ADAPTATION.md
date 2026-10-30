@@ -1,6 +1,6 @@
 # Shared pstack adaptation
 
-Upstream pstack 0.15.32 at `e73df471cd4bd918367e99f3dd9c51bd53ddf5f0` (#800–#807 after the release), synced 2026-10-24. MIT attribution is preserved.
+Upstream pstack 0.15.36 at `c742dd61706fbacc1b95f1a20b7b988cf096ce6c`, synced 2026-10-30. MIT attribution is preserved.
 
 This guide records what this fork does differently from upstream and why. Each section states the current decision; the [sync log](#sync-log) says when each sync landed, and its pull request holds the details of that sync.
 
@@ -58,7 +58,8 @@ The [fork guards](./docs/ci.md#fork-guards) reject the denylisted Cursor primiti
 - **The generated Claude Code harness (#637, #705).** Its tree, `docs/harness/claude-code.md`, and the `~/.claude/rules/pstack-models.md` model rule translate Cursor names at run time, while this fork rewrites the shared skills in host-neutral wording, resolves models through `config.json`, and lists transcripts with `bin/transcripts.mjs`. Upstream's repository-root harness and docs checks (#637, #704) sit outside the tracked path; the fork guards check local links instead.
 - **Cursor-only README and guide lines.** The Claude Code and Cursor install lines, the Custom Mode link, the built-in `/autopilot` note, the Cursor `/` menu note, and #806's auto-update note, since Claude Code reads the `pstack-local` directory marketplace in place.
 - **#805's transcript timing in `worktree-audit.sh`.** The local script reads no transcripts, so it runs no `stat` or `date` on them.
-- **statechart's `OutputFolder` model (#791).** The local output-folder check and copy fixes below cover the same ground.
+- **#986's rejected-slug fallbacks and the `run_in_background` note.** Arena's dropped-seat chain, poteto-mode's rule for a slug the Task tool rejects, and the note that a steer or resume runs in the background all handle Cursor's Task tool and its slugs. This fork resolves models through `config.json` and never substitutes silently.
+- **Orchestrate's Cursor runtime (#1043).** Cloud-VM workers (`environment: "cloud"`), the Project tracker and store, and the `control-ui` and `control-cli` checks from `cursor-team-kit`. The fork's playbook takes the agentic design and names the host's collaboration tools, an operator-selected state directory, and the project's verification harness instead.
 - **`make-bot-ui` and the Benny automation pack.** Both drive Cursor platform features: make-bot-ui creates a Cursor webhook routine with `update_state`, takes its sender key through a Cursor secret request, and posts to `api2.cursor.sh`; Benny is two Cursor automations for Slack issue reports. The fork's earlier ports kept them as dormant prose with no platform behind them on Codex, Claude Code, or Antigravity, and every sync still had to re-adapt them, so 0.15.32-shared.5 removed both. Host features and the maintainer's setup cover the same jobs (checked 2026-10-25):
   - **Scheduled runs.** Both hosts schedule work. Codex Automations run a prompt on a cron schedule, locally or in a worktree; every automation on the maintainer's machine is a cron schedule, and none uses an outside trigger. The Claude desktop app runs local scheduled tasks, and Claude Code has cloud [scheduled tasks](https://code.claude.com/docs/en/routines.md), a research preview, whose API trigger takes a per-task bearer token, so a local page's server can POST to wake one. That API trigger is the closest match to make-bot-ui's custom page.
   - **Chat bug reports.** A Feishu/Lark bridge to the local CLI agents, such as lark-channel-bridge with one bot per agent, runs Claude Code or Codex when a group message mentions its bot, so a reported bug can be handed to pstack's bug-fix playbook, and a chat message can wake an agent where make-bot-ui's page is not needed. It acts only on messages sent to it, with a mention in a group, so it does not watch a channel and triage every report as Benny did; the message has to name the repository, because the bridge starts each agent in its own workspace; and a bot with full access acts for anyone allowed to mention it. In Slack, [Claude Tag](https://claude.com/docs/claude-tag/overview.md), on Team and Enterprise, takes a bug report to a draft PR.
@@ -68,6 +69,7 @@ The [fork guards](./docs/ci.md#fork-guards) reject the denylisted Cursor primiti
 
 | Upstream | Synced | From | Pull request |
 |---|---|---|---|
+| 0.15.36 (`c742dd61`, #977–#1043) | 2026-10-30 | 0.15.32 (`e73df471`) | PR_PENDING |
 | 0.15.32 (`e73df471`, #791–#807) | 2026-10-24 | 0.15.30 (`4ec7ffa1`) | #25 |
 | 0.15.30 (#776, #779 follow-ups) | 2026-10-22 | 0.15.25 (`99743e9c`) | #21, #22, #23 |
 | 0.15.25 (#633, #634) | 2026-10-16 | 0.15.21 (`997ffc7f`) | #10 |

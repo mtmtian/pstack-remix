@@ -4,7 +4,7 @@
 
 一份源码、一份配置，分别接入 Codex 和 Claude Code 的原生能力。你描述任务和验收条件，pstack 选择相应流程，组织调查、设计、实现、评审与验证。
 
-这是一个独立维护的本地适配版本，基于 Lauren Tan 以 MIT 协议发布的上游 pstack 0.15.32，跟踪提交 [`e73df471`](https://github.com/cursor/plugins/tree/e73df471cd4bd918367e99f3dd9c51bd53ddf5f0/pstack)。本项目不由 Lauren Tan、Cursor、OpenAI 或 Anthropic 维护。
+这是一个独立维护的本地适配版本，基于 Lauren Tan 以 MIT 协议发布的上游 pstack 0.15.36，跟踪提交 [`c742dd61`](https://github.com/cursor/plugins/tree/c742dd61706fbacc1b95f1a20b7b988cf096ce6c/pstack)。本项目不由 Lauren Tan、Cursor、OpenAI 或 Anthropic 维护。
 
 各主控共用 **58 个技能、23 个流程模板**、Agent 提示词和 Node 工具，主控差异只在插件清单和运行时适配里。为兼容已有安装，Codex 插件名仍为 `pstack-codex`，Claude Code 插件名为 `pstack`。本页只讲安装和入门；技能清单、示例和设计取舍见[英文 README](./README.md) 与[使用指南](./docs/guide/README.md)。
 
