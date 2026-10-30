@@ -71,12 +71,12 @@ def attacks_in(checkout):
             ("Write", {"file_path": f"{checkout}/test_repro.py"}), ("Bash", {"command": f"cd {checkout} && python3 -m unittest test_repro"}, False, "FAILED")]
 
 
-def host_bash(tool_id, command, output="ok"):
-    """Stream-json events for a Bash call the host itself ran."""
+def host_bash(tool_id, command, output="ok", is_error=False):
+    """Stream-json events for a Bash call the host itself made; Claude marks a nonzero exit or a refusal as an error."""
     return [{"type": "assistant", "parent_tool_use_id": None, "message": {"content": [
                 {"type": "tool_use", "id": tool_id, "name": "Bash", "input": {"command": command}}]}},
             {"type": "user", "parent_tool_use_id": None, "message": {"content": [
-                {"type": "tool_result", "tool_use_id": tool_id, "is_error": False, "content": output}]}}]
+                {"type": "tool_result", "tool_use_id": tool_id, "is_error": is_error, "content": output}]}}]
 
 
 def writes_in(checkout):
@@ -104,7 +104,7 @@ def write_codex_rollouts(home, thread, spawns, parent_rollout=True, effort=None,
     is a shell command the child ran, ("run", command, output), or edits(path). A forked child's rollout starts
     with a copy of the parent's history under the parent's turn id, as Codex writes it. Every rollout line carries
     started, now by default, as its timestamp. parent_commands are the host's own commands, each a (script, working
-    directory or None) pair, which its rollout records as CommandExecution items.
+    directory or None, exit code or None for a command Codex declined), which its rollout records as CommandExecution items.
     """
     stamp = started or iso()
     day = home / "sessions" / "2026" / "10" / "16"
@@ -148,9 +148,10 @@ def write_codex_rollouts(home, thread, spawns, parent_rollout=True, effort=None,
             parent.append({"type": "event_msg", "payload": {"type": "item_completed", "item": {
                 "type": "SubAgentActivity", "kind": "completed", "id": f"done-{call}", "agent_thread_id": child}}})
         (day / f"rollout-2026-10-16T04-00-00-{child}.jsonl").write_text("".join(json.dumps({"timestamp": stamp, **event}) + "\n" for event in events))
-    for script, cwd in parent_commands:
+    for script, cwd, code in parent_commands:
         parent.append({"type": "event_msg", "payload": {"type": "item_completed", "item": {
-            "type": "CommandExecution", "command": ["/bin/zsh", "-lc", script], "aggregated_output": "FAILED", "status": "completed",
+            "type": "CommandExecution", "command": ["/bin/zsh", "-lc", script], "aggregated_output": "FAILED",
+            "status": "declined" if code is None else "completed" if code == 0 else "failed", "exit_code": code,
             **({"cwd": Path(cwd).as_uri()} if cwd else {})}}})
     if parent_rollout:
         (day / f"rollout-2026-10-16T04-00-00-{thread}.jsonl").write_text("".join(json.dumps({"timestamp": stamp, **event}) + "\n" for event in parent))
@@ -535,16 +536,22 @@ class NativeEvidenceTest(FIXTURES["HarnessFixture"]):
         ledger = f"cat > {self.scope}/findings.json <<'EOF'\n{json.dumps([finding])}\nEOF"
         # A live Claude parent reran every finding in one script through a shell variable, so no call is the ledger's command.
         batched = f'W={attack.parent}\necho "### 1"; cd $W/{attack.name} && python3 -m unittest test_repro; echo "exit $?"'
+        failed = "Exit code 1\nFAILED (failures=1)"
+        denied = "Claude requested permissions to use Bash, but you haven't granted it yet."
+        # Each call is (command, output, is_error); a call counts as run unless Claude stopped it before it ran.
         for name, ran, counted in (
-            ("the host reran it", [(rerun, "FAILED (failures=1)"), (ledger, "ok")], True),
-            ("only the adversary ran it, and the host wrote the ledger", [(ledger, "ok")], False),
-            ("the host reran it inside a batch through a shell variable", [(batched, "FAILED (failures=1)"), (ledger, "ok")], False),
+            ("the host reran it, and the repro failed", [(rerun, failed, True), (ledger, "ok", False)], True),
+            ("only the adversary ran it, and the host wrote the ledger", [(ledger, "ok", False)], False),
+            ("the host reran it inside a batch through a shell variable", [(batched, failed, True), (ledger, "ok", False)], False),
+            # Codex review of d328f92: a call Claude refused never ran.
+            ("the host's rerun was refused before it ran", [(rerun, denied, True), (ledger, "ok", False)], False),
         ):
             with self.subTest(name):
                 lines = claude_stream(writer, adversary, *(host_bash(f"toolu_host_{index}", *call) for index, call in enumerate(ran)))
                 parent_commands = claude_parent_commands(lines)
-                # Only the host's own calls, each with its output; the adversary's identical command is not among them.
-                self.assertEqual([(command.command, command.output) for command in parent_commands], ran)
+                # Only the host's own calls that ran, each with its output; the adversary's identical command is not among them.
+                self.assertEqual([(command.command, command.output) for command in parent_commands],
+                                 [(command, output) for command, output, _ in ran if output != denied])
                 native, _ = claude_native_dispatches(lines)
                 checks = self.valid_receipts([], native_dispatches=native, writer="opus", adversaries=("opus",), findings=[finding],
                                              parent_commands=parent_commands)
@@ -557,10 +564,11 @@ class NativeEvidenceTest(FIXTURES["HarnessFixture"]):
         home = self.root / "codex-home"
         named = f"cd {attack} && python3 -m unittest test_repro"
         for index, (name, parent_commands, command, counted) in enumerate((
-            ("the host reran it naming the worktree", [(named, None)], named, True),
-            ("the host reran it with the worktree as its working directory", [("python3 -m unittest test_repro", attack)], "python3 -m unittest test_repro", True),
+            ("the host reran it naming the worktree", [(named, None, 1)], named, True),
+            ("the host reran it with the worktree as its working directory", [("python3 -m unittest test_repro", attack, 1)], "python3 -m unittest test_repro", True),
             # The child ran the same command in its own rollout.
             ("only the adversary ran it", [], named, False),
+            ("the host's rerun was declined", [(named, None, None)], named, False),
         )):
             with self.subTest(name):
                 log = write_codex_rollouts(home, f"thread-findings-{index}", [
@@ -569,7 +577,7 @@ class NativeEvidenceTest(FIXTURES["HarnessFixture"]):
                 ], parent_commands=parent_commands)
                 native, _ = codex_native_dispatches(log, home)
                 ran = codex_parent_commands(log, home)
-                self.assertEqual([command.command for command in ran], [script for script, _ in parent_commands])
+                self.assertEqual([command.command for command in ran], [script for script, _, code in parent_commands if code is not None])
                 finding = {"adversary": "gpt-6.1-sol", "worktree": str(attack), "command": command, "kept": False}
                 checks = self.valid_receipts([], native_dispatches=native, writer="gpt-6.1-sol", adversaries=("gpt-6.1-sol",), findings=[finding],
                                              parent_commands=ran)

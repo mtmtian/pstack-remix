@@ -15,6 +15,8 @@ CLAUDE_EDIT_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
 ROLLOUT_NAME = re.compile(r"rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-(.+)\.jsonl")
 # Enough of a command's output to show what a rerun printed, without copying whole file listings into checks.json.
 OUTPUT_LIMIT = 2000
+# Claude reports a Bash command that ran and exited nonzero as an error result that starts with its exit code.
+CLAUDE_EXIT = re.compile(r"Exit code -?\d+\b")
 
 
 @dataclass
@@ -125,6 +127,8 @@ def claude_parent_commands(lines):
     """Return the Bash commands the host itself ran, from `claude -p --output-format stream-json --verbose` output.
 
     A subagent's tool calls stream under its Agent call's id, so only calls with no parent_tool_use_id are the host's.
+    A call ran when its tool_result is no error or reports the command's exit code, so a call that a permission rule
+    or hook stopped before it ran, or one with no result, is left out.
     """
     commands, pending = [], {}
     for event in json_events(lines):
@@ -132,11 +136,11 @@ def claude_parent_commands(lines):
             arguments = block.get("input") if isinstance(block.get("input"), dict) else {}
             if (event.get("type") == "assistant" and event.get("parent_tool_use_id") is None and block.get("type") == "tool_use"
                     and block.get("name") == "Bash" and isinstance(arguments.get("command"), str)):
-                command = ShellCommand(arguments["command"], ABSOLUTE_PATH.findall(arguments["command"]))
-                commands.append(command)
-                pending[block.get("id")] = command
+                pending[block.get("id")] = arguments["command"]
             elif event.get("type") == "user" and block.get("type") == "tool_result" and block.get("tool_use_id") in pending:
-                pending.pop(block["tool_use_id"]).output = _text(block.get("content"))
+                script, output = pending.pop(block["tool_use_id"]), _text(block.get("content"))
+                if not block.get("is_error") or CLAUDE_EXIT.match(output or ""):
+                    commands.append(ShellCommand(script, ABSOLUTE_PATH.findall(script), output))
     return commands
 
 
@@ -144,7 +148,8 @@ def codex_parent_commands(lines, codex_home):
     """Return the shell commands the host itself ran, from its own session rollout, each with its working directory.
 
     The rollout holds only the host's own items, as the `codex exec --json` stream does, and adds the cwd that a
-    command run with a workdir names nowhere else.
+    command run with a workdir names nowhere else. A command ran when Codex recorded its exit code, so one it
+    declined is left out.
     """
     try:
         thread, rollouts, gap = _codex_rollouts(lines, codex_home)
@@ -152,7 +157,8 @@ def codex_parent_commands(lines, codex_home):
             return []
         return [_codex_command(payload["item"]) for _, payload, _ in _payloads(rollouts[thread])
                 if payload.get("type") == "item_completed" and isinstance(payload.get("item"), dict)
-                and payload["item"].get("type") == "CommandExecution" and payload.get("thread_id") in (None, thread)]
+                and payload["item"].get("type") == "CommandExecution" and type(payload["item"].get("exit_code")) is int
+                and payload.get("thread_id") in (None, thread)]
     except OSError:
         return []
 
