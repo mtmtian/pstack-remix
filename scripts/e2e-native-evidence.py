@@ -1,25 +1,26 @@
-"""Read a host's native subagent dispatches from Claude stream-json output or Codex session rollouts."""
+"""Read a host's native subagent dispatches and its own shell commands from Claude stream-json output or Codex logs."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
 from pathlib import Path
 import re
+import shlex
 import subprocess
 from urllib.parse import unquote, urlparse
 
 # An absolute path as it appears in a shell command.
 ABSOLUTE_PATH = re.compile(r"/[^\s'\"`<>()\[\]{},;|\\]+")
-# Claude Code's file-edit tools; a writer changes its checkout with them, a reviewer never does.
+# Claude Code's file-edit tools; a writer repairs its checkout with them.
 CLAUDE_EDIT_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
 ROLLOUT_NAME = re.compile(r"rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-(.+)\.jsonl")
-# Enough of a command's output to hold a snapshot line, without copying whole file listings into checks.json.
+# Enough of a command's output to show what a rerun printed, without copying whole file listings into checks.json.
 OUTPUT_LIMIT = 2000
 
 
 @dataclass
 class ShellCommand:
-    """One shell command a subagent ran itself, with the paths it named and the start of its output."""
+    """One shell command a subagent or the host ran itself, with the paths it named and the start of its output."""
     command: str
     paths: list[str]
     output: str | None = None
@@ -39,6 +40,7 @@ class NativeDispatch:
     commands: list[ShellCommand] = field(default_factory=list)  # its own shell commands, in order
     thread: str | None = None  # the Codex child thread
     rollout: str | None = None  # the Codex child rollout
+    started: str | None = None  # when the host dispatched it, as its log's ISO timestamp
 
 
 def json_events(lines):
@@ -51,6 +53,11 @@ def json_events(lines):
             yield event
 
 
+def _blocks(event):
+    content = event["message"].get("content") if isinstance(event.get("message"), dict) else None
+    return [block for block in content if isinstance(block, dict)] if isinstance(content, list) else []
+
+
 def claude_native_dispatches(lines):
     """Return the host's Agent dispatches from `claude -p --output-format stream-json --verbose` output."""
     events = list(json_events(lines))
@@ -58,13 +65,12 @@ def claude_native_dispatches(lines):
         return [], "claude stream-json log has no init event"
     dispatches, touched, edited, edits, shells = {}, {}, {}, {}, {}
     for event in events:
-        content = event["message"].get("content") if isinstance(event.get("message"), dict) else None
-        blocks = [block for block in content if isinstance(block, dict)] if isinstance(content, list) else []
+        blocks = _blocks(event)
         if event.get("type") == "assistant" and event.get("parent_tool_use_id") is None:
             for block in blocks:
                 if block.get("type") == "tool_use" and block.get("name") in ("Agent", "Task"):
                     arguments = block.get("input") if isinstance(block.get("input"), dict) else {}
-                    dispatches[block.get("id")] = NativeDispatch(block.get("id"), arguments.get("model"), arguments.get("effort"))
+                    dispatches[block.get("id")] = NativeDispatch(block.get("id"), arguments.get("model"), arguments.get("effort"), started=event.get("timestamp"))
                     touched[block.get("id")], edited[block.get("id")] = set(), set()
         elif event.get("type") == "assistant" and event.get("parent_tool_use_id") in dispatches:
             # The subagent's own tool calls stream under its Agent call, for background agents too.
@@ -116,6 +122,45 @@ def claude_native_dispatches(lines):
     return list(dispatches.values()), None
 
 
+def claude_parent_commands(lines):
+    """Return the Bash commands the host itself ran, from `claude -p --output-format stream-json --verbose` output.
+
+    A subagent's tool calls stream under its Agent call's id, so only calls with no parent_tool_use_id are the host's.
+    """
+    commands, pending = [], {}
+    for event in json_events(lines):
+        for block in _blocks(event):
+            arguments = block.get("input") if isinstance(block.get("input"), dict) else {}
+            if (event.get("type") == "assistant" and event.get("parent_tool_use_id") is None and block.get("type") == "tool_use"
+                    and block.get("name") == "Bash" and isinstance(arguments.get("command"), str)):
+                command = ShellCommand(arguments["command"], ABSOLUTE_PATH.findall(arguments["command"]))
+                commands.append(command)
+                pending[block.get("id")] = command
+            elif event.get("type") == "user" and block.get("type") == "tool_result" and block.get("tool_use_id") in pending:
+                pending.pop(block["tool_use_id"]).output = _text(block.get("content"))
+    return commands
+
+
+def codex_parent_commands(lines):
+    """Return the shell commands the host itself ran, from `codex exec --json` output, which carries only its own items."""
+    commands = []
+    for event in json_events(lines):
+        item = event.get("item") if event.get("type") == "item.completed" and isinstance(event.get("item"), dict) else {}
+        if item.get("type") == "command_execution" and isinstance(item.get("command"), str):
+            script = _script(item["command"])
+            commands.append(ShellCommand(script, ABSOLUTE_PATH.findall(script), _text(item.get("aggregated_output"))))
+    return commands
+
+
+def _script(command):
+    """The script that a `<shell> -lc <script>` command line runs, or the line itself."""
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return command
+    return words[2] if len(words) == 3 and words[1] in ("-lc", "-c") else command
+
+
 def _text(content):
     if isinstance(content, list):
         content = "\n".join(part.get("text", "") for part in content if isinstance(part, dict))
@@ -149,12 +194,12 @@ def _codex_native_dispatches(lines, codex_home):
     def payloads(path):
         for event in json_events(path.read_text(errors="replace").splitlines()):
             if isinstance(event.get("payload"), dict):
-                yield event.get("type"), event["payload"]
+                yield event.get("type"), event["payload"], event.get("timestamp")
 
     if thread not in rollouts:
         return [], f"no Codex rollout for thread {thread} under {sessions}"
-    requested, efforts, returned, started, finished, parent_turns = {}, {}, set(), {}, set(), set()
-    for _, payload in payloads(rollouts[thread]):
+    requested, efforts, spawned, returned, started, finished, parent_turns = {}, {}, {}, set(), {}, set(), set()
+    for _, payload, timestamp in payloads(rollouts[thread]):
         if isinstance(payload.get("turn_id"), str):
             parent_turns.add(payload["turn_id"])
         if payload.get("type") == "function_call" and payload.get("name") == "spawn_agent":
@@ -164,6 +209,7 @@ def _codex_native_dispatches(lines, codex_home):
                 arguments = {}
             arguments = arguments if isinstance(arguments, dict) else {}
             requested[payload.get("call_id")], efforts[payload.get("call_id")] = arguments.get("model"), arguments.get("reasoning_effort")
+            spawned[payload.get("call_id")] = timestamp
         elif payload.get("type") == "function_call_output":
             returned.add(payload.get("call_id"))
         elif payload.get("type") == "item_completed" and isinstance(payload.get("item"), dict):
@@ -177,7 +223,7 @@ def _codex_native_dispatches(lines, codex_home):
         child = started.get(call)
         child_rollout = rollouts.get(child) if isinstance(child, str) else None
         linked, models, complete, aborted, touched, edited, commands = False, [], False, False, set(), set(), []
-        for kind, payload in payloads(child_rollout) if child_rollout else ():
+        for kind, payload, _ in payloads(child_rollout) if child_rollout else ():
             # A forked child's rollout begins with a copy of the parent's history, which keeps the parent's turn ids.
             if payload.get("turn_id") in parent_turns or payload.get("thread_id") not in (None, child):
                 continue
@@ -214,7 +260,7 @@ def _codex_native_dispatches(lines, codex_home):
             # Codex reports the model it ran; an omitted model inherits the parent's.
             usable=status == "completed" and isinstance(resolved, str) and bool(resolved) and model in (None, resolved),
             paths_touched=sorted(touched) if linked else [], paths_edited=sorted(edited) if linked else [], commands=commands if linked else [],
-            thread=child, rollout=str(child_rollout) if linked else None,
+            thread=child, rollout=str(child_rollout) if linked else None, started=spawned.get(call),
         ))
     return dispatches, None
 

@@ -178,6 +178,8 @@ const DROPPED = [
   ["statechart-fork-test", "skills/statechart/scripts/test/fork.test.ts", null],
   ["statechart-ask-before-install", "skills/statechart/SKILL.md", "so ask the user before you set it.", "so set it."],
   ["statechart-ask-before-renderer", "skills/statechart/references/render.md", "Installing Pele downloads it, so ask the user first, then install", "Install"],
+  ["interrogate-adversaries-rw", "skills/interrogate/SKILL.md", "an `xagent:<agent>` adversary runs `rw`", "an `xagent:<agent>` adversary runs `ro`"],
+  ["interrogate-parent-rerun", "skills/interrogate/SKILL.md", "by rerunning its command yourself in that adversary's worktree.", "by rerunning its command."],
   ["xagent-skill", "skills/xagent/SKILL.md", null],
   ["xagent-allowlist", "bin/xagent-allowed-commands", null],
   ["runtime-remote-boundary", "references/runtime.md", "Never push the trunk directly. Merges, `--auto`,", "Merges,"],

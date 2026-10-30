@@ -14,6 +14,8 @@ ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = runpy.run_path(str(ROOT / "scripts/pstack-host-e2e-fixtures.py"))
 HARNESS, XAGENT = FIXTURES["HARNESS"], FIXTURES["XAGENT"]
 FIXED_STATS, ALL_CHECKS_PASS, CODEX_MIXED = FIXTURES["FIXED_STATS"], FIXTURES["ALL_CHECKS_PASS"], FIXTURES["CODEX_MIXED"]
+STALE_STATS, TEST_SOURCE = FIXTURES["STALE_STATS"], FIXTURES["TEST_SOURCE"]
+ShellCommand, load_findings = HARNESS["ShellCommand"], HARNESS["load_findings"]
 classify_host_reply = HARNESS["classify_host_reply"]
 validate_parent_verification = HARNESS["validate_parent_verification"]
 write_parent_verifier = HARNESS["write_parent_verifier"]
@@ -22,8 +24,8 @@ write_parent_verifier = HARNESS["write_parent_verifier"]
 class HostHarnessAcceptanceTest(FIXTURES["HarnessFixture"]):
     def test_given_an_unreadable_receipt_in_an_xagent_out_dir_and_a_copy_elsewhere_when_collected_then_only_the_copy_is_ignored(self):
         collect_xagent_receipts = HARNESS["collect_xagent_receipts"]
-        written = self.xagent_reviews_for(CODEX_MIXED["reviewers"])
-        Path(written[0]["path"]).write_text('{"agent": "claude", "mode": "ro"')
+        written = self.xagent_attacks_for(CODEX_MIXED["adversaries"])
+        Path(written[0]["path"]).write_text('{"agent": "claude", "mode": "rw"')
         copied = self.evidence / "copied-receipt" / "meta.json"
         copied.parent.mkdir()
         copied.write_text(Path(written[1]["path"]).read_text())
@@ -38,16 +40,13 @@ class HostHarnessAcceptanceTest(FIXTURES["HarnessFixture"]):
         self.assertFalse(checks["receipt_workspaces_owned"])
 
     def test_given_entries_xagent_would_reject_when_checked_then_they_fill_no_role(self):
-        writer = self.add_worktree("writer")
-        reviewer = self.add_worktree("review-grok")
-        for checkout in (writer, reviewer):
-            (checkout / "stats.py").write_text(FIXED_STATS)
+        writer = self.final_checkout("writer")
         self.write_final_parent()
-        review = self.receipt("grok", "ro", reviewer)
+        attack = self.receipt("grok", "rw", self.attack_checkout("attack-grok"))
         for index, (entry, agent, model) in enumerate((("xagent:nobody", "nobody", None), ("xagent:claude/-bad", "claude", "-bad"))):
             with self.subTest(entry):
-                receipts = [self.receipt(agent, "rw", writer, name=f"rw-{index}", model=model), review]
-                self.assertFalse(self.valid_receipts(receipts, writer=entry, reviewers=("xagent:grok",))["configured_writer_dispatched"])
+                receipts = [self.receipt(agent, "rw", writer, name=f"rw-{index}", model=model), attack]
+                self.assertFalse(self.valid_receipts(receipts, writer=entry, adversaries=("xagent:grok",))["configured_writer_dispatched"])
 
     def test_given_a_policy_without_swarm_or_interrogate_entries_when_roles_resolve_then_the_helper_defaults_apply(self):
         shown = json.loads(subprocess.check_output(
@@ -58,7 +57,7 @@ class HostHarnessAcceptanceTest(FIXTURES["HarnessFixture"]):
     def test_given_default_limits_when_the_host_deadline_is_chosen_then_six_full_attempts_and_the_parent_checks_fit(self):
         result = subprocess.run([sys.executable, "-B", str(ROOT / "scripts/pstack-host-e2e.py"), "--help"], capture_output=True, text=True, timeout=30)
         default = int(re.search(r"default: (\d+)", " ".join(result.stdout.split())).group(1))
-        # Writer, review and re-review rounds may each retry once; every attempt can run to its limit plus xagent's grace.
+        # Writer, attack and re-attack rounds may each retry once; every attempt can run to its limit plus xagent's grace.
         attempts = 3 * 2 * (XAGENT["DEFAULT_TIMEOUT"] + XAGENT["TERMINATION_GRACE"])
         self.assertGreater(default, attempts + 2 * 30)
 
@@ -66,35 +65,33 @@ class HostHarnessAcceptanceTest(FIXTURES["HarnessFixture"]):
         out = self.evidence / "interrupted-attempt"
         out.mkdir()
         (out / "prompt.md").write_text("brief\n")
-        (out / "meta.json").write_text('{"agent": "grok", "mode": "ro", "completed": fal')
+        (out / "meta.json").write_text('{"agent": "grok", "mode": "rw", "completed": fal')
         receipts, ignored = HARNESS["collect_xagent_receipts"](self.evidence)
         self.assertEqual((receipts, ignored), ([None], []))
-        self.assertFalse(self.valid_receipts(receipts, writer="opus", reviewers=("opus",))["all_attempts_terminal"])
+        self.assertFalse(self.valid_receipts(receipts, writer="opus", adversaries=("opus",))["all_attempts_terminal"])
 
     def test_given_policy_pins_worker_models_when_receipts_are_checked_then_each_receipt_must_carry_its_model(self):
-        writer = self.add_worktree("writer")
-        reviewer_a = self.add_worktree("review-a")
-        reviewer_b = self.add_worktree("review-b")
-        for checkout in (writer, reviewer_a, reviewer_b):
-            (checkout / "stats.py").write_text(FIXED_STATS)
+        writer = self.final_checkout("writer")
+        attack_a = self.attack_checkout("attack-a")
+        attack_b = self.attack_checkout("attack-b")
         final_hash = self.write_final_parent()
         self.write_verifier_receipt(final_hash)
-        policy = dict(writer="xagent:codex/vendor/model-w", reviewers=("xagent:claude/model-a", "xagent:grok"))
+        policy = dict(writer="xagent:codex/vendor/model-w", adversaries=("xagent:claude/model-a", "xagent:grok"))
         pinned = [
             self.receipt("codex", "rw", writer, model="vendor/model-w"),
-            self.receipt("claude", "ro", reviewer_a, model="model-a"),
-            self.receipt("grok", "ro", reviewer_b),
+            self.receipt("claude", "rw", attack_a, model="model-a"),
+            self.receipt("grok", "rw", attack_b),
         ]
         self.assertTrue(all(self.valid_receipts(pinned, **policy).values()))
         unpinned = [
             self.receipt("codex", "rw", writer, name="writer-default"),
-            self.receipt("claude", "ro", reviewer_a, name="review-a-default"),
-            self.receipt("grok", "ro", reviewer_b, name="review-b-pinned", model="model-b"),
+            self.receipt("claude", "rw", attack_a, name="attack-a-default"),
+            self.receipt("grok", "rw", attack_b, name="attack-b-pinned", model="model-b"),
         ]
         checks = self.valid_receipts(unpinned, **policy)
         self.assertTrue(checks["all_attempts_terminal"] and checks["receipt_workspaces_owned"], checks)
         self.assertFalse(checks["configured_writer_dispatched"])
-        self.assertFalse(checks["configured_reviewers_dispatched"])
+        self.assertFalse(checks["configured_adversaries_dispatched"])
 
     def test_given_misleading_or_nonterminal_pass_when_classified_then_it_is_rejected(self):
         legacy_false_positives = (
@@ -135,96 +132,181 @@ class HostHarnessAcceptanceTest(FIXTURES["HarnessFixture"]):
         self.assertTrue((self.parent / ".test-ran").exists())
         self.assertFalse(validate_parent_verification(self.scope, self.parent))
 
-    def test_given_one_reviewer_entry_twice_when_both_receipts_share_a_worktree_then_only_one_review_counts(self):
-        # Third review round, scenario H, and Codex's review of fc4805e: each review slot needs a worktree of its own.
+    def test_given_one_adversary_entry_twice_when_both_receipts_share_a_worktree_then_only_one_attack_counts(self):
+        # Third review round, scenario H, and Codex's review of fc4805e: each adversary slot needs a worktree of its own.
         writer = self.final_checkout("writer")
         self.write_final_parent()
         written = self.receipt("codex", "rw", writer)
         for agent in ("grok", "claude"):
             with self.subTest(agent):
-                shared = self.final_checkout(f"review-{agent}")
-                first, second = (self.receipt(agent, "ro", shared, name=f"ro-{agent}-{index}") for index in (1, 2))
-                checks = self.valid_receipts([written, first, second], reviewers=(f"xagent:{agent}",) * 2)
-                self.assertEqual((checks["receipt_workspaces_owned"], checks["configured_reviewers_dispatched"]), (True, False))
-                # A retry of the same reviewer for one slot may reuse its worktree.
-                dropout = self.receipt(agent, "ro", shared, name=f"ro-{agent}-dropout", status="DROPOUT", exit=3)
-                self.assertEqual(self.valid_receipts([written, dropout, first], reviewers=(f"xagent:{agent}",)), ALL_CHECKS_PASS)
+                shared = self.attack_checkout(f"attack-{agent}")
+                first, second = (self.receipt(agent, "rw", shared, name=f"rw-{agent}-{index}") for index in (1, 2))
+                checks = self.valid_receipts([written, first, second], adversaries=(f"xagent:{agent}",) * 2)
+                self.assertEqual((checks["receipt_workspaces_owned"], checks["configured_adversaries_dispatched"]), (True, False))
+                # A retry of the same adversary for one slot may reuse its worktree.
+                dropout = self.receipt(agent, "rw", shared, name=f"rw-{agent}-dropout", status="DROPOUT", exit=3)
+                self.assertEqual(self.valid_receipts([written, dropout, first], adversaries=(f"xagent:{agent}",)), ALL_CHECKS_PASS)
 
-    def test_given_writer_and_reviewers_share_one_worktree_when_receipts_are_checked_then_it_fails(self):
-        shared = self.add_worktree("shared")
-        (shared / "stats.py").write_text(FIXED_STATS)
+    def test_given_writer_and_adversaries_share_one_worktree_when_receipts_are_checked_then_it_fails(self):
+        shared = self.attack_checkout("shared")
         final_hash = self.write_final_parent()
         self.write_verifier_receipt(final_hash)
         receipts = [
             self.receipt("codex", "rw", shared),
-            self.receipt("claude", "ro", shared),
-            self.receipt("grok", "ro", shared),
+            self.receipt("claude", "rw", shared),
+            self.receipt("grok", "rw", shared),
         ]
         self.assertTrue(all(Path(r["workdir"]).resolve().is_relative_to(self.scope.resolve()) and Path(r["workdir"]).resolve() != self.parent.resolve() for r in receipts))
         checks = self.valid_receipts(receipts)
         self.assertFalse(checks["receipt_workspaces_owned"])
 
-    def test_given_reviewer_receipts_for_old_code_when_checked_against_final_parent_then_review_fails(self):
-        writer = self.add_worktree("writer")
-        reviewer_a = self.add_worktree("review-a")
-        reviewer_b = self.add_worktree("review-b")
-        (writer / "stats.py").write_text(FIXED_STATS)
+    def test_given_adversary_receipts_for_old_code_when_checked_against_final_parent_then_the_attacks_fail(self):
+        writer = self.final_checkout("writer")
         final_hash = self.write_final_parent()
         self.write_verifier_receipt(final_hash)
         receipts = [
             self.receipt("codex", "rw", writer),
-            self.receipt("claude", "ro", reviewer_a),
-            self.receipt("grok", "ro", reviewer_b),
+            self.receipt("claude", "rw", self.add_worktree("attack-a")),
+            self.receipt("grok", "rw", self.final_checkout("attack-b", stats=STALE_STATS)),
         ]
-        self.assertTrue(all(r["mode"] == "ro" and r["completed"] and r["status"] in ("PASS", "ISSUES") and r["changed_workdir"] is False for r in receipts[1:]))
+        self.assertTrue(all(r["completed"] and r["status"] in ("PASS", "ISSUES") and r["exit"] == 0 for r in receipts[1:]))
         checks = self.valid_receipts(receipts)
         self.assertTrue(checks["receipt_workspaces_owned"])
-        self.assertFalse(checks["configured_reviewers_dispatched"])
+        self.assertTrue(checks["configured_writer_dispatched"])
+        self.assertFalse(checks["configured_adversaries_dispatched"])
+
+    def test_given_an_adversary_left_stats_or_its_tests_changed_when_checked_then_its_attack_fills_no_slot(self):
+        writer = self.final_checkout("writer")
+        self.write_final_parent()
+        written = self.receipt("codex", "rw", writer)
+        for name, content in (("stats.py", STALE_STATS), ("test_stats.py", TEST_SOURCE + "# weakened\n")):
+            with self.subTest(name):
+                checkout = self.attack_checkout(f"attack-{name}")
+                attack = self.receipt("claude", "rw", checkout, name=f"attack-{name}-out")
+                self.assertEqual(self.valid_receipts([written, attack], adversaries=("xagent:claude",)), ALL_CHECKS_PASS)
+                (checkout / name).write_text(content)
+                self.assertFalse(self.valid_receipts([written, attack], adversaries=("xagent:claude",))["configured_adversaries_dispatched"])
+
+    def test_given_an_xagent_adversary_ran_read_only_when_checked_then_it_fills_no_slot(self):
+        # ro is plan mode for claude and gemini, which runs no commands, so it cannot prove a finding with a run.
+        writer = self.final_checkout("writer")
+        self.write_final_parent()
+        receipts = [self.receipt("codex", "rw", writer), self.receipt("claude", "ro", self.final_checkout("attack-claude"))]
+        self.assertTrue(receipts[1]["completed"] and receipts[1]["status"] == "PASS" and receipts[1]["changed_workdir"] is False)
+        checks = self.valid_receipts(receipts, adversaries=("xagent:claude",))
+        self.assertTrue(checks["receipt_workspaces_owned"] and checks["configured_writer_dispatched"], checks)
+        self.assertFalse(checks["configured_adversaries_dispatched"])
 
     def test_given_real_linked_worktrees_and_final_code_when_receipts_match_then_all_checks_pass(self):
-        writer = self.add_worktree("writer")
-        reviewer_a = self.add_worktree("review-a")
-        reviewer_b = self.add_worktree("review-b")
-        for checkout in (writer, reviewer_a, reviewer_b):
-            (checkout / "stats.py").write_text(FIXED_STATS)
+        writer = self.final_checkout("writer")
+        attack_a = self.attack_checkout("attack-a")
+        attack_b = self.attack_checkout("attack-b")
         final_hash = self.write_final_parent()
         self.write_verifier_receipt(final_hash)
         receipts = [
             self.receipt("codex", "rw", writer),
             self.receipt("codex", "rw", writer, name="writer-retry", status="DROPOUT", exit=3),
-            self.receipt("claude", "ro", reviewer_a),
-            self.receipt("grok", "ro", reviewer_b),
+            self.receipt("claude", "rw", attack_a),
+            self.receipt("grok", "rw", attack_b),
         ]
+        # Each adversary kept its repro beside the fixture's files.
+        self.assertTrue(all((checkout / "test_repro.py").is_file() for checkout in (attack_a, attack_b)))
         checks = self.valid_receipts(receipts)
         self.assertEqual(checks, ALL_CHECKS_PASS)
         self.assertTrue(validate_parent_verification(self.scope, self.parent))
 
-    def test_given_reviewed_worktrees_are_changed_after_review_then_stale_receipts_cannot_pass(self):
+    def test_given_attacked_worktrees_are_rewritten_after_the_attack_started_then_stale_receipts_cannot_pass(self):
+        writer = self.final_checkout("writer")
         self.write_final_parent()
-        writer = self.add_worktree("writer")
-        reviewer_a = self.add_worktree("review-a")
-        reviewer_b = self.add_worktree("review-b")
+        attack_a = self.attack_checkout("attack-a")
+        attack_b = self.attack_checkout("attack-b")
         receipts = [
             self.receipt("codex", "rw", writer),
-            self.receipt("claude", "ro", reviewer_a),
-            self.receipt("grok", "ro", reviewer_b),
+            self.receipt("claude", "rw", attack_a),
+            self.receipt("grok", "rw", attack_b),
         ]
-        for checkout in (reviewer_a, reviewer_b):
-            (checkout / "stats.py").write_text(FIXED_STATS)
+        self.assertEqual(self.valid_receipts(receipts), ALL_CHECKS_PASS)
+        # The same bytes written again after the attack started still mean it attacked something else.
+        self.write_after(attack_a / "stats.py", receipts[1], FIXED_STATS)
+        self.write_after(attack_b / "test_stats.py", receipts[2], TEST_SOURCE)
         checks = self.valid_receipts(receipts)
         self.assertTrue(checks["receipt_workspaces_owned"])
-        self.assertFalse(checks["configured_reviewers_dispatched"])
+        self.assertFalse(checks["configured_adversaries_dispatched"])
+
+    def test_given_a_reused_worktree_whose_final_attack_dropped_out_then_the_earlier_attack_does_not_count(self):
+        # After a fix, the parent reuses an adversary's worktree for the re-attack, and that re-attack drops out.
+        writer = self.final_checkout("writer")
+        self.write_final_parent()
+        reused = self.attack_checkout("attack-claude")
+        earlier = self.receipt("claude", "rw", reused, name="attack-claude-first")
+        # The first attack started before the final version reached the worktree.
+        started = (reused / "stats.py").stat().st_mtime - 30
+        os.utime(Path(earlier["path"]).parent / "prompt.md", (started, started))
+        dropout = self.receipt("claude", "rw", reused, name="attack-claude-final", status="DROPOUT", exit=3)
+        written = self.receipt("codex", "rw", writer)
+        checks = self.valid_receipts([written, earlier, dropout], adversaries=("xagent:claude",))
+        self.assertTrue(checks["all_attempts_terminal"] and checks["receipt_workspaces_owned"], checks)
+        self.assertFalse(checks["configured_adversaries_dispatched"])
+        # A re-attack that finishes fills the slot.
+        retried = self.receipt("claude", "rw", reused, name="attack-claude-retry")
+        self.assertEqual(self.valid_receipts([written, earlier, dropout, retried], adversaries=("xagent:claude",)), ALL_CHECKS_PASS)
+
+    def test_given_one_xagent_agent_as_writer_and_adversary_when_the_attack_sorts_first_then_both_slots_fill(self):
+        # An xagent attempt that attacked the final version also meets the writer test, so the adversary slots choose first.
+        writer = self.add_worktree("writer")
+        self.write_final_parent()
+        attack = self.receipt("codex", "rw", self.attack_checkout("attack-codex"))
+        written = self.receipt("codex", "rw", writer)
+        # A writer repairs stats.py after its attempt starts, so it never attacked the final version.
+        self.write_after(writer / "stats.py", written, FIXED_STATS)
+        checks = self.valid_receipts([attack, written], writer="xagent:codex", adversaries=("xagent:codex",))
+        self.assertEqual(checks, ALL_CHECKS_PASS)
 
     def test_given_missing_or_malformed_evidence_when_checked_then_it_fails_without_raising(self):
         self.assertFalse(validate_parent_verification(self.scope, self.parent))
         (self.scope / "parent-verification.json").write_text("not json\n")
         self.assertFalse(validate_parent_verification(self.scope, self.parent))
-        self.assertEqual(self.valid_receipts([{"mode": "ro", "agent": None}]), {
+        self.assertEqual(self.valid_receipts([{"mode": "rw", "agent": None}], findings=None), {
             "all_attempts_terminal": False,
             "configured_writer_dispatched": False,
-            "configured_reviewers_dispatched": False,
+            "configured_adversaries_dispatched": False,
             "receipt_workspaces_owned": False,
+            "findings_rerun_by_parent": False,
         })
+
+    def test_given_a_findings_ledger_when_loaded_then_only_a_list_of_complete_entries_is_accepted(self):
+        ledger = self.scope / "findings.json"
+        self.assertIsNone(load_findings(ledger))
+        entry = {"adversary": "xagent:claude", "worktree": str(self.parent), "command": "python3 -m unittest", "kept": True}
+        for content in ("not json", json.dumps(entry), json.dumps([{**entry, "kept": "yes"}]), json.dumps([{**entry, "command": "  "}]),
+                        json.dumps([{key: value for key, value in entry.items() if key != "worktree"}])):
+            with self.subTest(content):
+                ledger.write_text(content)
+                self.assertIsNone(load_findings(ledger))
+        for findings in ([], [entry, {**entry, "kept": False}]):
+            ledger.write_text(json.dumps(findings))
+            self.assertEqual(load_findings(ledger), findings)
+
+    def test_given_a_findings_ledger_when_checked_then_each_entry_needs_a_parent_rerun_in_that_adversarys_worktree(self):
+        writer = self.final_checkout("writer")
+        self.write_final_parent()
+        attack_a = self.attack_checkout("attack-a")
+        attack_b = self.attack_checkout("attack-b")
+        receipts = [self.receipt("codex", "rw", writer), self.receipt("claude", "rw", attack_a), self.receipt("grok", "rw", attack_b)]
+        rerun = f"cd {attack_a} && python3 -m unittest test_repro"
+        finding = {"adversary": "xagent:claude", "worktree": str(attack_a), "command": "python3 -m unittest test_repro", "kept": True}
+        ran = [ShellCommand(rerun, [str(attack_a)])]
+        self.assertEqual(self.valid_receipts(receipts, findings=[finding], parent_commands=ran), ALL_CHECKS_PASS)
+        self.assertTrue(self.valid_receipts(receipts, findings=[], parent_commands=())["findings_rerun_by_parent"])
+        for case, findings, commands in (
+            ("no ledger", None, ran),
+            ("the parent never ran it", [finding], ()),
+            ("the parent ran another command", [{**finding, "command": "python3 -m unittest test_other"}], ran),
+            ("the rerun named another worktree", [finding], [ShellCommand(f"cd {attack_b} && python3 -m unittest test_repro", [str(attack_b)])]),
+            ("the worktree is another adversary's", [{**finding, "adversary": "xagent:grok"}], ran),
+        ):
+            with self.subTest(case):
+                self.assertFalse(self.valid_receipts(receipts, findings=findings, parent_commands=commands)["findings_rerun_by_parent"])
 
     def test_given_parent_verifier_when_run_from_parent_then_it_records_real_checks_and_logs(self):
         self.write_final_parent()
@@ -316,6 +398,8 @@ class HostHarnessAcceptanceTest(FIXTURES["HarnessFixture"]):
         self.assertTrue(report["checks"]["host_exited"])
         self.assertFalse(report["checks"]["fix_passes_independent_rerun"])
         self.assertFalse(report["checks"]["finite_number_contract_preserved"])
+        self.assertIsNone(report["findings"])
+        self.assertFalse(report["checks"]["findings_rerun_by_parent"])
         self.assertEqual(report["verification"]["tests_exit_code"], 124)
         self.assertEqual(report["verification"]["contract_exit_code"], 124)
         for name in ("after-tests.log", "contract-probe.log"):
@@ -324,10 +408,9 @@ class HostHarnessAcceptanceTest(FIXTURES["HarnessFixture"]):
     def final_handoff_receipts(self):
         self.write_final_parent()
         receipts = []
-        for agent, mode in (("codex", "rw"), ("claude", "ro"), ("grok", "ro")):
-            checkout = self.add_worktree(agent)
-            (checkout / "stats.py").write_text(FIXED_STATS)
-            receipts.append(self.receipt(agent, mode, checkout))
+        receipts.append(self.receipt("codex", "rw", self.final_checkout("codex")))
+        for agent in ("claude", "grok"):
+            receipts.append(self.receipt(agent, "rw", self.attack_checkout(agent)))
         return receipts
 
     def test_given_issues_handoff_when_parent_closes_required_checks_then_workflow_can_finish(self):
