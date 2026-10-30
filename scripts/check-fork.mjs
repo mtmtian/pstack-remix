@@ -2,7 +2,8 @@
 // Static guards for upstream syncs. Shipped content must not bring back the
 // Cursor-only instructions ADAPTATION.md replaced and must keep the local
 // decisions it records, every skill outside STANDALONE keeps its shared runtime
-// contract, local links resolve, and the manifests keep their fork names.
+// contract, local links resolve, the manifests keep their fork names, and every
+// copy of the upstream pin matches UPSTREAM.json.
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -517,15 +518,18 @@ export function validateSkills(root) {
   return problems;
 }
 
-const MANIFEST_NAMES = {
-  "plugin.json": "pstack",
-  ".claude-plugin/plugin.json": "pstack",
-  ".codex-plugin/plugin.json": "pstack-codex",
+// The host manifests version the fork as <upstream version>-shared.<n>; the root
+// plugin.json is the Antigravity manifest and carries no version.
+const MANIFESTS = {
+  "plugin.json": { name: "pstack" },
+  ".claude-plugin/plugin.json": { name: "pstack", versioned: true },
+  ".codex-plugin/plugin.json": { name: "pstack-codex", versioned: true },
 };
 
-export function validateManifests(root) {
+// pin is readPin's result, or null when UPSTREAM.json is malformed, which checkFork reports.
+export function validateManifests(root, pin) {
   const problems = [];
-  for (const [rel, name] of Object.entries(MANIFEST_NAMES)) {
+  for (const [rel, { name, versioned }] of Object.entries(MANIFESTS)) {
     let text;
     let manifest;
     try {
@@ -536,11 +540,57 @@ export function validateManifests(root) {
       continue;
     }
     if (manifest.name !== name) problems.push(`${rel}: name ${JSON.stringify(manifest.name ?? null)} must be ${JSON.stringify(name)}`);
+    if (versioned && pin) {
+      const prefix = `${pin.version}-shared.`;
+      if (!(typeof manifest.version === "string" && manifest.version.startsWith(prefix))) {
+        problems.push(`${rel}: upstream-pin: version ${JSON.stringify(manifest.version ?? null)} must start with ${JSON.stringify(prefix)}, after UPSTREAM.json`);
+      }
+    }
     // An Agent Plugins $schema makes Codex load the checkout as an Agent Plugin,
     // which truncates each injected skill to 8,000 bytes (ADAPTATION.md, Not taken from upstream).
     if (rel === "plugin.json" && /agent-plugins\.org/i.test(text)) {
       problems.push(`${rel}: references agent-plugins.org; the root manifest stays the Antigravity manifest without the Agent Plugins $schema`);
     }
+  }
+  return problems;
+}
+
+// UPSTREAM.json holds the pin. A sync moves it there, and the guards name every
+// copy left behind: the sentences in PIN_COPIES and the host manifests' versions.
+const PIN_FIELDS = {
+  repository: { pattern: /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+$/, want: "https://github.com/<owner>/<repo>" },
+  path: { pattern: /^[\w/-]+$/, want: "a path of word characters, / and -" },
+  commit: { pattern: /^[a-f0-9]{40}$/, want: "a full 40-character SHA" },
+  version: { pattern: /^\d+\.\d+\.\d+$/, want: "x.y.z" },
+};
+
+export function readPin(root) {
+  const pin = JSON.parse(readFileSync(path.join(root, "UPSTREAM.json"), "utf8"));
+  const malformed = Object.entries(PIN_FIELDS).filter(([field, { pattern }]) => typeof pin?.[field] !== "string" || !pattern.test(pin[field]));
+  if (malformed.length) throw new Error(`upstream-pin: ${malformed.map(([field, { want }]) => `${field} must be ${want}`).join("; ")}`);
+  return pin;
+}
+
+const PIN_COPIES = {
+  "ADAPTATION.md": ({ version, commit }) => `Upstream pstack ${version} at \`${commit}\``,
+  "README.md": ({ version, short, tree }) => `upstream pstack ${version} at [\`${short}\`](${tree})`,
+  "README.zh-CN.md": ({ version, short, tree }) => `上游 pstack ${version}，跟踪提交 [\`${short}\`](${tree})`,
+};
+
+// pin is readPin's result.
+export function validatePin(root, pin) {
+  const fields = { ...pin, short: pin.commit.slice(0, 8), tree: `${pin.repository}/tree/${pin.commit}/${pin.path}` };
+  const problems = [];
+  for (const [rel, cite] of Object.entries(PIN_COPIES)) {
+    const expected = cite(fields);
+    let text;
+    try {
+      text = readFileSync(path.join(root, rel), "utf8");
+    } catch (error) {
+      problems.push(`${rel}: ${error.message}`);
+      continue;
+    }
+    if (!text.includes(expected)) problems.push(`${rel}: upstream-pin: no ${JSON.stringify(expected)}; cite the version and commit in UPSTREAM.json`);
   }
   return problems;
 }
@@ -565,7 +615,14 @@ export function validateRequired(root) {
 }
 
 export function checkFork(root) {
-  return [...validateManifests(root), ...validateSkills(root), ...validateLinks(root), ...scanDenylist(root), ...validateRequired(root)];
+  let pin = null;
+  const problems = [];
+  try {
+    pin = readPin(root);
+  } catch (error) {
+    problems.push(`UPSTREAM.json: ${error.message}`);
+  }
+  return [...problems, ...validateManifests(root, pin), ...(pin ? validatePin(root, pin) : []), ...validateSkills(root), ...validateLinks(root), ...scanDenylist(root), ...validateRequired(root)];
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
@@ -575,5 +632,5 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
     console.error(`Fork guards failed:\n${problems.join("\n")}`);
     process.exit(1);
   }
-  console.log(`Fork guards passed: ${DENYLIST.length} denylist rules, ${REQUIRED.length} required local decisions, skill frontmatter and contract links, local Markdown links, manifests.`);
+  console.log(`Fork guards passed: ${DENYLIST.length} denylist rules, ${REQUIRED.length} required local decisions, skill frontmatter and contract links, local Markdown links, manifests, upstream pin.`);
 }

@@ -4,7 +4,7 @@ import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } f
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { checkFork, REQUIRED, scanDenylist, validateLinks, validateManifests, validateRequired, validateSkills } from "./check-fork.mjs";
+import { checkFork, readPin, REQUIRED, scanDenylist, validateLinks, validateManifests, validateRequired, validateSkills } from "./check-fork.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
 const cli = path.join(root, "scripts/check-fork.mjs");
@@ -150,13 +150,50 @@ test("Given upstream's Agent Plugins root manifest, When the guards run, Then th
   edit(dir, "plugin.json", (text) => text.replace("{\n", '{\n  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",\n'));
   edit(dir, ".codex-plugin/plugin.json", (text) => text.replace('"name": "pstack-codex"', '"name": "pstack"'));
 
-  assert.deepEqual(validateManifests(dir), [
+  assert.deepEqual(validateManifests(dir, readPin(dir)), [
     "plugin.json: references agent-plugins.org; the root manifest stays the Antigravity manifest without the Agent Plugins $schema",
     '.codex-plugin/plugin.json: name "pstack" must be "pstack-codex"',
   ]);
   const failed = spawnSync(process.execPath, [cli, dir], { encoding: "utf8" });
   assert.equal(failed.status, 1, failed.stdout);
   assert.match(failed.stderr, /^plugin\.json: references agent-plugins\.org/m);
+});
+
+test("Given a sync that moves only UPSTREAM.json, When guarded, Then each copy still citing the old pin is reported", (t) => {
+  const dir = copyRepo(t);
+  const pin = JSON.parse(readFileSync(path.join(dir, "UPSTREAM.json"), "utf8"));
+  const moved = { ...pin, version: "0.15.99", commit: "0123456789abcdef0123456789abcdef01234567" };
+  writeFileSync(path.join(dir, "UPSTREAM.json"), `${JSON.stringify(moved, null, 2)}\n`);
+  const stale = () => checkFork(dir).map((problem) => problem.split(":")[0]);
+  const manifests = [".claude-plugin/plugin.json", ".codex-plugin/plugin.json"];
+  assert.deepEqual(stale(), [...manifests, "ADAPTATION.md", "README.md", "README.zh-CN.md"]);
+  const { version } = JSON.parse(readFileSync(path.join(dir, manifests[0]), "utf8"));
+  assert.ok(checkFork(dir).includes(`${manifests[0]}: upstream-pin: version "${version}" must start with "0.15.99-shared.", after UPSTREAM.json`),
+    checkFork(dir).join("\n"));
+  for (const rel of manifests) edit(dir, rel, (text) => text.replace(`"version": "${pin.version}-shared.`, `"version": "${moved.version}-shared.`));
+  // Moving one copy clears only that copy, and the README's short form must move with the full commit.
+  edit(dir, "ADAPTATION.md", (text) => text.replace(`Upstream pstack ${pin.version} at \`${pin.commit}\``, `Upstream pstack ${moved.version} at \`${moved.commit}\``));
+  edit(dir, "README.md", (text) => text.replace(`pstack ${pin.version} at`, `pstack ${moved.version} at`).replace(`/tree/${pin.commit}/`, `/tree/${moved.commit}/`));
+  assert.deepEqual(stale(), ["README.md", "README.zh-CN.md"]);
+  edit(dir, "README.md", (text) => text.replace(`[\`${pin.commit.slice(0, 8)}\`]`, `[\`${moved.commit.slice(0, 8)}\`]`));
+  assert.deepEqual(stale(), ["README.zh-CN.md"]);
+});
+
+test("Given a malformed UPSTREAM.json, When guarded, Then the pin alone is reported", (t) => {
+  const dir = copyRepo(t);
+  const pin = JSON.parse(readFileSync(path.join(dir, "UPSTREAM.json"), "utf8"));
+  for (const [field, value, want] of [
+    ["version", "0.15", "x.y.z"],
+    ["commit", pin.commit.slice(0, 8), "a full 40-character SHA"],
+    ["repository", "https://example.com/cursor/plugins", "https://github.com/<owner>/<repo>"],
+    ["path", "../pstack", "a path of word characters, / and -"],
+    ["path", undefined, "a path of word characters, / and -"],
+  ]) {
+    writeFileSync(path.join(dir, "UPSTREAM.json"), JSON.stringify({ ...pin, [field]: value }));
+    assert.deepEqual(checkFork(dir), [`UPSTREAM.json: upstream-pin: ${field} must be ${want}`], `${field}: ${value}`);
+  }
+  writeFileSync(path.join(dir, "UPSTREAM.json"), "null");
+  assert.match(checkFork(dir).join("\n"), /^UPSTREAM\.json: upstream-pin: repository must be .+; version must be x\.y\.z$/);
 });
 
 test("Given a clean copy, When the CLI runs on it, Then it exits 0", (t) => {
