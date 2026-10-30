@@ -51,4 +51,4 @@ Upstream `deslop`, `control-ui`, and `control-cli` dependencies are replaced by 
 
 Use the current task and authorized project artifacts first. Read earlier sessions only as the [prior sessions guide](./session-history.md) describes; do not mine unrelated sessions or write persistent memory without an explicit request. Creating, placing, or substantially editing a skill follows the [project skills guide](./project-skills.md).
 
-The Node helpers `bin/orch.mjs`, `bin/watch-pr.mjs`, `bin/config.mjs`, and `bin/transcripts.mjs` need no runtime dependency downloads. Resolve them from the plugin root, never the target project's current directory. Keep verification evidence after cleanup. Discovery, structural validation, script tests, and actual agent behavior are separate gates.
+The Node helpers `bin/watch-pr.mjs`, `bin/config.mjs`, and `bin/transcripts.mjs` need no runtime dependency downloads. Resolve them from the plugin root, never the target project's current directory. Keep verification evidence after cleanup. Discovery, structural validation, script tests, and actual agent behavior are separate gates.

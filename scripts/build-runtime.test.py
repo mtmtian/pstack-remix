@@ -8,7 +8,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-ARTIFACTS = ("orch.mjs", "watch-pr.mjs", "COMMANDER-LICENSE.txt", "source-hashes.json")
+ARTIFACTS = ("watch-pr.mjs", "COMMANDER-LICENSE.txt", "source-hashes.json")
 
 
 class RuntimeBuildTests(unittest.TestCase):
@@ -67,26 +67,26 @@ class RuntimeBuildTests(unittest.TestCase):
 
     def test_check_rejects_tampered_and_missing_bundles_without_repairing_them(self):
         self.build()
-        bundle = self.root / "bin/orch.mjs"
+        bundle = self.root / "bin/watch-pr.mjs"
         bundle.write_bytes(bundle.read_bytes() + b"\n")
         tampered = bundle.read_bytes()
         result = self.run_build("--check")
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("orch.mjs", result.stdout + result.stderr)
+        self.assertIn("watch-pr.mjs", result.stdout + result.stderr)
         self.assertEqual(bundle.read_bytes(), tampered)
         bundle.unlink()
         result = self.run_build("--check")
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("orch.mjs", result.stdout + result.stderr)
+        self.assertIn("watch-pr.mjs", result.stdout + result.stderr)
         self.assertFalse(bundle.exists())
 
     def test_check_rejects_a_bundle_that_lost_execute_permission(self):
         self.build()
-        bundle = self.root / "bin/orch.mjs"
+        bundle = self.root / "bin/watch-pr.mjs"
         bundle.chmod(0o644)
         result = self.run_build("--check")
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("orch.mjs", result.stdout + result.stderr)
+        self.assertIn("watch-pr.mjs", result.stdout + result.stderr)
         self.assertEqual(bundle.stat().st_mode & 0o111, 0)
 
     def test_local_logs_and_caches_do_not_change_build_inputs(self):
