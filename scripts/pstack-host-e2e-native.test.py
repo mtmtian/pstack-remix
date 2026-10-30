@@ -3,7 +3,6 @@ import json
 import os
 from pathlib import Path
 import runpy
-import shlex
 import subprocess
 import sys
 import unittest
@@ -17,7 +16,8 @@ TEST_SOURCE = FIXTURES["TEST_SOURCE"]
 CLAUDE_MIXED, CODEX_MIXED = FIXTURES["CLAUDE_MIXED"], FIXTURES["CODEX_MIXED"]
 claude_native_dispatches = HARNESS["claude_native_dispatches"]
 codex_native_dispatches = HARNESS["codex_native_dispatches"]
-claude_parent_commands, codex_parent_commands = HARNESS["NATIVE"]["claude_parent_commands"], HARNESS["NATIVE"]["codex_parent_commands"]
+claude_parent_commands, codex_parent_commands = HARNESS["claude_parent_commands"], HARNESS["codex_parent_commands"]
+seconds = HARNESS["_timestamp"]
 
 
 def iso(seconds=None):
@@ -99,8 +99,8 @@ def write_codex_rollouts(home, thread, spawns, parent_rollout=True, effort=None,
     Each spawn is (call, requested model, child thread, model the child ran, finished, *actions), where an action
     is a shell command the child ran, ("run", command, output), or edits(path). A forked child's rollout starts
     with a copy of the parent's history under the parent's turn id, as Codex writes it. Every rollout line carries
-    started, now by default, as its timestamp. parent_commands are scripts the host ran itself, which the --json
-    stream reports as command_execution items.
+    started, now by default, as its timestamp. parent_commands are the host's own commands, each a script or a
+    (script, working directory) pair, which its rollout records as CommandExecution items.
     """
     stamp = started or iso()
     day = home / "sessions" / "2026" / "10" / "16"
@@ -144,12 +144,13 @@ def write_codex_rollouts(home, thread, spawns, parent_rollout=True, effort=None,
             parent.append({"type": "event_msg", "payload": {"type": "item_completed", "item": {
                 "type": "SubAgentActivity", "kind": "completed", "id": f"done-{call}", "agent_thread_id": child}}})
         (day / f"rollout-2026-10-16T04-00-00-{child}.jsonl").write_text("".join(json.dumps({"timestamp": stamp, **event}) + "\n" for event in events))
+    for script, cwd in ((ran, None) if isinstance(ran, str) else ran for ran in parent_commands):
+        parent.append({"type": "event_msg", "payload": {"type": "item_completed", "item": {
+            "type": "CommandExecution", "command": ["/bin/zsh", "-lc", script], "aggregated_output": "FAILED", "status": "completed",
+            **({"cwd": Path(cwd).as_uri()} if cwd else {})}}})
     if parent_rollout:
         (day / f"rollout-2026-10-16T04-00-00-{thread}.jsonl").write_text("".join(json.dumps({"timestamp": stamp, **event}) + "\n" for event in parent))
-    ran = [json.dumps({"type": "item.completed", "item": {"id": f"item_{index}", "type": "command_execution", "command": f"/bin/zsh -lc {shlex.quote(script)}",
-                                                          "aggregated_output": "FAILED", "exit_code": 1, "status": "completed"}})
-           for index, script in enumerate(parent_commands)]
-    return [json.dumps({"type": "thread.started", "thread_id": thread}), *ran, json.dumps({"type": "turn.completed"})]
+    return [json.dumps({"type": "thread.started", "thread_id": thread}), json.dumps({"type": "turn.completed"})]
 
 
 class NativeEvidenceTest(FIXTURES["HarnessFixture"]):
@@ -159,12 +160,6 @@ class NativeEvidenceTest(FIXTURES["HarnessFixture"]):
     def codex_attacks(self, checkout):
         return (f"git -C {checkout} diff", f"cd {checkout} && python3 -m unittest -q", edits(checkout / "test_repro.py"),
                 ("run", f"cd {checkout} && python3 -m unittest test_repro", "FAILED"))
-
-    def rewrite_after(self, path, content, started):
-        """Write path a second after an attempt dispatched at started, an ISO timestamp, as an edit during the attempt would."""
-        path.write_text(content)
-        later = datetime.fromisoformat(started.replace("Z", "+00:00")).timestamp() + 1
-        os.utime(path, (later, later))
 
     def native_note(self, name, task):
         """A host's own record of a native worker, laid out as the Codex host wrote it in a live run."""
@@ -315,7 +310,7 @@ class NativeEvidenceTest(FIXTURES["HarnessFixture"]):
                 self.assertTrue(checks["configured_writer_dispatched"])
                 self.assertEqual(checks["configured_adversaries_dispatched"], counted)
 
-    # Scenarios A-E from the second review round: a native attack is bound by its subagent's own tool calls.
+    # Scenarios A-E from the second review round: a native worker is bound by its subagent's own tool calls.
     def test_given_a_native_writer_and_an_unrelated_agent_call_when_nothing_was_attacked_then_the_adversary_slot_stays_empty(self):
         self.write_final_parent()
         writer_checkout = self.final_checkout("writer-native")
@@ -340,7 +335,7 @@ class NativeEvidenceTest(FIXTURES["HarnessFixture"]):
     def test_given_a_native_attack_working_in_the_xagent_writers_checkout_when_checked_then_ownership_fails(self):
         writer_checkout = self.final_checkout("writer-codex")
         self.write_final_parent()
-        writer = self.receipt("codex", "rw", writer_checkout)
+        writer = self.writer_receipt("codex", writer_checkout)
         native, _ = claude_native_dispatches(claude_stream(
             agent_call("toolu_attack", "opus", "claude-opus-5-5", prompt=f"Attack {writer_checkout}.", tools=attacks_in(writer_checkout))))
         checks = self.valid_receipts([writer], native_dispatches=native, writer="xagent:codex", adversaries=("opus",))
@@ -372,7 +367,7 @@ class NativeEvidenceTest(FIXTURES["HarnessFixture"]):
         self.assertEqual(self.valid_receipts([], native_dispatches=native, writer="opus", adversaries=("opus",)), ALL_CHECKS_PASS)
 
     def test_given_a_host_that_dispatched_only_attacks_when_checked_then_no_attack_fills_the_writer_slot(self):
-        # Codex review of 78ecce9, P1: a writer slot needs a dispatch that repaired stats.py in its own checkout.
+        # Codex review of 78ecce9, P1: a writer slot needs a dispatch that edited its own checkout.
         self.write_final_parent()
         attacks = [self.attack_checkout(f"attack-{index}") for index in range(2)]
         claude, _ = claude_native_dispatches(claude_stream(*(
@@ -397,7 +392,7 @@ class NativeEvidenceTest(FIXTURES["HarnessFixture"]):
             with self.subTest(effort=effort, policy=policy):
                 writer = self.final_checkout(f"writer-codex-{index}")
                 attack = self.attack_checkout(f"attack-grok-{index}")
-                receipts = [self.receipt("codex", "rw", writer, name=f"rw-codex-{index}", effort=effort),
+                receipts = [self.writer_receipt("codex", writer, name=f"rw-codex-{index}", effort=effort),
                             self.receipt("grok", "rw", attack, name=f"rw-grok-{index}", effort=effort)]
                 checks = self.valid_receipts(receipts, adversaries=("xagent:grok",), effort=policy)
                 self.assertEqual((checks["configured_writer_dispatched"], checks["configured_adversaries_dispatched"]), (counted, counted))
@@ -424,21 +419,29 @@ class NativeEvidenceTest(FIXTURES["HarnessFixture"]):
         self.assertEqual(self.valid_receipts([], native_dispatches=native, writer="opus", adversaries=("opus",)), ALL_CHECKS_PASS)
 
     def test_given_an_attack_by_the_writers_model_in_the_writers_worktree_when_checked_then_the_workflow_fails(self):
+        # One worker is one owner, so it may share the worktree, but the adversary slot then has no checkout of its own.
         self.write_final_parent()
         writer_checkout = self.final_checkout("writer-native")
-        # One that only reads is another owner, so it cannot reuse the writer's worktree.
-        native, _ = claude_native_dispatches(claude_stream(
-            self.native_writer(writer_checkout), agent_call("toolu_attack", "opus", "claude-opus-5-5", tools=works_in(writer_checkout))))
-        self.assertFalse(self.valid_receipts([], native_dispatches=native, writer="opus", adversaries=("opus",))["receipt_workspaces_owned"])
-        # One that adds a repro edits like the writer, so it is the same owner, but the writer slot then has no checkout of its own.
         (writer_checkout / "test_repro.py").write_text(FIXTURES["REPRO_TEST"])
+        for name, tools in (("reads only", works_in(writer_checkout)), ("adds a repro", attacks_in(writer_checkout))):
+            with self.subTest(name):
+                native, _ = claude_native_dispatches(claude_stream(
+                    self.native_writer(writer_checkout), agent_call("toolu_attack", "opus", "claude-opus-5-5", tools=tools)))
+                checks = self.valid_receipts([], native_dispatches=native, writer="opus", adversaries=("opus",))
+                self.assertEqual((checks["receipt_workspaces_owned"], checks["configured_writer_dispatched"], checks["configured_adversaries_dispatched"]),
+                                 (True, True, False))
+
+    def test_given_a_native_attack_retried_in_its_worktree_when_only_the_retry_adds_a_repro_then_both_keep_one_owner(self):
+        # thermos round 1: whether an attempt edited a file does not split one worker into two owners.
+        self.write_final_parent()
+        writer, checkout = self.native_writer(self.final_checkout("writer-native")), self.attack_checkout("attack-native")
         native, _ = claude_native_dispatches(claude_stream(
-            self.native_writer(writer_checkout), agent_call("toolu_attack", "opus", "claude-opus-5-5", tools=attacks_in(writer_checkout))))
-        checks = self.valid_receipts([], native_dispatches=native, writer="opus", adversaries=("opus",))
-        self.assertEqual((checks["receipt_workspaces_owned"], checks["configured_adversaries_dispatched"], checks["configured_writer_dispatched"]), (True, True, False))
+            writer, agent_call("toolu_attack", "opus", None, denied=True, tools=works_in(checkout)),
+            agent_call("toolu_retry", "opus", "claude-opus-5-5", tools=attacks_in(checkout))))
+        self.assertEqual(self.valid_receipts([], native_dispatches=native, writer="opus", adversaries=("opus",)), ALL_CHECKS_PASS)
 
     def test_given_a_shell_written_writer_and_an_edit_somewhere_else_when_checked_then_the_workflow_fails(self):
-        # Third review round, scenario F: a shell edit fills no writer slot, and a worktree written during the attempt holds no attack.
+        # A shell edit fills no writer slot (third review round, scenario F). Its worktree, written during the attempt, holds no attack either.
         self.write_final_parent()
         shell_written = self.final_checkout("writer-shell")
         elsewhere = self.scope / "scratch"
@@ -447,7 +450,7 @@ class NativeEvidenceTest(FIXTURES["HarnessFixture"]):
         (elsewhere / "stats.py").write_text(FIXED_STATS)
         started = iso()
         shell_writer = agent_call("toolu_writer", "opus", "claude-opus-5-5", tools=[("Bash", {"command": f"cat > {shell_written}/stats.py <<'EOF'"})], started=started)
-        self.rewrite_after(shell_written / "stats.py", FIXED_STATS, started)
+        self.write_after(shell_written / "stats.py", FIXED_STATS, seconds(started))
         native, _ = claude_native_dispatches(claude_stream(
             shell_writer, agent_call("toolu_other", "opus", "claude-opus-5-5", tools=[("Edit", {"file_path": f"{elsewhere}/stats.py"})])))
         self.assertFalse(self.valid_receipts([], native_dispatches=native, writer="opus", adversaries=("opus",))["configured_writer_dispatched"])
@@ -482,75 +485,79 @@ class NativeEvidenceTest(FIXTURES["HarnessFixture"]):
         second_load, _ = runpy.run_path(str(ROOT / "scripts/e2e-native-evidence.py"))["claude_native_dispatches"](stream)
         self.assertEqual(self.valid_receipts([], native_dispatches=second_load, writer="opus", adversaries=("opus",)), ALL_CHECKS_PASS)
 
+    def native_attack(self, host, checkout, started):
+        """A native writer and one native attack on checkout dispatched at started, as the host's log shows them, with
+        the model both ran."""
+        writer_checkout = self.final_checkout(f"writer-{host}-{checkout.parent.name}")
+        if host == "claude":
+            return claude_native_dispatches(claude_stream(
+                self.native_writer(writer_checkout), agent_call("toolu_attack", "opus", "claude-opus-5-5", tools=attacks_in(checkout), started=started)))[0], "opus"
+        home, thread = self.root / "codex-home", f"thread-{checkout.parent.name}"
+        return codex_native_dispatches(write_codex_rollouts(home, thread, [
+            (f"{thread}-writer", "gpt-6.1-sol", f"{thread}-w", "gpt-6.1-sol", True, *self.codex_writes(writer_checkout)),
+            (f"{thread}-attack", "gpt-6.1-sol", f"{thread}-a", "gpt-6.1-sol", True, *self.codex_attacks(checkout)),
+        ], started=started), home)[0], "gpt-6.1-sol"
+
     def test_given_a_native_attack_whose_checkout_was_written_after_its_dispatch_when_checked_then_it_is_not_an_attack(self):
-        # The rw replacement for the read-only snapshots: the files an attack ran against must predate its dispatch.
+        # The files an attack ran against must predate its dispatch.
         self.write_final_parent()
-        writer_checkout = self.final_checkout("writer-native")
-        writer, home = self.native_writer(writer_checkout), self.root / "codex-home"
-        for index, (name, path, content, counted) in enumerate((
-            ("checkout left alone", None, None, True),
-            ("stats.py rewritten with the same bytes", "stats.py", FIXED_STATS, False),
-            ("stats.py changed back", "stats.py", STALE_STATS, False),
-            ("test_stats.py rewritten with the same bytes", "test_stats.py", TEST_SOURCE, False),
-            # A reused worktree: the attack was dispatched before the final version reached it, and its re-attack dropped out.
-            ("dispatched before the final version arrived", "dispatched-early", None, False),
+        for index, (name, written, early, counted) in enumerate((
+            ("checkout left alone", None, False, True),
+            ("stats.py rewritten with the same bytes", ("stats.py", FIXED_STATS), False, False),
+            ("stats.py changed back", ("stats.py", STALE_STATS), False, False),
+            ("test_stats.py rewritten with the same bytes", ("test_stats.py", TEST_SOURCE), False, False),
+            # A reused worktree: the attack was dispatched before the final version arrived, and its re-attack dropped out.
+            ("dispatched before the final version arrived", None, True, False),
         )):
             for host in ("claude", "codex"):
                 with self.subTest(name, host=host):
                     checkout = self.attack_checkout(f"attack-{host}-{index}")
-                    started = iso((checkout / "stats.py").stat().st_mtime - 30) if path == "dispatched-early" else iso()
-                    if host == "claude":
-                        native, _ = claude_native_dispatches(claude_stream(
-                            writer, agent_call("toolu_attack", "opus", "claude-opus-5-5", tools=attacks_in(checkout), started=started)))
-                        model = "opus"
-                    else:
-                        native, _ = codex_native_dispatches(write_codex_rollouts(home, f"thread-written-{index}", [
-                            (f"written-{index}-writer", "gpt-6.1-sol", f"written-{index}-w", "gpt-6.1-sol", True, *self.codex_writes(writer_checkout)),
-                            (f"written-{index}-attack", "gpt-6.1-sol", f"written-{index}-a", "gpt-6.1-sol", True, *self.codex_attacks(checkout)),
-                        ], started=started), home)
-                        model = "gpt-6.1-sol"
-                    if content is not None:
-                        self.rewrite_after(checkout / path, content, started)
+                    started = iso((checkout / "stats.py").stat().st_mtime - 30) if early else iso()
+                    native, model = self.native_attack(host, checkout, started)
+                    if written:
+                        self.write_after(checkout / written[0], written[1], seconds(started))
                     checks = self.valid_receipts([], native_dispatches=native, writer=model, adversaries=(model,))
                     self.assertTrue(checks["configured_writer_dispatched"])
                     self.assertEqual(checks["configured_adversaries_dispatched"], counted)
 
     def test_given_a_claude_findings_ledger_when_checked_then_only_the_hosts_own_bash_rerun_counts(self):
         self.write_final_parent()
-        attack, other = self.attack_checkout("attack-native"), self.attack_checkout("attack-other")
+        attack = self.attack_checkout("attack-native")
         rerun = f"cd {attack} && python3 -m unittest test_repro"
-        finding = {"adversary": "opus", "worktree": str(attack), "command": "python3 -m unittest test_repro", "kept": True}
+        finding = {"adversary": "opus", "worktree": str(attack), "command": rerun, "kept": True}
         writer = self.native_writer(self.final_checkout("writer-native"))
         # The adversary ran the same command itself, under its Agent call.
         adversary = agent_call("toolu_attack", "opus", "claude-opus-5-5", tools=attacks_in(attack))
-        lines = claude_stream(writer, adversary, host_bash("toolu_rerun", rerun, "FAILED (failures=1)"))
-        ran = claude_parent_commands(lines)
-        self.assertEqual([(command.command, command.output) for command in ran], [(rerun, "FAILED (failures=1)")])
-        for name, extra, findings, counted in (
-            ("the host reran it", [host_bash("toolu_rerun", rerun)], [finding], True),
-            ("no findings", [], [], True),
-            ("only the adversary ran it", [], [finding], False),
-            ("the host reran it in another worktree", [host_bash("toolu_rerun", f"cd {other} && python3 -m unittest test_repro")], [finding], False),
-            ("no ledger", [host_bash("toolu_rerun", rerun)], None, False),
+        ledger = f"cat > {self.scope}/findings.json <<'EOF'\n{json.dumps([finding])}\nEOF"
+        # A live Claude parent reran every finding in one script through a shell variable, so no call is the ledger's command.
+        batched = f'W={attack.parent}\necho "### 1"; cd $W/{attack.name} && python3 -m unittest test_repro; echo "exit $?"'
+        for name, ran, counted in (
+            ("the host reran it", [host_bash("toolu_rerun", rerun, "FAILED (failures=1)"), host_bash("toolu_ledger", ledger)], True),
+            ("only the adversary ran it, and the host wrote the ledger", [host_bash("toolu_ledger", ledger)], False),
+            ("the host reran it inside a batch through a shell variable",
+             [host_bash("toolu_batch", batched, "FAILED (failures=1)"), host_bash("toolu_ledger", ledger)], False),
         ):
             with self.subTest(name):
-                lines = claude_stream(writer, adversary, *extra)
+                lines = claude_stream(writer, adversary, *ran)
+                parent_commands = claude_parent_commands(lines)
+                self.assertEqual([command.command for command in parent_commands], [event[0]["message"]["content"][0]["input"]["command"] for event in ran])
+                self.assertEqual(parent_commands[0].output, ran[0][1]["message"]["content"][0]["content"])
                 native, _ = claude_native_dispatches(lines)
-                checks = self.valid_receipts([], native_dispatches=native, writer="opus", adversaries=("opus",), findings=findings,
-                                             parent_commands=claude_parent_commands(lines))
+                checks = self.valid_receipts([], native_dispatches=native, writer="opus", adversaries=("opus",), findings=[finding],
+                                             parent_commands=parent_commands)
                 self.assertEqual(checks, {**ALL_CHECKS_PASS, "findings_rerun_by_parent": counted})
 
-    def test_given_a_codex_findings_ledger_when_checked_then_only_a_command_from_the_hosts_json_stream_counts(self):
+    def test_given_a_codex_findings_ledger_when_checked_then_only_the_hosts_own_rollout_commands_count(self):
         self.write_final_parent()
         attack = self.attack_checkout("attack-native")
         writer_checkout = self.final_checkout("writer-native")
-        rerun = f"cd {attack} && python3 -m unittest test_repro"
-        finding = {"adversary": "gpt-6.1-sol", "worktree": str(attack), "command": "python3 -m unittest test_repro", "kept": False}
         home = self.root / "codex-home"
-        for index, (name, parent_commands, counted) in enumerate((
-            ("the host reran it", [rerun], True),
-            # The child ran the same command in its rollout; the --json stream carries only the host's own items.
-            ("only the adversary ran it", [], False),
+        named = f"cd {attack} && python3 -m unittest test_repro"
+        for index, (name, parent_commands, command, counted) in enumerate((
+            ("the host reran it naming the worktree", [named], named, True),
+            ("the host reran it with the worktree as its working directory", [("python3 -m unittest test_repro", attack)], "python3 -m unittest test_repro", True),
+            # The child ran the same command in its own rollout.
+            ("only the adversary ran it", [], named, False),
         )):
             with self.subTest(name):
                 log = write_codex_rollouts(home, f"thread-findings-{index}", [
@@ -558,8 +565,9 @@ class NativeEvidenceTest(FIXTURES["HarnessFixture"]):
                     (f"findings-{index}-attack", "gpt-6.1-sol", f"findings-{index}-a", "gpt-6.1-sol", True, *self.codex_attacks(attack)),
                 ], parent_commands=parent_commands)
                 native, _ = codex_native_dispatches(log, home)
-                ran = codex_parent_commands(log)
-                self.assertEqual([command.command for command in ran], parent_commands)
+                ran = codex_parent_commands(log, home)
+                self.assertEqual([command.command for command in ran], [ran if isinstance(ran, str) else ran[0] for ran in parent_commands])
+                finding = {"adversary": "gpt-6.1-sol", "worktree": str(attack), "command": command, "kept": False}
                 checks = self.valid_receipts([], native_dispatches=native, writer="gpt-6.1-sol", adversaries=("gpt-6.1-sol",), findings=[finding],
                                              parent_commands=ran)
                 self.assertEqual(checks, {**ALL_CHECKS_PASS, "findings_rerun_by_parent": counted})
@@ -698,10 +706,12 @@ class NativeEvidenceTest(FIXTURES["HarnessFixture"]):
                 self.assertIn(f"exclusive worktree at fixture base {report['base']} and have it leave its change uncommitted", prompt)
                 self.assertIn("Adversaries leave stats.py and test_stats.py unchanged and keep their repro files beside them in their own worktree", prompt)
                 # The parent's reruns are the evidence, so the brief asks for a ledger that names each worktree.
-                self.assertIn("Rerun each finding's command yourself, naming that adversary's worktree path in the command", prompt)
-                self.assertIn(f"record every rerun in {run / host / 'findings.json'}", prompt)
+                # A live Claude parent batched its reruns in one script with shell variables, which no ledger entry can quote.
+                self.assertIn("in a shell call of its own that runs only that command: cd <that adversary's worktree as an absolute path> "
+                              "&& <the finding's command>, with no shell variables", prompt)
+                self.assertIn(f"Record every rerun in {run / host / 'findings.json'}", prompt)
+                self.assertIn('"command" (that shell call\'s command string, copied verbatim)', prompt)
                 self.assertIn("Write [] when no adversary reported a finding", prompt)
-                self.assertNotIn("e2e-snapshot", prompt)
                 self.assertIn("pass an effort to every worker, native or xagent; dispatch each native worker as an agent type "
                               "whose definition sets no effort of its own", prompt)
                 if host == "claude":

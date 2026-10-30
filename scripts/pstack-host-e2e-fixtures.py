@@ -111,8 +111,8 @@ class HarnessFixture(unittest.TestCase):
                        findings=(), parent_commands=()):
         return HARNESS["validate_receipts"](
             receipts, self.scope, self.parent, self.base, writer, list(adversaries),
-            (self.parent / "stats.py").read_bytes(), TEST_SOURCE.encode(), native_dispatches, effort is not None,
-            findings, parent_commands,
+            (self.parent / "stats.py").read_bytes(), TEST_SOURCE.encode(),
+            findings=findings, native_dispatches=native_dispatches, effort_required=effort is not None, parent_commands=parent_commands,
         )
 
     def final_checkout(self, name, stats=FIXED_STATS):
@@ -136,11 +136,20 @@ class HarnessFixture(unittest.TestCase):
         (checkout / "test_repro.py").write_text(REPRO_TEST)
         return checkout
 
-    def write_after(self, path, receipt, content):
-        """Write path as an edit after the attempt behind receipt started: a second past its prompt.md."""
+    def started(self, receipt):
+        """When the xagent attempt behind receipt started: its prompt.md's mtime."""
+        return (Path(receipt["path"]).parent / "prompt.md").stat().st_mtime
+
+    def write_after(self, path, content, started):
+        """Write path as an edit during an attempt that started at started, in seconds since the epoch: a second later."""
         path.write_text(content)
-        later = (Path(receipt["path"]).parent / "prompt.md").stat().st_mtime + 1
-        os.utime(path, (later, later))
+        os.utime(path, (started + 1, started + 1))
+
+    def writer_receipt(self, agent, checkout, name=None, **overrides):
+        """An xagent writer's rw receipt, with the repair it wrote to checkout's stats.py after it started."""
+        written = self.receipt(agent, "rw", checkout, name=name, **overrides)
+        self.write_after(checkout / "stats.py", FIXED_STATS, self.started(written))
+        return written
 
     def xagent_attacks_for(self, adversaries):
         """Final-code rw receipts for the policy's xagent adversaries; native entries get none."""

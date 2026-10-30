@@ -78,13 +78,13 @@ class HostHarnessAcceptanceTest(FIXTURES["HarnessFixture"]):
         self.write_verifier_receipt(final_hash)
         policy = dict(writer="xagent:codex/vendor/model-w", adversaries=("xagent:claude/model-a", "xagent:grok"))
         pinned = [
-            self.receipt("codex", "rw", writer, model="vendor/model-w"),
+            self.writer_receipt("codex", writer, model="vendor/model-w"),
             self.receipt("claude", "rw", attack_a, model="model-a"),
             self.receipt("grok", "rw", attack_b),
         ]
         self.assertTrue(all(self.valid_receipts(pinned, **policy).values()))
         unpinned = [
-            self.receipt("codex", "rw", writer, name="writer-default"),
+            self.writer_receipt("codex", writer, name="writer-default"),
             self.receipt("claude", "rw", attack_a, name="attack-a-default"),
             self.receipt("grok", "rw", attack_b, name="attack-b-pinned", model="model-b"),
         ]
@@ -136,7 +136,7 @@ class HostHarnessAcceptanceTest(FIXTURES["HarnessFixture"]):
         # Third review round, scenario H, and Codex's review of fc4805e: each adversary slot needs a worktree of its own.
         writer = self.final_checkout("writer")
         self.write_final_parent()
-        written = self.receipt("codex", "rw", writer)
+        written = self.writer_receipt("codex", writer)
         for agent in ("grok", "claude"):
             with self.subTest(agent):
                 shared = self.attack_checkout(f"attack-{agent}")
@@ -152,7 +152,7 @@ class HostHarnessAcceptanceTest(FIXTURES["HarnessFixture"]):
         final_hash = self.write_final_parent()
         self.write_verifier_receipt(final_hash)
         receipts = [
-            self.receipt("codex", "rw", shared),
+            self.writer_receipt("codex", shared),
             self.receipt("claude", "rw", shared),
             self.receipt("grok", "rw", shared),
         ]
@@ -165,7 +165,7 @@ class HostHarnessAcceptanceTest(FIXTURES["HarnessFixture"]):
         final_hash = self.write_final_parent()
         self.write_verifier_receipt(final_hash)
         receipts = [
-            self.receipt("codex", "rw", writer),
+            self.writer_receipt("codex", writer),
             self.receipt("claude", "rw", self.add_worktree("attack-a")),
             self.receipt("grok", "rw", self.final_checkout("attack-b", stats=STALE_STATS)),
         ]
@@ -178,7 +178,7 @@ class HostHarnessAcceptanceTest(FIXTURES["HarnessFixture"]):
     def test_given_an_adversary_left_stats_or_its_tests_changed_when_checked_then_its_attack_fills_no_slot(self):
         writer = self.final_checkout("writer")
         self.write_final_parent()
-        written = self.receipt("codex", "rw", writer)
+        written = self.writer_receipt("codex", writer)
         for name, content in (("stats.py", STALE_STATS), ("test_stats.py", TEST_SOURCE + "# weakened\n")):
             with self.subTest(name):
                 checkout = self.attack_checkout(f"attack-{name}")
@@ -191,7 +191,7 @@ class HostHarnessAcceptanceTest(FIXTURES["HarnessFixture"]):
         # ro is plan mode for claude and gemini, which runs no commands, so it cannot prove a finding with a run.
         writer = self.final_checkout("writer")
         self.write_final_parent()
-        receipts = [self.receipt("codex", "rw", writer), self.receipt("claude", "ro", self.final_checkout("attack-claude"))]
+        receipts = [self.writer_receipt("codex", writer), self.receipt("claude", "ro", self.final_checkout("attack-claude"))]
         self.assertTrue(receipts[1]["completed"] and receipts[1]["status"] == "PASS" and receipts[1]["changed_workdir"] is False)
         checks = self.valid_receipts(receipts, adversaries=("xagent:claude",))
         self.assertTrue(checks["receipt_workspaces_owned"] and checks["configured_writer_dispatched"], checks)
@@ -204,7 +204,7 @@ class HostHarnessAcceptanceTest(FIXTURES["HarnessFixture"]):
         final_hash = self.write_final_parent()
         self.write_verifier_receipt(final_hash)
         receipts = [
-            self.receipt("codex", "rw", writer),
+            self.writer_receipt("codex", writer),
             self.receipt("codex", "rw", writer, name="writer-retry", status="DROPOUT", exit=3),
             self.receipt("claude", "rw", attack_a),
             self.receipt("grok", "rw", attack_b),
@@ -221,14 +221,14 @@ class HostHarnessAcceptanceTest(FIXTURES["HarnessFixture"]):
         attack_a = self.attack_checkout("attack-a")
         attack_b = self.attack_checkout("attack-b")
         receipts = [
-            self.receipt("codex", "rw", writer),
+            self.writer_receipt("codex", writer),
             self.receipt("claude", "rw", attack_a),
             self.receipt("grok", "rw", attack_b),
         ]
         self.assertEqual(self.valid_receipts(receipts), ALL_CHECKS_PASS)
         # The same bytes written again after the attack started still mean it attacked something else.
-        self.write_after(attack_a / "stats.py", receipts[1], FIXED_STATS)
-        self.write_after(attack_b / "test_stats.py", receipts[2], TEST_SOURCE)
+        self.write_after(attack_a / "stats.py", FIXED_STATS, self.started(receipts[1]))
+        self.write_after(attack_b / "test_stats.py", TEST_SOURCE, self.started(receipts[2]))
         checks = self.valid_receipts(receipts)
         self.assertTrue(checks["receipt_workspaces_owned"])
         self.assertFalse(checks["configured_adversaries_dispatched"])
@@ -243,7 +243,7 @@ class HostHarnessAcceptanceTest(FIXTURES["HarnessFixture"]):
         started = (reused / "stats.py").stat().st_mtime - 30
         os.utime(Path(earlier["path"]).parent / "prompt.md", (started, started))
         dropout = self.receipt("claude", "rw", reused, name="attack-claude-final", status="DROPOUT", exit=3)
-        written = self.receipt("codex", "rw", writer)
+        written = self.writer_receipt("codex", writer)
         checks = self.valid_receipts([written, earlier, dropout], adversaries=("xagent:claude",))
         self.assertTrue(checks["all_attempts_terminal"] and checks["receipt_workspaces_owned"], checks)
         self.assertFalse(checks["configured_adversaries_dispatched"])
@@ -251,16 +251,16 @@ class HostHarnessAcceptanceTest(FIXTURES["HarnessFixture"]):
         retried = self.receipt("claude", "rw", reused, name="attack-claude-retry")
         self.assertEqual(self.valid_receipts([written, earlier, dropout, retried], adversaries=("xagent:claude",)), ALL_CHECKS_PASS)
 
-    def test_given_one_xagent_agent_as_writer_and_adversary_when_the_attack_sorts_first_then_both_slots_fill(self):
-        # An xagent attempt that attacked the final version also meets the writer test, so the adversary slots choose first.
-        writer = self.add_worktree("writer")
+    def test_given_one_xagent_agent_as_writer_and_adversary_when_it_only_attacked_then_the_writer_slot_stays_empty(self):
+        # thermos round 1: an attack on an earlier patch, then the re-attack the brief requires after a fix, and no writer.
         self.write_final_parent()
-        attack = self.receipt("codex", "rw", self.attack_checkout("attack-codex"))
-        written = self.receipt("codex", "rw", writer)
-        # A writer repairs stats.py after its attempt starts, so it never attacked the final version.
-        self.write_after(writer / "stats.py", written, FIXED_STATS)
-        checks = self.valid_receipts([attack, written], writer="xagent:codex", adversaries=("xagent:codex",))
-        self.assertEqual(checks, ALL_CHECKS_PASS)
+        earlier = self.receipt("codex", "rw", self.final_checkout("attack-codex-1", stats=STALE_STATS), name="attack-codex-1-out")
+        again = self.receipt("codex", "rw", self.attack_checkout("attack-codex-2"), name="attack-codex-2-out")
+        checks = self.valid_receipts([earlier, again], writer="xagent:codex", adversaries=("xagent:codex",))
+        self.assertEqual((checks["configured_adversaries_dispatched"], checks["configured_writer_dispatched"]), (True, False))
+        # The same agent writing in a worktree of its own fills the writer slot beside its attack.
+        written = self.writer_receipt("codex", self.add_worktree("writer"))
+        self.assertEqual(self.valid_receipts([earlier, again, written], writer="xagent:codex", adversaries=("xagent:codex",)), ALL_CHECKS_PASS)
 
     def test_given_missing_or_malformed_evidence_when_checked_then_it_fails_without_raising(self):
         self.assertFalse(validate_parent_verification(self.scope, self.parent))
@@ -292,18 +292,29 @@ class HostHarnessAcceptanceTest(FIXTURES["HarnessFixture"]):
         self.write_final_parent()
         attack_a = self.attack_checkout("attack-a")
         attack_b = self.attack_checkout("attack-b")
-        receipts = [self.receipt("codex", "rw", writer), self.receipt("claude", "rw", attack_a), self.receipt("grok", "rw", attack_b)]
+        receipts = [self.writer_receipt("codex", writer), self.receipt("claude", "rw", attack_a), self.receipt("grok", "rw", attack_b)]
         rerun = f"cd {attack_a} && python3 -m unittest test_repro"
-        finding = {"adversary": "xagent:claude", "worktree": str(attack_a), "command": "python3 -m unittest test_repro", "kept": True}
+        finding = {"adversary": "xagent:claude", "worktree": str(attack_a), "command": rerun, "kept": True}
         ran = [ShellCommand(rerun, [str(attack_a)])]
         self.assertEqual(self.valid_receipts(receipts, findings=[finding], parent_commands=ran), ALL_CHECKS_PASS)
         self.assertTrue(self.valid_receipts(receipts, findings=[], parent_commands=())["findings_rerun_by_parent"])
+        # Whitespace aside, the ledger holds the command as it ran, here in the worktree as its working directory.
+        in_worktree = [ShellCommand("python3  -m unittest test_repro\n", [str(attack_a)])]
+        self.assertTrue(self.valid_receipts(receipts, findings=[{**finding, "command": "python3 -m unittest test_repro"}],
+                                            parent_commands=in_worktree)["findings_rerun_by_parent"])
+        ledger = json.dumps([finding])
         for case, findings, commands in (
             ("no ledger", None, ran),
             ("the parent never ran it", [finding], ()),
-            ("the parent ran another command", [{**finding, "command": "python3 -m unittest test_other"}], ran),
-            ("the rerun named another worktree", [finding], [ShellCommand(f"cd {attack_b} && python3 -m unittest test_repro", [str(attack_b)])]),
+            ("the parent ran another command", [{**finding, "command": f"cd {attack_a} && python3 -m unittest test_other"}], ran),
+            ("the rerun ran in another worktree", [{**finding, "command": "python3 -m unittest test_repro"}],
+             [ShellCommand("python3 -m unittest test_repro", [str(attack_b)])]),
             ("the worktree is another adversary's", [{**finding, "adversary": "xagent:grok"}], ran),
+            # thermos round 1: commands that only mention the rerun, or run more than it.
+            ("only the heredoc that wrote the ledger", [finding], [ShellCommand(f"cat > {self.scope}/findings.json <<'EOF'\n{ledger}\nEOF", [str(attack_a)])]),
+            ("only an echo of it", [finding], [ShellCommand(f"echo '{rerun}'", [str(attack_a)])]),
+            ("a setup command that contains it", [{**finding, "command": "python3 -m unittest"}],
+             [ShellCommand(f"cd {attack_a} && git status && python3 -m unittest", [str(attack_a)])]),
         ):
             with self.subTest(case):
                 self.assertFalse(self.valid_receipts(receipts, findings=findings, parent_commands=commands)["findings_rerun_by_parent"])
@@ -408,7 +419,7 @@ class HostHarnessAcceptanceTest(FIXTURES["HarnessFixture"]):
     def final_handoff_receipts(self):
         self.write_final_parent()
         receipts = []
-        receipts.append(self.receipt("codex", "rw", self.final_checkout("codex")))
+        receipts.append(self.writer_receipt("codex", self.add_worktree("codex")))
         for agent in ("claude", "grok"):
             receipts.append(self.receipt(agent, "rw", self.attack_checkout(agent)))
         return receipts

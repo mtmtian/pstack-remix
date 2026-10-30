@@ -13,8 +13,8 @@ interrogate adversary attacked the final version in a separate worktree.
 xagent entries are checked through their receipts. A meta.json counts as an
 xagent attempt when either marker bin/xagent creates first (prompt.md,
 agent.log) sits beside it, so a broken attempt still fails. Attempts are keyed
-by mode, agent and model; any other meta.json under the evidence directory is
-listed as ignored.
+by agent and model; any other meta.json under the evidence directory is listed
+as ignored.
 
 Native entries are checked through the host's own log, parsed by
 scripts/e2e-native-evidence.py: Claude's stream-json Agent calls and their
@@ -30,7 +30,9 @@ runs without --ephemeral.
   host's file-edit tool and the edit succeeded (Claude Write/Edit with a
   successful tool result, a completed Codex FileChange), leaving test_stats.py
   unchanged. Shell edits are not writer evidence, so a writer that edits only
-  through the shell cannot fill the writer slot.
+  through the shell cannot fill the writer slot. An xagent attempt writes when
+  its checkout's stats.py was written after the attempt started, with
+  test_stats.py unchanged.
 
 Adversaries. An adversary proves each finding with a run, so it may add repro
 files to its worktree, and an xagent adversary runs rw: ro is plan mode for
@@ -41,17 +43,21 @@ xagent attempt starts at the mtime of its prompt.md, which xagent writes before
 it starts the agent and never again; a native one at its dispatch's timestamp in
 the host's log (Claude's Agent call, the Codex parent rollout's spawn_agent). A
 worktree brought to the final version after its attack therefore holds no
-attack on it, as when a re-interrogation in a reused worktree drops out. Forging
-a time would take touching the files or rewriting the host's log, which is
-outside the threat model of an acceptance test for cooperating agents.
+attack on it, as when a re-interrogation in a reused worktree drops out, and an
+attack never meets the writer test, which needs stats.py written during the
+attempt. Forging a time would take touching the files or rewriting the host's
+log, which is outside the threat model of an acceptance test for cooperating
+agents.
 
 Parent reruns. The parent records each finding it reran in findings.json: the
 adversary's policy entry, its worktree, the exact command the parent ran, and
 whether it kept the finding. Each entry needs a shell command the parent ran
-itself, read from the host's log (Claude's top-level Bash calls, the Codex
---json stream's command_execution items), that contains the entry's command and
-names that worktree, and an attempt by that adversary must have used the
-worktree. An empty list passes, since no findings is a valid result; whether the
+itself, read from the host's own records (Claude's top-level Bash calls, the
+Codex parent rollout's command items), that is the entry's command, ignoring
+whitespace, and names that worktree by an absolute path or as its working
+directory; an attempt by that adversary must have used the worktree. A command
+that only quotes the rerun, such as the one that writes the ledger, is not a
+rerun. An empty list passes, since no findings is a valid result; whether the
 list is complete is the host's claim, bounded by the final independent checks.
 
 Effort. When the effective policy sets reasoning_effort, a worker fills a role
@@ -59,21 +65,22 @@ only if its xagent receipt, Claude Agent call or Codex spawn_agent records an
 effort level. The level itself may differ, since poteto-mode adjusts it per
 task.
 
-Ownership. Each checkout belongs to one owner, a worker (kind, agent and model)
-in one mode, so an xagent retry or a native writer's follow-up fix may reuse its
+Ownership. Each checkout belongs to one owner, a worker (kind, agent and
+model), so an xagent retry or a native writer's follow-up fix may reuse its
 worktree. Each configured writer or adversary slot needs an attempt in a
-checkout no other slot used, so two attacks in one worktree count once. The
-adversary slots choose first, because an xagent attempt that attacked the final
-version also meets the writer slot's test. A missing log or a dispatch that used
-no path is reported as a gap and fails the check.
+checkout no other slot used, so two attacks in one worktree count once, and a
+worker cannot attack its own fix. A missing log, a dispatch that used no path,
+or a native dispatch with no timestamp is reported as a gap and fails the
+check.
 
 Time limits. Each worker attempt gets xagent's default limit with one retry,
 not doubled. The outer host process runs under timeout with a kill-after limit;
 the default --host-timeout lets the writer, interrogation and post-fix
-re-interrogation rounds each retry, and --help prints its arithmetic. Verification commands run through
-scripts/e2e-process.py with a default deadline (--check-timeout),
-process-group termination and bounded output collection. A verification
-timeout remains a failed check with logs and exit code 124.
+re-interrogation rounds each retry, and --help prints its arithmetic.
+Verification commands run through scripts/e2e-process.py with a default
+deadline (--check-timeout), process-group termination and bounded output
+collection. A verification timeout remains a failed check with logs and exit
+code 124.
 """
 from __future__ import annotations
 
@@ -118,6 +125,8 @@ NativeDispatch = NATIVE["NativeDispatch"]
 ShellCommand = NATIVE["ShellCommand"]
 claude_native_dispatches = NATIVE["claude_native_dispatches"]
 codex_native_dispatches = NATIVE["codex_native_dispatches"]
+claude_parent_commands = NATIVE["claude_parent_commands"]
+codex_parent_commands = NATIVE["codex_parent_commands"]
 checkouts_touched = NATIVE["checkouts_touched"]
 # The fields the role checks read; another runpy load of the module makes an equal dispatch of a different class.
 NATIVE_FIELDS = tuple(field.name for field in fields(NativeDispatch))
@@ -125,7 +134,7 @@ NATIVE_FIELDS = tuple(field.name for field in fields(NativeDispatch))
 FINDING_FIELDS = {"adversary": str, "worktree": str, "command": str, "kept": bool}
 # Each worker attempt gets xagent's own default limit and at most one retry; the retry is not doubled.
 WORKER_LIMIT_SECONDS = XAGENT["DEFAULT_TIMEOUT"]
-# Per attempt, on top of its limit and xagent's termination grace: process start-up and xagent's before/after snapshots.
+# Per attempt, on top of its limit and xagent's termination grace: process start-up and xagent's receipt and logs.
 ATTEMPT_OVERHEAD_SECONDS = 30
 # The longest one attempt can take, so one foreground wait in the host must outlast it.
 ATTEMPT_SECONDS = WORKER_LIMIT_SECONDS + XAGENT["TERMINATION_GRACE"] + ATTEMPT_OVERHEAD_SECONDS
@@ -362,17 +371,16 @@ def load_findings(path):
 class Attempt:
     """One worker attempt from an xagent receipt or a native host dispatch, as the role and ownership checks see it."""
     kind: str  # xagent or native
-    mode: str | None  # rw or ro: an xagent receipt's mode, or whether a native subagent edited its checkout
     worker: tuple[str | None, str | None]  # (agent, model); a native dispatch names no agent
     effort: str | None
     terminal: bool
     checkouts: frozenset[Path]  # the checkouts it worked in
-    roles: frozenset[str]  # the slots it can fill, writer or adversary; empty when the attempt is unusable
+    role: str | None  # the slot it can fill, writer or adversary; None when the attempt can fill none
 
     @property
     def owner(self):
-        # One worker in one mode, so retries and follow-up fixes may reuse a worktree that nobody else may use.
-        return self.kind, self.mode, self.worker
+        # One worker, so retries and follow-up fixes may reuse a worktree that nobody else may use.
+        return self.kind, self.worker
 
 
 def _holds(path, expected):
@@ -389,6 +397,14 @@ def _held_since(checkout, started, final_stats, test_file):
                                            for path, expected in ((checkout / "stats.py", final_stats), (checkout / "test_stats.py", test_file)))
     except OSError:
         return False
+
+
+def _role(checkout, started, repaired, final_stats, test_file):
+    """writer when the attempt repaired stats.py and left the fixture's tests alone; adversary when it attacked the
+    final version, holding it since started; None otherwise."""
+    if repaired and _holds(checkout / "test_stats.py", test_file):
+        return "writer"
+    return "adversary" if _held_since(checkout, started, final_stats, test_file) else None
 
 
 def _mtime(path):
@@ -408,19 +424,19 @@ def _timestamp(value):
 
 def _xagent_attempt(receipt, workdir, final_stats, test_file):
     if not isinstance(receipt, dict):
-        return Attempt("xagent", None, (None, None), None, False, frozenset(), frozenset())
-    mode = receipt.get("mode") if receipt.get("mode") in ("rw", "ro") else None
+        return Attempt("xagent", (None, None), None, False, frozenset(), None)
     terminal = receipt.get("completed") is True and receipt.get("status") in ("PASS", "ISSUES", "BLOCKED", "DROPOUT")
     # ISSUES may carry a usable patch or findings; final parent checks remain mandatory. Writers and adversaries both run rw.
-    usable = (workdir is not None and terminal and mode == "rw" and receipt.get("status") in ("PASS", "ISSUES")
+    usable = (workdir is not None and terminal and receipt.get("mode") == "rw" and receipt.get("status") in ("PASS", "ISSUES")
               and type(receipt.get("exit")) is int and receipt.get("exit") == 0)
-    roles = frozenset()
+    role = None
     if usable:
         # xagent writes prompt.md before it starts the agent and never again, so its mtime is when the attempt started.
         started = _mtime(Path(receipt["path"]).parent / "prompt.md") if isinstance(receipt.get("path"), str) else None
-        roles = frozenset({"writer", "adversary"} if _held_since(workdir, started, final_stats, test_file) else {"writer"})
-    return Attempt("xagent", mode, (receipt.get("agent"), receipt.get("model")), receipt.get("effort"), terminal,
-                   frozenset({workdir} if workdir else ()), roles)
+        written = _mtime(workdir / "stats.py")
+        role = _role(workdir, started, None not in (started, written) and written > started, final_stats, test_file)
+    return Attempt("xagent", (receipt.get("agent"), receipt.get("model")), receipt.get("effort"), terminal,
+                   frozenset({workdir} if workdir else ()), role)
 
 
 def _native_attempt(dispatch, run_scope, parent, base, parent_common, final_stats, test_file):
@@ -428,38 +444,34 @@ def _native_attempt(dispatch, run_scope, parent, base, parent_common, final_stat
     checkout held the final version from the dispatch on; either way the checkout must be a linked worktree at the
     fixture base."""
     if not all(hasattr(dispatch, name) for name in NATIVE_FIELDS):
-        return Attempt("native", None, (None, None), None, False, frozenset(), frozenset())
+        return Attempt("native", (None, None), None, False, frozenset(), None)
     try:
         checkouts = frozenset(checkouts_touched(dispatch.paths_touched, run_scope, parent))
-        edited = checkouts_touched(dispatch.paths_edited, run_scope, parent)
     except (OSError, RuntimeError, TypeError, ValueError):
-        checkouts, edited = frozenset(), set()
-    # Its own edits decide the mode whether or not it finished, as an xagent receipt records its mode up front.
-    mode = "rw" if edited else "ro"
-    roles = frozenset()
+        checkouts = frozenset()
+    role = None
     if dispatch.usable and len(checkouts) == 1:
         (checkout,) = checkouts
-        # A writer's edits must include the repair itself, with the fixture's tests left alone.
+        # A writer's edits must include the repair itself.
         repaired = (checkout / "stats.py") in {Path(path).resolve() for path in dispatch.paths_edited if Path(path).is_absolute()}
         if _linked_worktree_at_base(checkout, run_scope, parent, base, parent_common):
-            if repaired and _holds(checkout / "test_stats.py", test_file):
-                roles = frozenset({"writer"})
-            elif _held_since(checkout, _timestamp(dispatch.started), final_stats, test_file):
-                roles = frozenset({"adversary"})
-    return Attempt("native", mode, (None, dispatch.requested), dispatch.effort, dispatch.status in ("completed", "failed"), checkouts, roles)
+            role = _role(checkout, _timestamp(dispatch.started), repaired, final_stats, test_file)
+    return Attempt("native", (None, dispatch.requested), dispatch.effort, dispatch.status in ("completed", "failed"), checkouts, role)
 
 
 def _rerun_by_parent(entry, attempts, parent_commands, run_scope, parent):
-    """Whether the parent itself ran entry's command in the worktree of an attempt by entry's adversary."""
+    """Whether the parent itself ran exactly entry's command, naming the worktree of an attempt by entry's adversary."""
     worktree = Path(entry["worktree"]).resolve()
     adversary = route(entry["adversary"])
+    # Equal up to whitespace, so a command that only quotes the rerun, as a heredoc writing the ledger does, is no rerun.
+    wanted = entry["command"].split()
     return (any((attempt.kind, attempt.worker) == adversary and worktree in attempt.checkouts for attempt in attempts)
-            and any(entry["command"] in command.command and worktree in checkouts_touched(command.paths, run_scope, parent)
+            and any(command.command.split() == wanted and worktree in checkouts_touched(command.paths, run_scope, parent)
                     for command in parent_commands))
 
 
-def validate_receipts(receipts, run_scope, parent, base, expected_writer, expected_adversaries, final_stats, test_file,
-                      native_dispatches=(), effort_required=False, findings=(), parent_commands=()):
+def validate_receipts(receipts, run_scope, parent, base, expected_writer, expected_adversaries, final_stats, test_file, *,
+                      findings, native_dispatches=(), effort_required=False, parent_commands=()):
     """Check that every attempt finished, each configured slot took a usable attempt in a checkout of its own, each
     checkout has one owner, and the parent itself reran every finding in its ledger.
 
@@ -488,18 +500,17 @@ def validate_receipts(receipts, run_scope, parent, base, expected_writer, expect
             # A slot cannot use a checkout another slot used, so every configured worker had a worktree of its own.
             wanted = route(value)
             for index, attempt in enumerate(pool):
-                if (wanted == (attempt.kind, attempt.worker) and role in attempt.roles and not attempt.checkouts & taken
+                if (wanted == (attempt.kind, attempt.worker) and attempt.role == role and not attempt.checkouts & taken
                         and (not effort_required or attempt.effort in XAGENT["EFFORTS"])):
                     taken.update(pool.pop(index).checkouts)
                     return True
             return False
 
-        # An xagent attempt that attacked the final version also meets the writer test, so adversaries choose first.
+        writer_ok = take(expected_writer, "writer")
         adversaries = expected_adversaries if isinstance(expected_adversaries, list) else []
         adversaries_ok = bool(adversaries)
         for value in adversaries:
             adversaries_ok = take(value, "adversary") and adversaries_ok
-        writer_ok = take(expected_writer, "writer")
         return {
             "all_attempts_terminal": bool(attempts) and all(attempt.terminal for attempt in attempts),
             "configured_writer_dispatched": writer_ok,
@@ -546,7 +557,7 @@ HOSTS = {
         env={"BASH_MAX_TIMEOUT_MS": str(ATTEMPT_SECONDS * 1000)},
         save_reply=_save_claude_reply,
         dispatches=claude_native_dispatches,
-        parent_commands=NATIVE["claude_parent_commands"],
+        parent_commands=claude_parent_commands,
     ),
     # Not --ephemeral: spawn_agent evidence for native workers exists only in the persisted session rollout.
     "codex": HostAdapter(
@@ -554,7 +565,7 @@ HOSTS = {
         env={},
         save_reply=lambda directory, host_log: None,
         dispatches=lambda host_log: codex_native_dispatches(host_log, os.environ.get("CODEX_HOME") or Path.home() / ".codex"),
-        parent_commands=NATIVE["codex_parent_commands"],
+        parent_commands=lambda host_log: codex_parent_commands(host_log, os.environ.get("CODEX_HOME") or Path.home() / ".codex"),
     ),
 }
 
@@ -602,10 +613,12 @@ Use interrogate on the resulting change with every configured adversary, selecte
 Give each adversary its own exclusive worktree checked out at fixture base {base}, with the proposed patch applied
 as uncommitted changes; do not commit the patch or check out a writer commit. Preserve parent and worker evidence.
 Adversaries leave stats.py and test_stats.py unchanged and keep their repro files beside them in their own worktree.
-Rerun each finding's command yourself, naming that adversary's worktree path in the command, before you keep or drop it,
-and record every rerun in {directory}/findings.json: a JSON list with one object per finding, holding "adversary" (its
-policy entry), "worktree" (the absolute path of its worktree), "command" (the exact command you ran) and "kept" (true
-or false). Write [] when no adversary reported a finding.
+Rerun each finding's command yourself before you keep or drop it, in a shell call of its own that runs only that
+command: cd <that adversary's worktree as an absolute path> && <the finding's command>, with no shell variables, or the
+command alone with the worktree as the working directory where your shell tool takes one.
+Record every rerun in {directory}/findings.json: a JSON list with one object per finding, holding "adversary" (its
+policy entry), "worktree" (the absolute path of its worktree), "command" (that shell call's command string, copied
+verbatim) and "kept" (true or false). Write [] when no adversary reported a finding.
 Fix any verified in-scope findings and rerun the affected check; do not count a dropout, cancelled run, or missing evidence as a pass.
 If stats.py changes after any interrogation, every configured adversary must attack the final version again in a new
 worktree prepared the same way; an attack on an earlier version does not count.
@@ -662,18 +675,11 @@ with no unresolved reproduced violation of the stated contract; otherwise PSTACK
         test_file_preserved = False
     final_stats = (work / "stats.py").read_bytes() if (work / "stats.py").is_file() else b""
     receipt_checks = validate_receipts(
-        receipts,
-        directory,
-        work,
-        base,
-        expected_writer,
-        expected_adversaries,
-        final_stats,
-        TEST.encode(),
-        native,
-        policy["effective"].get("reasoning_effort") is not None,
-        findings,
-        parent_commands,
+        receipts, directory, work, base, expected_writer, expected_adversaries, final_stats, TEST.encode(),
+        findings=findings,
+        native_dispatches=native,
+        effort_required=policy["effective"].get("reasoning_effort") is not None,
+        parent_commands=parent_commands,
     )
     parent_verification_valid = validate_parent_verification(directory, work)
     checks = {
@@ -702,6 +708,8 @@ with no unresolved reproduced violation of the stated contract; otherwise PSTACK
     for dispatch in native:
         if not dispatch.paths_touched:
             print(f"GAP {host}: native dispatch {dispatch.id} used no path, so it cannot fill a role", flush=True)
+        if dispatch.started is None:
+            print(f"GAP {host}: native dispatch {dispatch.id} has no timestamp, so it cannot attack", flush=True)
     for path in ignored_meta:
         print(f"IGNORED {host}: {path} was not written by xagent", flush=True)
     return all(checks.values())
