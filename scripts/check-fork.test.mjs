@@ -182,16 +182,18 @@ test("Given a sync that moves only UPSTREAM.json, When guarded, Then each copy s
 test("Given a malformed UPSTREAM.json, When guarded, Then the pin alone is reported", (t) => {
   const dir = copyRepo(t);
   const pin = JSON.parse(readFileSync(path.join(dir, "UPSTREAM.json"), "utf8"));
-  for (const [field, value] of [
-    ["version", "0.15"],
-    ["commit", pin.commit.slice(0, 8)],
-    ["repository", "https://example.com/cursor/plugins"],
-    ["path", "../pstack"],
-    ["path", undefined],
+  for (const [field, value, want] of [
+    ["version", "0.15", "x.y.z"],
+    ["commit", pin.commit.slice(0, 8), "a full 40-character SHA"],
+    ["repository", "https://example.com/cursor/plugins", "https://github.com/<owner>/<repo>"],
+    ["path", "../pstack", "a path of word characters, / and -"],
+    ["path", undefined, "a path of word characters, / and -"],
   ]) {
     writeFileSync(path.join(dir, "UPSTREAM.json"), JSON.stringify({ ...pin, [field]: value }));
-    assert.deepEqual(checkFork(dir), [`UPSTREAM.json: upstream-pin: malformed ${field}`], `${field}: ${value}`);
+    assert.deepEqual(checkFork(dir), [`UPSTREAM.json: upstream-pin: ${field} must be ${want}`], `${field}: ${value}`);
   }
+  writeFileSync(path.join(dir, "UPSTREAM.json"), "null");
+  assert.match(checkFork(dir).join("\n"), /^UPSTREAM\.json: upstream-pin: repository must be .+; version must be x\.y\.z$/);
 });
 
 test("Given a clean copy, When the CLI runs on it, Then it exits 0", (t) => {

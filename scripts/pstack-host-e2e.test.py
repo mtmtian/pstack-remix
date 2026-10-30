@@ -414,14 +414,16 @@ class HostHarnessAcceptanceTest(FIXTURES["HarnessFixture"]):
         self.assertNotEqual(independent.returncode, 0)
         self.assertIn("AssertionError", independent.stderr)
 
-    def test_given_host_leaves_nonterminating_code_when_independently_verified_then_harness_finishes_failed(self):
+    def exercise_claude_stub(self, edit, check_timeout):
+        """Run exercise for a stub Claude host that runs edit, Python source, in the parent checkout and fails its
+        reply; return the run's claude directory."""
         binaries = self.root / "bin"
         binaries.mkdir()
         stub = binaries / "claude"
         stub.write_text(
             "#!/usr/bin/env python3\n"
             "from pathlib import Path\nimport json\n"
-            "Path('stats.py').write_text('def mean(xs):\\n    while True:\\n        pass\\n')\n"
+            f"{edit}\n"
             "print(json.dumps({'type': 'result', 'result': 'PSTACK_E2E: FAIL'}))\n"
         )
         stub.chmod(0o755)
@@ -429,16 +431,20 @@ class HostHarnessAcceptanceTest(FIXTURES["HarnessFixture"]):
         command = (
             "import runpy,sys;from pathlib import Path;"
             "h=runpy.run_path(sys.argv[1]);"
-            # Shorter than any Python start: only the checks after the host may time out, not the fixture check before it.
-            "h['exercise']('claude',Path(sys.argv[2]),1,check_timeout=0.05)"
+            f"h['exercise']('claude',Path(sys.argv[2]),5,check_timeout={check_timeout})"
         )
         result = subprocess.run(
             [sys.executable, "-B", "-c", command, str(ROOT / "scripts/pstack-host-e2e.py"), str(run)],
             env={**os.environ, "PATH": str(binaries) + os.pathsep + os.environ["PATH"]},
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, timeout=60,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        report = json.loads((run / "claude/checks.json").read_text())
+        return run / "claude"
+
+    def test_given_host_leaves_nonterminating_code_when_independently_verified_then_harness_finishes_failed(self):
+        directory = self.exercise_claude_stub("Path('stats.py').write_text('def mean(xs):\\n    while True:\\n        pass\\n')", 1)
+        run = directory.parent
+        report = json.loads((directory / "checks.json").read_text())
         self.assertTrue(report["checks"]["host_exited"])
         self.assertFalse(report["checks"]["fix_passes_independent_rerun"])
         self.assertFalse(report["checks"]["finite_number_contract_preserved"])
@@ -448,6 +454,13 @@ class HostHarnessAcceptanceTest(FIXTURES["HarnessFixture"]):
         self.assertEqual(report["verification"]["contract_exit_code"], 124)
         for name in ("after-tests.log", "contract-probe.log"):
             self.assertIn("timed out", (run / "claude" / name).read_text())
+
+    def test_given_a_check_timeout_shorter_than_a_python_start_when_exercised_then_the_fixture_check_still_runs(self):
+        # thermos round 2 of #33: the fixture check before the host took --check-timeout, so a short one failed the run
+        # before the host started, and the 1 s test above failed under load.
+        directory = self.exercise_claude_stub("pass", 0.05)
+        self.assertIn("FAILED (failures=1)", (directory / "before-tests.log").read_text())
+        self.assertTrue(json.loads((directory / "checks.json").read_text())["checks"]["host_exited"])
 
     def final_handoff_receipts(self):
         self.write_final_parent()

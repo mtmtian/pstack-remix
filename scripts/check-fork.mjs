@@ -540,9 +540,11 @@ export function validateManifests(root, pin) {
       continue;
     }
     if (manifest.name !== name) problems.push(`${rel}: name ${JSON.stringify(manifest.name ?? null)} must be ${JSON.stringify(name)}`);
-    const prefix = `${pin?.version}-shared.`;
-    if (versioned && pin && !(typeof manifest.version === "string" && manifest.version.startsWith(prefix))) {
-      problems.push(`${rel}: upstream-pin: version ${JSON.stringify(manifest.version ?? null)} must start with ${JSON.stringify(prefix)}, after UPSTREAM.json`);
+    if (versioned && pin) {
+      const prefix = `${pin.version}-shared.`;
+      if (!(typeof manifest.version === "string" && manifest.version.startsWith(prefix))) {
+        problems.push(`${rel}: upstream-pin: version ${JSON.stringify(manifest.version ?? null)} must start with ${JSON.stringify(prefix)}, after UPSTREAM.json`);
+      }
     }
     // An Agent Plugins $schema makes Codex load the checkout as an Agent Plugin,
     // which truncates each injected skill to 8,000 bytes (ADAPTATION.md, Not taken from upstream).
@@ -556,16 +558,16 @@ export function validateManifests(root, pin) {
 // UPSTREAM.json holds the pin. A sync moves it there, and the guards name every
 // copy left behind: the sentences in PIN_COPIES and the host manifests' versions.
 const PIN_FIELDS = {
-  repository: /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+$/,
-  path: /^[\w/-]+$/,
-  commit: /^[a-f0-9]{40}$/,
-  version: /^\d+\.\d+\.\d+$/,
+  repository: { pattern: /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+$/, want: "https://github.com/<owner>/<repo>" },
+  path: { pattern: /^[\w/-]+$/, want: "a path of word characters, / and -" },
+  commit: { pattern: /^[a-f0-9]{40}$/, want: "a full 40-character SHA" },
+  version: { pattern: /^\d+\.\d+\.\d+$/, want: "x.y.z" },
 };
 
 export function readPin(root) {
   const pin = JSON.parse(readFileSync(path.join(root, "UPSTREAM.json"), "utf8"));
-  const malformed = Object.entries(PIN_FIELDS).filter(([field, pattern]) => typeof pin[field] !== "string" || !pattern.test(pin[field]));
-  if (malformed.length) throw new Error(`upstream-pin: malformed ${malformed.map(([field]) => field).join(", ")}`);
+  const malformed = Object.entries(PIN_FIELDS).filter(([field, { pattern }]) => typeof pin?.[field] !== "string" || !pattern.test(pin[field]));
+  if (malformed.length) throw new Error(`upstream-pin: ${malformed.map(([field, { want }]) => `${field} must be ${want}`).join("; ")}`);
   return pin;
 }
 
@@ -575,9 +577,8 @@ const PIN_COPIES = {
   "README.zh-CN.md": ({ version, short, tree }) => `上游 pstack ${version}，跟踪提交 [\`${short}\`](${tree})`,
 };
 
-// pin is readPin's result, or null when UPSTREAM.json is malformed, which checkFork reports.
+// pin is readPin's result.
 export function validatePin(root, pin) {
-  if (!pin) return [];
   const fields = { ...pin, short: pin.commit.slice(0, 8), tree: `${pin.repository}/tree/${pin.commit}/${pin.path}` };
   const problems = [];
   for (const [rel, cite] of Object.entries(PIN_COPIES)) {
@@ -621,7 +622,7 @@ export function checkFork(root) {
   } catch (error) {
     problems.push(`UPSTREAM.json: ${error.message}`);
   }
-  return [...problems, ...validateManifests(root, pin), ...validatePin(root, pin), ...validateSkills(root), ...validateLinks(root), ...scanDenylist(root), ...validateRequired(root)];
+  return [...problems, ...validateManifests(root, pin), ...(pin ? validatePin(root, pin) : []), ...validateSkills(root), ...validateLinks(root), ...scanDenylist(root), ...validateRequired(root)];
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {

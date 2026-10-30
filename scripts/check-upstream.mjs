@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-import path from 'node:path';
 import {execFileSync} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
 import {readPin} from './check-fork.mjs';
 
-const pinned = readPin(path.join(import.meta.dirname, '..'));
-const repo = new URL(pinned.repository).pathname.slice(1);
+const pinned = readPin(fileURLToPath(new URL('..', import.meta.url)));
+const repo = pinned.repository.slice('https://github.com/'.length);
 const api = path => JSON.parse(execFileSync('gh', ['api', path], {encoding: 'utf8', maxBuffer: 8 * 1024 * 1024}));
 const PAGE = 100;
 const metadata = api(`repos/${repo}`);
