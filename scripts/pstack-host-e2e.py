@@ -69,8 +69,9 @@ whitespace, and names that worktree by an absolute path or as its working
 directory; an attempt by that adversary must have used the worktree. A command
 that only quotes the rerun, such as the one that writes the ledger, is not a
 rerun, nor is one the host stopped before it ran: Claude's result must be no
-error or report the exit code, and Codex must record an exit code. An empty list passes, since no findings is a valid result; whether the
-list is complete is the host's claim, bounded by the final independent checks.
+error or report the exit code, and Codex must record an exit code. An empty
+list passes, since no findings is a valid result; whether the list is
+complete is the host's claim, bounded by the final independent checks.
 
 Effort. When the effective policy sets reasoning_effort, a worker fills a role
 only if its xagent receipt, Claude Agent call or Codex spawn_agent records an
