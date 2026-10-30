@@ -22,7 +22,7 @@ if [[ "$suite" != build ]]; then
   node --test scripts/*.test.mjs
   statechart_tests=()
   for test in skills/statechart/scripts/test/*.test.ts; do
-    if [[ "$test" == */differential.test.ts ]] && ! node --input-type=module -e 'await import("fast-check")' 2>/dev/null; then
+    if [[ "$test" == */differential.test.ts ]] && ! (cd skills/statechart/scripts/test && node --input-type=module -e 'await import("fast-check")') 2>/dev/null; then
       printf 'Skipping %s: fast-check is not installed.\n' "$test"
       continue
     fi

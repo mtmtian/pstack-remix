@@ -48,7 +48,7 @@ jobs:
           echo "$(brew --prefix coreutils)/libexec/gnubin" >> "$GITHUB_PATH"
       - run: bash scripts/check.sh runtime
         env:
-          # CI may download the renderers statechart's render test installs from npm.
+          # Lets statechart's render test install Pele, Mermaid, and jsdom from npm.
           STATECHART_INSTALL: "1"
 
   build:
