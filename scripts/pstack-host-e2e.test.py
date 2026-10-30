@@ -429,7 +429,8 @@ class HostHarnessAcceptanceTest(FIXTURES["HarnessFixture"]):
         command = (
             "import runpy,sys;from pathlib import Path;"
             "h=runpy.run_path(sys.argv[1]);"
-            "h['exercise']('claude',Path(sys.argv[2]),1,check_timeout=1)"
+            # Shorter than any Python start: only the checks after the host may time out, not the fixture check before it.
+            "h['exercise']('claude',Path(sys.argv[2]),1,check_timeout=0.05)"
         )
         result = subprocess.run(
             [sys.executable, "-B", "-c", command, str(ROOT / "scripts/pstack-host-e2e.py"), str(run)],

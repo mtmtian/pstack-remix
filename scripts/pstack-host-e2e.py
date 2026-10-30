@@ -625,7 +625,8 @@ def exercise(host, run, host_timeout, check_timeout=30):
     git(work, "add", ".")
     git(work, "-c", "user.name=e2e", "-c", "user.email=e2e@local", "-c", "commit.gpgsign=false", "commit", "-qm", "fixture")
     base = git(work, "rev-parse", "HEAD")
-    failing = RUN_CHECK([sys.executable, "-m", "unittest", "-q"], work, check_timeout)
+    # This check gates the fixture, not the host, so a --check-timeout shorter than a Python start does not apply to it.
+    failing = RUN_CHECK([sys.executable, "-m", "unittest", "-q"], work, max(check_timeout, DEFAULT_CHECK_TIMEOUT))
     (directory / "before-tests.log").write_text(failing.stdout + failing.stderr)
     if failing.returncode != 1:
         raise AssertionError(f"expected a failing test fixture, got exit {failing.returncode}")

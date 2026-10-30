@@ -4,7 +4,7 @@ import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } f
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { checkFork, REQUIRED, scanDenylist, validateLinks, validateManifests, validateRequired, validateSkills } from "./check-fork.mjs";
+import { checkFork, readPin, REQUIRED, scanDenylist, validateLinks, validateManifests, validateRequired, validateSkills } from "./check-fork.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
 const cli = path.join(root, "scripts/check-fork.mjs");
@@ -150,7 +150,7 @@ test("Given upstream's Agent Plugins root manifest, When the guards run, Then th
   edit(dir, "plugin.json", (text) => text.replace("{\n", '{\n  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",\n'));
   edit(dir, ".codex-plugin/plugin.json", (text) => text.replace('"name": "pstack-codex"', '"name": "pstack"'));
 
-  assert.deepEqual(validateManifests(dir), [
+  assert.deepEqual(validateManifests(dir, readPin(dir)), [
     "plugin.json: references agent-plugins.org; the root manifest stays the Antigravity manifest without the Agent Plugins $schema",
     '.codex-plugin/plugin.json: name "pstack" must be "pstack-codex"',
   ]);
@@ -166,9 +166,10 @@ test("Given a sync that moves only UPSTREAM.json, When guarded, Then each copy s
   writeFileSync(path.join(dir, "UPSTREAM.json"), `${JSON.stringify(moved, null, 2)}\n`);
   const stale = () => checkFork(dir).map((problem) => problem.split(":")[0]);
   const manifests = [".claude-plugin/plugin.json", ".codex-plugin/plugin.json"];
-  assert.deepEqual(stale(), ["ADAPTATION.md", "README.md", "README.zh-CN.md", ...manifests]);
-  assert.ok(checkFork(dir).includes(".claude-plugin/plugin.json: upstream-pin: no " + JSON.stringify('"version": "0.15.99-shared.') +
-    "; cite the version and commit in UPSTREAM.json"), checkFork(dir).join("\n"));
+  assert.deepEqual(stale(), [...manifests, "ADAPTATION.md", "README.md", "README.zh-CN.md"]);
+  const { version } = JSON.parse(readFileSync(path.join(dir, manifests[0]), "utf8"));
+  assert.ok(checkFork(dir).includes(`${manifests[0]}: upstream-pin: version "${version}" must start with "0.15.99-shared.", after UPSTREAM.json`),
+    checkFork(dir).join("\n"));
   for (const rel of manifests) edit(dir, rel, (text) => text.replace(`"version": "${pin.version}-shared.`, `"version": "${moved.version}-shared.`));
   // Moving one copy clears only that copy, and the README's short form must move with the full commit.
   edit(dir, "ADAPTATION.md", (text) => text.replace(`Upstream pstack ${pin.version} at \`${pin.commit}\``, `Upstream pstack ${moved.version} at \`${moved.commit}\``));
@@ -176,9 +177,21 @@ test("Given a sync that moves only UPSTREAM.json, When guarded, Then each copy s
   assert.deepEqual(stale(), ["README.md", "README.zh-CN.md"]);
   edit(dir, "README.md", (text) => text.replace(`[\`${pin.commit.slice(0, 8)}\`]`, `[\`${moved.commit.slice(0, 8)}\`]`));
   assert.deepEqual(stale(), ["README.zh-CN.md"]);
-  // A pin the guard cannot cite is reported once, before any copy.
-  writeFileSync(path.join(dir, "UPSTREAM.json"), `${JSON.stringify({ ...moved, commit: moved.commit.slice(0, 8) }, null, 2)}\n`);
-  assert.deepEqual(stale(), ["UPSTREAM.json"]);
+});
+
+test("Given a malformed UPSTREAM.json, When guarded, Then the pin alone is reported", (t) => {
+  const dir = copyRepo(t);
+  const pin = JSON.parse(readFileSync(path.join(dir, "UPSTREAM.json"), "utf8"));
+  for (const [field, value] of [
+    ["version", "0.15"],
+    ["commit", pin.commit.slice(0, 8)],
+    ["repository", "https://example.com/cursor/plugins"],
+    ["path", "../pstack"],
+    ["path", undefined],
+  ]) {
+    writeFileSync(path.join(dir, "UPSTREAM.json"), JSON.stringify({ ...pin, [field]: value }));
+    assert.deepEqual(checkFork(dir), [`UPSTREAM.json: upstream-pin: malformed ${field}`], `${field}: ${value}`);
+  }
 });
 
 test("Given a clean copy, When the CLI runs on it, Then it exits 0", (t) => {

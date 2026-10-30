@@ -1,13 +1,10 @@
 #!/usr/bin/env node
-import {readFileSync} from 'node:fs';
+import path from 'node:path';
 import {execFileSync} from 'node:child_process';
+import {readPin} from './check-fork.mjs';
 
-const pinned = JSON.parse(readFileSync(new URL('../UPSTREAM.json', import.meta.url), 'utf8'));
-const match = /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)$/.exec(pinned.repository);
-if (!match || !/^[a-f0-9]{40}$/.test(pinned.commit) || !/^[\w/-]+$/.test(pinned.path) || pinned.path.includes('..')) {
-  throw new Error('Invalid UPSTREAM.json repository, commit, or path');
-}
-const repo = match[1];
+const pinned = readPin(path.join(import.meta.dirname, '..'));
+const repo = new URL(pinned.repository).pathname.slice(1);
 const api = path => JSON.parse(execFileSync('gh', ['api', path], {encoding: 'utf8', maxBuffer: 8 * 1024 * 1024}));
 const PAGE = 100;
 const metadata = api(`repos/${repo}`);
