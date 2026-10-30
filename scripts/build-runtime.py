@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bundle the CLI helpers for Node without install-time or runtime downloads."""
+"""Bundle the PR watcher CLI for Node without install-time or runtime downloads."""
 
 from pathlib import Path
 import argparse
@@ -36,25 +36,12 @@ def main():
             for file in sorted(tree.rglob("*")) if file.is_file()
         }
         shutil.copytree(dependencies / "commander", tree / "node_modules/commander")
-        orch = tree / "orch/orch.ts"
-        body = orch.read_text()
-        replacements = {
-            'import { ensureDependenciesInstalled } from "../bootstrap.ts";': "",
-            "ensureDependenciesInstalled();": "",
-            'if (import.meta.main) {\n  process.exitCode = await main(process.argv.slice(2));\n}': "",
-        }
-        for old, new in replacements.items():
-            if body.count(old) != 1:
-                raise SystemExit(f"Upstream entry changed; review the runtime adapter: {old}")
-            body = body.replace(old, new)
-        orch.write_text(body)
-        for name, module in (("orch", "./orch/orch.ts"), ("watch-pr", "./watch-pr/cli.ts")):
-            entry = tree / f"{name}-entry.ts"
-            entry.write_text(f'import {{ main }} from "{module}";\nprocess.exitCode = await main(process.argv.slice(2));\n')
-            target = output / f"{name}.mjs"
-            subprocess.run([bun, "build", entry.name, "--target=node", "--format=esm", "--outfile", str(target)], cwd=tree, check=True)
-            target.write_text("#!/usr/bin/env node\n" + target.read_text())
-            target.chmod(0o755)
+        entry = tree / "watch-pr-entry.ts"
+        entry.write_text('import { main } from "./watch-pr/cli.ts";\nprocess.exitCode = await main(process.argv.slice(2));\n')
+        target = output / "watch-pr.mjs"
+        subprocess.run([bun, "build", entry.name, "--target=node", "--format=esm", "--outfile", str(target)], cwd=tree, check=True)
+        target.write_text("#!/usr/bin/env node\n" + target.read_text())
+        target.chmod(0o755)
         shutil.copyfile(dependencies / "commander/LICENSE", output / "COMMANDER-LICENSE.txt")
         (output / "source-hashes.json").write_text(json.dumps(hashes, indent=2) + "\n")
         destination = root / "bin"

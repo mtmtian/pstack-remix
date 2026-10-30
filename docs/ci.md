@@ -9,7 +9,7 @@ brew install coreutils
 export PATH="$(brew --prefix coreutils)/libexec/gnubin:$PATH"
 ```
 
-Install the locked development dependencies once, then run the same checks as GitHub Actions:
+Install the locked development dependencies once, then run the same checks as GitHub Actions, which also set `STATECHART_INSTALL=1` so that the statechart render test runs:
 
 ```sh
 (cd skills/poteto-mode/scripts && bun install --frozen-lockfile)
@@ -23,9 +23,9 @@ bash scripts/check.sh runtime
 bash scripts/check.sh build
 ```
 
-`runtime` needs no Bun, vendor CLI, login, or shared pstack configuration. It starts with the [fork guards](#fork-guards), then exercises config resolution, the pi guard, verdict parsing, xagent receipts, cancellation, timeouts, and host verification with vendor stand-ins. It also copies the shipped Node bundles into a temporary directory without dependencies and checks orchestrator persistence and watcher argument handling. The statechart script tests run too; those that need TLC skip unless `TLA2TOOLS` names a `tla2tools.jar` or mise already has TLC, and those that draw a PNG skip unless Pele and resvg are in the statechart cache folder. Neither is downloaded unless `STATECHART_INSTALL=1` is set.
+`runtime` needs no Bun, vendor CLI, login, or shared pstack configuration. It starts with the [fork guards](#fork-guards), then exercises config resolution, the pi guard, verdict parsing, xagent receipts, cancellation, timeouts, and host verification with vendor stand-ins. It also copies the shipped PR watcher bundle into a temporary directory without dependencies and checks its argument handling. The statechart script tests run too, on Node's built-in TypeScript support, so they need Node 22.18 or later. Those that need TLC, the differential test among them, skip unless `TLA2TOOLS` names a `tla2tools.jar`, and the differential test is left out when `fast-check` is not installed, since it cannot load without it (`npm install --prefix skills/statechart/scripts --no-package-lock` installs it). The render test installs Pele, Mermaid, and jsdom from npm into `${XDG_CACHE_HOME:-~/.cache}/statechart`, so it runs only with `STATECHART_INSTALL=1`, which CI sets.
 
-`build` runs strict type checking and the Bun tests for both `orch` and `watch-pr`. It tests the real builder, then rebuilds into a temporary directory and compares the result with the working-tree artifacts. It fails if source hashes, bundles, or the bundled license differ or are missing, or a bundle loses execute permission. Build inputs exclude `node_modules`, logs, `.DS_Store`, and TypeScript build caches. It never repairs artifacts during a check. Checks stop at the first failure and print the failing command.
+`build` runs strict type checking and the Bun tests for `watch-pr` and `check-plan`. It tests the real builder, then rebuilds into a temporary directory and compares the result with the working-tree artifacts. It fails if source hashes, bundles, or the bundled license differ or are missing, or a bundle loses execute permission. Build inputs exclude `node_modules`, logs, `.DS_Store`, and TypeScript build caches. It never repairs artifacts during a check. Checks stop at the first failure and print the failing command.
 
 ## Fork guards
 
@@ -52,7 +52,7 @@ python3 scripts/build-runtime.py
 bash scripts/check.sh
 ```
 
-Include the changed `bin/orch.mjs`, `bin/watch-pr.mjs`, `bin/source-hashes.json`, and any changed `bin/COMMANDER-LICENSE.txt` in the patch. The checker compares against the working tree, so it works before committing. An incorrect Bun version fails with the expected version instead of producing an unexplained bundle diff.
+Include the changed `bin/watch-pr.mjs`, `bin/source-hashes.json`, and any changed `bin/COMMANDER-LICENSE.txt` in the patch. The checker compares against the working tree, so it works before committing. An incorrect Bun version fails with the expected version instead of producing an unexplained bundle diff.
 
 To check only artifact freshness:
 
