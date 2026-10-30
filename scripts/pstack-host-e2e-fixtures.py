@@ -105,6 +105,9 @@ class HarnessFixture(unittest.TestCase):
             result.update(snapshot_before=digest, snapshot_after=digest)
         result.update(overrides)
         receipt_path.write_text(json.dumps(result) + "\n")
+        # xagent rewrites meta.json when the attempt ends, which here is two seconds after it started.
+        ended = self.started(result) + 2
+        os.utime(receipt_path, (ended, ended))
         return result
 
     def valid_receipts(self, receipts, writer="xagent:codex", adversaries=("xagent:claude", "xagent:grok"), native_dispatches=(), effort=None,

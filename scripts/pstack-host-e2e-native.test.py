@@ -17,13 +17,17 @@ CLAUDE_MIXED, CODEX_MIXED = FIXTURES["CLAUDE_MIXED"], FIXTURES["CODEX_MIXED"]
 claude_native_dispatches = HARNESS["claude_native_dispatches"]
 codex_native_dispatches = HARNESS["codex_native_dispatches"]
 claude_parent_commands, codex_parent_commands = HARNESS["claude_parent_commands"], HARNESS["codex_parent_commands"]
-seconds = HARNESS["_timestamp"]
 
 
 def iso(seconds=None):
     """A host log's ISO timestamp for seconds since the epoch, now by default."""
     moment = datetime.fromtimestamp(seconds, timezone.utc) if seconds is not None else datetime.now(timezone.utc)
     return moment.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def seconds(stamp):
+    """Seconds since the epoch for a timestamp iso wrote."""
+    return datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp()
 
 
 def agent_call(tool_id, requested, resolved, background=False, finished=True, denied=False, prompt="brief", tools=(), effort=None, started=None):
@@ -99,8 +103,8 @@ def write_codex_rollouts(home, thread, spawns, parent_rollout=True, effort=None,
     Each spawn is (call, requested model, child thread, model the child ran, finished, *actions), where an action
     is a shell command the child ran, ("run", command, output), or edits(path). A forked child's rollout starts
     with a copy of the parent's history under the parent's turn id, as Codex writes it. Every rollout line carries
-    started, now by default, as its timestamp. parent_commands are the host's own commands, each a script or a
-    (script, working directory) pair, which its rollout records as CommandExecution items.
+    started, now by default, as its timestamp. parent_commands are the host's own commands, each a (script, working
+    directory or None) pair, which its rollout records as CommandExecution items.
     """
     stamp = started or iso()
     day = home / "sessions" / "2026" / "10" / "16"
@@ -144,7 +148,7 @@ def write_codex_rollouts(home, thread, spawns, parent_rollout=True, effort=None,
             parent.append({"type": "event_msg", "payload": {"type": "item_completed", "item": {
                 "type": "SubAgentActivity", "kind": "completed", "id": f"done-{call}", "agent_thread_id": child}}})
         (day / f"rollout-2026-10-16T04-00-00-{child}.jsonl").write_text("".join(json.dumps({"timestamp": stamp, **event}) + "\n" for event in events))
-    for script, cwd in ((ran, None) if isinstance(ran, str) else ran for ran in parent_commands):
+    for script, cwd in parent_commands:
         parent.append({"type": "event_msg", "payload": {"type": "item_completed", "item": {
             "type": "CommandExecution", "command": ["/bin/zsh", "-lc", script], "aggregated_output": "FAILED", "status": "completed",
             **({"cwd": Path(cwd).as_uri()} if cwd else {})}}})
@@ -532,16 +536,15 @@ class NativeEvidenceTest(FIXTURES["HarnessFixture"]):
         # A live Claude parent reran every finding in one script through a shell variable, so no call is the ledger's command.
         batched = f'W={attack.parent}\necho "### 1"; cd $W/{attack.name} && python3 -m unittest test_repro; echo "exit $?"'
         for name, ran, counted in (
-            ("the host reran it", [host_bash("toolu_rerun", rerun, "FAILED (failures=1)"), host_bash("toolu_ledger", ledger)], True),
-            ("only the adversary ran it, and the host wrote the ledger", [host_bash("toolu_ledger", ledger)], False),
-            ("the host reran it inside a batch through a shell variable",
-             [host_bash("toolu_batch", batched, "FAILED (failures=1)"), host_bash("toolu_ledger", ledger)], False),
+            ("the host reran it", [(rerun, "FAILED (failures=1)"), (ledger, "ok")], True),
+            ("only the adversary ran it, and the host wrote the ledger", [(ledger, "ok")], False),
+            ("the host reran it inside a batch through a shell variable", [(batched, "FAILED (failures=1)"), (ledger, "ok")], False),
         ):
             with self.subTest(name):
-                lines = claude_stream(writer, adversary, *ran)
+                lines = claude_stream(writer, adversary, *(host_bash(f"toolu_host_{index}", *call) for index, call in enumerate(ran)))
                 parent_commands = claude_parent_commands(lines)
-                self.assertEqual([command.command for command in parent_commands], [event[0]["message"]["content"][0]["input"]["command"] for event in ran])
-                self.assertEqual(parent_commands[0].output, ran[0][1]["message"]["content"][0]["content"])
+                # Only the host's own calls, each with its output; the adversary's identical command is not among them.
+                self.assertEqual([(command.command, command.output) for command in parent_commands], ran)
                 native, _ = claude_native_dispatches(lines)
                 checks = self.valid_receipts([], native_dispatches=native, writer="opus", adversaries=("opus",), findings=[finding],
                                              parent_commands=parent_commands)
@@ -554,7 +557,7 @@ class NativeEvidenceTest(FIXTURES["HarnessFixture"]):
         home = self.root / "codex-home"
         named = f"cd {attack} && python3 -m unittest test_repro"
         for index, (name, parent_commands, command, counted) in enumerate((
-            ("the host reran it naming the worktree", [named], named, True),
+            ("the host reran it naming the worktree", [(named, None)], named, True),
             ("the host reran it with the worktree as its working directory", [("python3 -m unittest test_repro", attack)], "python3 -m unittest test_repro", True),
             # The child ran the same command in its own rollout.
             ("only the adversary ran it", [], named, False),
@@ -566,7 +569,7 @@ class NativeEvidenceTest(FIXTURES["HarnessFixture"]):
                 ], parent_commands=parent_commands)
                 native, _ = codex_native_dispatches(log, home)
                 ran = codex_parent_commands(log, home)
-                self.assertEqual([command.command for command in ran], [ran if isinstance(ran, str) else ran[0] for ran in parent_commands])
+                self.assertEqual([command.command for command in ran], [script for script, _ in parent_commands])
                 finding = {"adversary": "gpt-6.1-sol", "worktree": str(attack), "command": command, "kept": False}
                 checks = self.valid_receipts([], native_dispatches=native, writer="gpt-6.1-sol", adversaries=("gpt-6.1-sol",), findings=[finding],
                                              parent_commands=ran)

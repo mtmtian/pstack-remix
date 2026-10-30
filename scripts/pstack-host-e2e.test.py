@@ -239,9 +239,10 @@ class HostHarnessAcceptanceTest(FIXTURES["HarnessFixture"]):
         self.write_final_parent()
         reused = self.attack_checkout("attack-claude")
         earlier = self.receipt("claude", "rw", reused, name="attack-claude-first")
-        # The first attack started before the final version reached the worktree.
+        # The first attack ran before the final version reached the worktree, so the parent's copy is no repair.
         started = (reused / "stats.py").stat().st_mtime - 30
         os.utime(Path(earlier["path"]).parent / "prompt.md", (started, started))
+        os.utime(earlier["path"], (started + 10, started + 10))
         dropout = self.receipt("claude", "rw", reused, name="attack-claude-final", status="DROPOUT", exit=3)
         written = self.writer_receipt("codex", writer)
         checks = self.valid_receipts([written, earlier, dropout], adversaries=("xagent:claude",))
@@ -250,6 +251,21 @@ class HostHarnessAcceptanceTest(FIXTURES["HarnessFixture"]):
         # A re-attack that finishes fills the slot.
         retried = self.receipt("claude", "rw", reused, name="attack-claude-retry")
         self.assertEqual(self.valid_receipts([written, earlier, dropout, retried], adversaries=("xagent:claude",)), ALL_CHECKS_PASS)
+
+    def test_given_an_xagent_writer_that_dropped_out_after_its_repair_when_the_retry_only_verifies_then_the_writer_slot_fills(self):
+        # thermos round 2: xagent retries in the same worktree, and a retry that finds the repair made only runs the tests.
+        checkout = self.add_worktree("writer")
+        dropped = self.writer_receipt("codex", checkout, name="writer-1", status="DROPOUT", exit=3, reason="timeout")
+        retry = self.receipt("codex", "rw", checkout, name="writer-2")
+        later = self.started(dropped) + 600
+        for path, at in ((Path(retry["path"]).parent / "prompt.md", later), (Path(retry["path"]), later + 2)):
+            os.utime(path, (at, at))
+        receipts = [dropped, retry, *self.xagent_attacks_for(("xagent:claude", "xagent:grok"))]
+        self.assertEqual(self.valid_receipts(receipts), ALL_CHECKS_PASS)
+        # A write between the two runs, as when the parent copies a fix in, is not that worker's repair.
+        between = self.started(dropped) + 300
+        os.utime(checkout / "stats.py", (between, between))
+        self.assertFalse(self.valid_receipts(receipts)["configured_writer_dispatched"])
 
     def test_given_one_xagent_agent_as_writer_and_adversary_when_it_only_attacked_then_the_writer_slot_stays_empty(self):
         # thermos round 1: an attack on an earlier patch, then the re-attack the brief requires after a fix, and no writer.
