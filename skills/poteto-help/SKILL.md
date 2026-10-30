@@ -60,7 +60,7 @@ The default for non-trivial work is `poteto-mode`, which routes to other skills 
 | Understand a change in plain language | [`teach`](../teach/SKILL.md) |
 | Recover context from recent work | [`recall`](../recall/SKILL.md) |
 | Catch up on what changed in this chat since your last message, in plain words and small visuals, with every item waiting on you listed and decidable from the reply alone | [`ketchup`](../ketchup/SKILL.md) |
-| Catch up like `ketchup`, in a short silent video of slides, with the waiting calls as text under it | [`ketchup-video`](../ketchup-video/SKILL.md) |
+| Catch up like `ketchup`, in a short subtitled video of slides, with the waiting calls as text under it | [`ketchup-video`](../ketchup-video/SKILL.md) |
 | Check what a small diff might break elsewhere | [`blast-radius`](../blast-radius/SKILL.md) |
 | Settle types and module boundaries before implementation | [`architect`](../architect/SKILL.md) |
 | Compare several attempts at one brief | [`arena`](../arena/SKILL.md) |
