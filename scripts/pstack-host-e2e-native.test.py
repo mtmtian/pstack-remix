@@ -19,9 +19,9 @@ codex_native_dispatches = HARNESS["codex_native_dispatches"]
 claude_parent_commands, codex_parent_commands = HARNESS["claude_parent_commands"], HARNESS["codex_parent_commands"]
 
 
-def iso(seconds=None):
-    """A host log's ISO timestamp for seconds since the epoch, now by default."""
-    moment = datetime.fromtimestamp(seconds, timezone.utc) if seconds is not None else datetime.now(timezone.utc)
+def iso(at=None):
+    """A host log's ISO timestamp for at, in seconds since the epoch, now by default."""
+    moment = datetime.fromtimestamp(at, timezone.utc) if at is not None else datetime.now(timezone.utc)
     return moment.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 

@@ -106,8 +106,7 @@ class HarnessFixture(unittest.TestCase):
         result.update(overrides)
         receipt_path.write_text(json.dumps(result) + "\n")
         # xagent rewrites meta.json when the attempt ends, which here is two seconds after it started.
-        ended = self.started(result) + 2
-        os.utime(receipt_path, (ended, ended))
+        self.ran(result, self.started(result), self.started(result) + 2)
         return result
 
     def valid_receipts(self, receipts, writer="xagent:codex", adversaries=("xagent:claude", "xagent:grok"), native_dispatches=(), effort=None,
@@ -138,6 +137,11 @@ class HarnessFixture(unittest.TestCase):
         checkout = self.final_checkout(name)
         (checkout / "test_repro.py").write_text(REPRO_TEST)
         return checkout
+
+    def ran(self, receipt, start, end):
+        """Set when the xagent attempt behind receipt ran, in seconds since the epoch: prompt.md's mtime, then meta.json's."""
+        for path, at in ((Path(receipt["path"]).parent / "prompt.md", start), (Path(receipt["path"]), end)):
+            os.utime(path, (at, at))
 
     def started(self, receipt):
         """When the xagent attempt behind receipt started: its prompt.md's mtime."""

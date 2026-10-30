@@ -19,7 +19,11 @@ before it starts the agent and never again, to its meta.json's, written when it
 ends. A usable attempt writes when its checkout's stats.py was last written
 during a run of that worker's attempts in that checkout, with test_stats.py
 unchanged, so a retry that only verifies the repair a dropped attempt left
-there still writes.
+there still writes. A run xagent dropped as model_mismatch is
+another model's, so it counts for no one. A later write outside those runs,
+such as the parent fixing a finding in the writer's worktree, leaves the slot
+empty, so the brief has the parent fix findings in its own checkout or send
+them back to the writer.
 
 Native entries are checked through the host's own log, parsed by
 scripts/e2e-native-evidence.py: Claude's stream-json Agent calls and their
@@ -35,7 +39,9 @@ runs without --ephemeral.
   host's file-edit tool and the edit succeeded (Claude Write/Edit with a
   successful tool result, a completed Codex FileChange), leaving test_stats.py
   unchanged. Shell edits are not writer evidence, so a writer that edits only
-  through the shell cannot fill the writer slot.
+  through the shell cannot fill the writer slot. Each dispatch is judged on
+  its own edits, so a follow-up that only verifies an earlier dispatch's
+  repair fills no slot.
 
 Adversaries. An adversary proves each finding with a run, so it may add repro
 files to its worktree, and an xagent adversary runs rw: ro is plan mode for
@@ -45,11 +51,14 @@ and the fixture's test_stats.py, neither written after the attempt started: an
 xagent attempt's start as above, a native one's its dispatch's timestamp in the
 host's log (Claude's Agent call, the Codex parent rollout's spawn_agent). A
 worktree brought to the final version after its attack therefore holds no
-attack on it, as when a re-interrogation in a reused worktree drops out, and an
-attack never meets the writer test, which needs stats.py written during a run
-of that worker there. Forging a time would take touching the files or rewriting the host's
-log, which is outside the threat model of an acceptance test for cooperating
-agents.
+attack on it, as when a re-interrogation in a reused worktree drops out. An
+attack meets the writer test, and fills no adversary slot, only when stats.py
+there was last written during an earlier run of that worker, as when a
+dropped attack rewrote it or the parent copied a fix in with its mtime kept
+while that attack ran; the brief therefore gives each re-attack a fresh
+worktree. Forging a time would take touching the files or rewriting the
+host's log, which is outside the threat model of an acceptance test for
+cooperating agents.
 
 Parent reruns. The parent records each finding it reran in findings.json: the
 adversary's policy entry, its worktree, the exact command the parent ran, and
@@ -433,8 +442,7 @@ def _xagent_run(receipt):
     return _mtime(Path(path).parent / "prompt.md"), _mtime(path)
 
 
-def _xagent_attempt(receipt, workdir, runs, final_stats, test_file):
-    """runs are the (start, end) times of every attempt by the same worker in workdir, this one included."""
+def _xagent_attempt(receipt, workdir, repaired, final_stats, test_file):
     if not isinstance(receipt, dict):
         return Attempt("xagent", (None, None), None, False, frozenset(), None)
     terminal = receipt.get("completed") is True and receipt.get("status") in ("PASS", "ISSUES", "BLOCKED", "DROPOUT")
@@ -444,13 +452,27 @@ def _xagent_attempt(receipt, workdir, runs, final_stats, test_file):
     role = None
     if usable:
         started, _ = _xagent_run(receipt)
-        written = _mtime(workdir / "stats.py")
-        # A retry may only verify the repair a dropped attempt left in the worktree, so a write during any run of this
-        # worker there counts, and the parent's copy of a later fix between two attacks does not.
-        repaired = written is not None and any(None not in (start, end) and start < written <= end for start, end in runs)
         role = _role(workdir, started, repaired, final_stats, test_file)
     return Attempt("xagent", (receipt.get("agent"), receipt.get("model")), receipt.get("effort"), terminal,
                    frozenset({workdir} if workdir else ()), role)
+
+
+def _xagent_attempts(receipts, workdirs, final_stats, test_file):
+    """Each receipt's attempt, given its validated worktree. An attempt repaired its worktree when stats.py there was
+    last written during a run of the same worker there, so a retry may only verify the repair a dropped attempt left,
+    while the parent's copy of a later fix between two attacks, or a run xagent dropped because another model
+    answered, is no repair."""
+    runs = {}
+    for receipt, workdir in zip(receipts, workdirs):
+        if workdir is not None and receipt.get("reason") != "model_mismatch":
+            runs.setdefault((receipt.get("agent"), receipt.get("model"), workdir), []).append(_xagent_run(receipt))
+    attempts = []
+    for receipt, workdir in zip(receipts, workdirs):
+        written = _mtime(workdir / "stats.py") if workdir is not None else None
+        repaired = written is not None and any(None not in (start, end) and start < written <= end
+                                               for start, end in runs.get((receipt.get("agent"), receipt.get("model"), workdir), ()))
+        attempts.append(_xagent_attempt(receipt, workdir, repaired, final_stats, test_file))
+    return attempts
 
 
 def _native_attempt(dispatch, run_scope, parent, base, parent_common, final_stats, test_file):
@@ -498,14 +520,8 @@ def validate_receipts(receipts, run_scope, parent, base, expected_writer, expect
         parent_top = _git_output(parent, "rev-parse", "--show-toplevel")
         if not parent_top or Path(parent_top).resolve() != parent:
             parent_common = None
-        workdirs = [_valid_linked_worktree(receipt, run_scope, parent, base, parent_common) for receipt in receipts]
-        runs = {}
-        for receipt, workdir in zip(receipts, workdirs):
-            if workdir is not None and isinstance(receipt, dict):
-                runs.setdefault((receipt.get("agent"), receipt.get("model"), workdir), []).append(_xagent_run(receipt))
-        attempts = [_xagent_attempt(receipt, workdir, runs.get((receipt.get("agent"), receipt.get("model"), workdir), [])
-                                    if isinstance(receipt, dict) else [], final_stats, test_file)
-                    for receipt, workdir in zip(receipts, workdirs)]
+        attempts = _xagent_attempts(receipts, [_valid_linked_worktree(receipt, run_scope, parent, base, parent_common) for receipt in receipts],
+                                    final_stats, test_file)
         attempts += [_native_attempt(dispatch, run_scope, parent, base, parent_common, final_stats, test_file) for dispatch in native_dispatches]
         # Every xagent receipt needs its own linked worktree, and each checkout belongs to one owner across all attempts.
         workspaces_valid, claims = parent_common is not None, {}
@@ -639,7 +655,7 @@ command alone with the worktree as the working directory where your shell tool t
 Record every rerun in {directory}/findings.json: a JSON list with one object per finding, holding "adversary" (its
 policy entry), "worktree" (the absolute path of its worktree), "command" (that shell call's command string, copied
 verbatim) and "kept" (true or false). Write [] when no adversary reported a finding.
-Fix any verified in-scope findings and rerun the affected check; do not count a dropout, cancelled run, or missing evidence as a pass.
+Fix any verified in-scope findings in your own checkout, or send them back to the writer, and rerun the affected check; do not count a dropout, cancelled run, or missing evidence as a pass.
 If stats.py changes after any interrogation, every configured adversary must attack the final version again in a new
 worktree prepared the same way; an attack on an earlier version does not count.
 Both host controllers run one-shot/headless. Do not send the final reply until every external command and adversary

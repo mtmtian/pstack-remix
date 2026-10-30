@@ -241,8 +241,7 @@ class HostHarnessAcceptanceTest(FIXTURES["HarnessFixture"]):
         earlier = self.receipt("claude", "rw", reused, name="attack-claude-first")
         # The first attack ran before the final version reached the worktree, so the parent's copy is no repair.
         started = (reused / "stats.py").stat().st_mtime - 30
-        os.utime(Path(earlier["path"]).parent / "prompt.md", (started, started))
-        os.utime(earlier["path"], (started + 10, started + 10))
+        self.ran(earlier, started, started + 10)
         dropout = self.receipt("claude", "rw", reused, name="attack-claude-final", status="DROPOUT", exit=3)
         written = self.writer_receipt("codex", writer)
         checks = self.valid_receipts([written, earlier, dropout], adversaries=("xagent:claude",))
@@ -258,14 +257,19 @@ class HostHarnessAcceptanceTest(FIXTURES["HarnessFixture"]):
         dropped = self.writer_receipt("codex", checkout, name="writer-1", status="DROPOUT", exit=3, reason="timeout")
         retry = self.receipt("codex", "rw", checkout, name="writer-2")
         later = self.started(dropped) + 600
-        for path, at in ((Path(retry["path"]).parent / "prompt.md", later), (Path(retry["path"]), later + 2)):
-            os.utime(path, (at, at))
-        receipts = [dropped, retry, *self.xagent_attacks_for(("xagent:claude", "xagent:grok"))]
-        self.assertEqual(self.valid_receipts(receipts), ALL_CHECKS_PASS)
+        self.ran(retry, later, later + 2)
+        attacks = self.xagent_attacks_for(("xagent:claude", "xagent:grok"))
+        self.assertEqual(self.valid_receipts([dropped, retry, *attacks]), ALL_CHECKS_PASS)
+        # thermos round 3: a run xagent dropped because another model answered is not the configured worker's repair.
+        other = self.add_worktree("writer-other")
+        mismatched = self.writer_receipt("codex", other, name="writer-other-1", status="DROPOUT", exit=3, reason="model_mismatch")
+        verified = self.receipt("codex", "rw", other, name="writer-other-2")
+        self.ran(verified, later, later + 2)
+        self.assertFalse(self.valid_receipts([mismatched, verified, *attacks])["configured_writer_dispatched"])
         # A write between the two runs, as when the parent copies a fix in, is not that worker's repair.
         between = self.started(dropped) + 300
         os.utime(checkout / "stats.py", (between, between))
-        self.assertFalse(self.valid_receipts(receipts)["configured_writer_dispatched"])
+        self.assertFalse(self.valid_receipts([dropped, retry, *attacks])["configured_writer_dispatched"])
 
     def test_given_one_xagent_agent_as_writer_and_adversary_when_it_only_attacked_then_the_writer_slot_stays_empty(self):
         # thermos round 1: an attack on an earlier patch, then the re-attack the brief requires after a fix, and no writer.
