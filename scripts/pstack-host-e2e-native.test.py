@@ -72,11 +72,14 @@ def attacks_in(checkout):
 
 
 def host_bash(tool_id, command, output="ok", is_error=False):
-    """Stream-json events for a Bash call the host itself made; Claude marks a nonzero exit or a refusal as an error."""
-    return [{"type": "assistant", "parent_tool_use_id": None, "message": {"content": [
-                {"type": "tool_use", "id": tool_id, "name": "Bash", "input": {"command": command}}]}},
-            {"type": "user", "parent_tool_use_id": None, "message": {"content": [
-                {"type": "tool_result", "tool_use_id": tool_id, "is_error": is_error, "content": output}]}}]
+    """Stream-json events for a Bash call the host itself made; Claude marks a nonzero exit or a refusal as an error.
+    With output None the call gets no tool_result, as when the host stops mid-call."""
+    call = {"type": "assistant", "parent_tool_use_id": None, "message": {"content": [
+        {"type": "tool_use", "id": tool_id, "name": "Bash", "input": {"command": command}}]}}
+    if output is None:
+        return [call]
+    return [call, {"type": "user", "parent_tool_use_id": None, "message": {"content": [
+        {"type": "tool_result", "tool_use_id": tool_id, "is_error": is_error, "content": output}]}}]
 
 
 def writes_in(checkout):
@@ -545,13 +548,14 @@ class NativeEvidenceTest(FIXTURES["HarnessFixture"]):
             ("the host reran it inside a batch through a shell variable", [(batched, failed, True), (ledger, "ok", False)], False),
             # Codex review of d328f92: a call Claude refused never ran.
             ("the host's rerun was refused before it ran", [(rerun, denied, True), (ledger, "ok", False)], False),
+            ("the host's rerun got no result", [(rerun, None, False), (ledger, "ok", False)], False),
         ):
             with self.subTest(name):
                 lines = claude_stream(writer, adversary, *(host_bash(f"toolu_host_{index}", *call) for index, call in enumerate(calls)))
                 parent_commands = claude_parent_commands(lines)
                 # Only the host's own calls, each with its output and whether it ran; the adversary's identical command is not among them.
                 self.assertEqual([(command.command, command.output, command.ran) for command in parent_commands],
-                                 [(command, output, output != denied) for command, output, _ in calls])
+                                 [(script, output, output not in (denied, None)) for script, output, _ in calls])
                 native, _ = claude_native_dispatches(lines)
                 checks = self.valid_receipts([], native_dispatches=native, writer="opus", adversaries=("opus",), findings=[finding],
                                              parent_commands=parent_commands)
@@ -563,7 +567,7 @@ class NativeEvidenceTest(FIXTURES["HarnessFixture"]):
         writer_checkout = self.final_checkout("writer-native")
         home = self.root / "codex-home"
         named = f"cd {attack} && python3 -m unittest test_repro"
-        for index, (name, parent_commands, command, counted) in enumerate((
+        for index, (name, host_calls, ledger_command, counted) in enumerate((
             ("the host reran it naming the worktree", [(named, None, 1)], named, True),
             ("the host reran it with the worktree as its working directory", [("python3 -m unittest test_repro", attack, 1)], "python3 -m unittest test_repro", True),
             # The child ran the same command in its own rollout.
@@ -574,11 +578,11 @@ class NativeEvidenceTest(FIXTURES["HarnessFixture"]):
                 log = write_codex_rollouts(home, f"thread-findings-{index}", [
                     (f"findings-{index}-writer", "gpt-6.1-sol", f"findings-{index}-w", "gpt-6.1-sol", True, *self.codex_writes(writer_checkout)),
                     (f"findings-{index}-attack", "gpt-6.1-sol", f"findings-{index}-a", "gpt-6.1-sol", True, *self.codex_attacks(attack)),
-                ], parent_commands=parent_commands)
+                ], parent_commands=host_calls)
                 native, _ = codex_native_dispatches(log, home)
                 commands = codex_parent_commands(log, home)
-                self.assertEqual([(command.command, command.ran) for command in commands], [(script, code is not None) for script, _, code in parent_commands])
-                finding = {"adversary": "gpt-6.1-sol", "worktree": str(attack), "command": command, "kept": False}
+                self.assertEqual([(command.command, command.ran) for command in commands], [(script, code is not None) for script, _, code in host_calls])
+                finding = {"adversary": "gpt-6.1-sol", "worktree": str(attack), "command": ledger_command, "kept": False}
                 checks = self.valid_receipts([], native_dispatches=native, writer="gpt-6.1-sol", adversaries=("gpt-6.1-sol",), findings=[finding],
                                              parent_commands=commands)
                 self.assertEqual(checks, {**ALL_CHECKS_PASS, "findings_rerun_by_parent": counted})

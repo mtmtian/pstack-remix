@@ -466,19 +466,16 @@ def _xagent_attempts(receipts, workdirs, final_stats, test_file):
     last written during a run of the same worker there, so a retry may only verify the repair a dropped attempt left,
     while the parent's copy of a later fix between two attacks, or a run xagent dropped because another model
     answered, is no repair."""
-    def worker(receipt, workdir):
-        # Only a well-formed receipt has a validated worktree, so call this once workdir is known.
-        return receipt.get("agent"), receipt.get("model"), workdir
-
+    # Runs are grouped by worker and worktree; a receipt with no validated worktree, such as a malformed one, has no key.
+    keys = [None if workdir is None else (receipt.get("agent"), receipt.get("model"), workdir) for receipt, workdir in zip(receipts, workdirs)]
     runs = {}
-    for receipt, workdir in zip(receipts, workdirs):
-        if workdir is not None and receipt.get("reason") != "model_mismatch":
-            runs.setdefault(worker(receipt, workdir), []).append(_xagent_run(receipt))
+    for receipt, key in zip(receipts, keys):
+        if key is not None and receipt.get("reason") != "model_mismatch":
+            runs.setdefault(key, []).append(_xagent_run(receipt))
     attempts = []
-    for receipt, workdir in zip(receipts, workdirs):
+    for receipt, workdir, key in zip(receipts, workdirs, keys):
         written = _mtime(workdir / "stats.py") if workdir is not None else None
-        repaired = written is not None and any(None not in (start, end) and start < written <= end
-                                               for start, end in runs.get(worker(receipt, workdir), ()))
+        repaired = written is not None and any(None not in (start, end) and start < written <= end for start, end in runs.get(key, ()))
         attempts.append(_xagent_attempt(receipt, workdir, repaired, final_stats, test_file))
     return attempts
 
@@ -589,7 +586,7 @@ class HostAdapter:
     env: dict[str, str]
     save_reply: Callable[[Path, list[str]], None]  # leaves the host's final reply in the run directory's result.md
     dispatches: Callable[[list[str]], tuple[list[NativeDispatch], str | None]]  # host log lines -> (native dispatches, gap)
-    parent_commands: Callable[[list[str]], list[ShellCommand]]  # host log lines -> the shell commands the host itself ran
+    parent_commands: Callable[[list[str]], list[ShellCommand]]  # host log lines -> every shell call the host itself made, each marked with whether it ran
 
 
 HOSTS = {
@@ -741,8 +738,7 @@ with no unresolved reproduced violation of the stated contract; otherwise PSTACK
     checks["finite_number_contract_preserved"] = contract.returncode == 0
     report = {"host": host, "exit": finished.returncode, "base": base, "policy": policy["effective"], "checks": checks, "receipts": receipts,
               "ignored_meta": ignored_meta, "native_evidence": {"gap": native_gap, "dispatches": [asdict(dispatch) for dispatch in native]},
-              # The parent's ledger, beside its commands in checkouts under the run and whether each ran, so a reader can
-              # match each rerun and tell a refused one from a missing one.
+              # The parent's ledger, beside its commands in checkouts under the run, so a reader can match each rerun.
               "findings": findings, "parent_commands": [asdict(command) for command in parent_commands if checkouts_touched(command.paths, directory, work)],
               "verification": {"tests_exit_code": verification.returncode, "contract_exit_code": contract.returncode, "timeout_seconds": check_timeout}}
     (directory / "checks.json").write_text(json.dumps(report, indent=2) + "\n")

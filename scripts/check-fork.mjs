@@ -2,7 +2,8 @@
 // Static guards for upstream syncs. Shipped content must not bring back the
 // Cursor-only instructions ADAPTATION.md replaced and must keep the local
 // decisions it records, every skill outside STANDALONE keeps its shared runtime
-// contract, local links resolve, and the manifests keep their fork names.
+// contract, local links resolve, the manifests keep their fork names, and every
+// copy of the upstream pin matches UPSTREAM.json.
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -545,12 +546,15 @@ export function validateManifests(root) {
   return problems;
 }
 
-// UPSTREAM.json holds the pin; each entry is the sentence that cites it elsewhere,
-// so a sync moves UPSTREAM.json and this names every copy left behind.
+// UPSTREAM.json holds the pin; each entry is the text that cites it elsewhere,
+// so a sync moves UPSTREAM.json and this names every copy left behind. The host
+// manifests version the fork as <upstream version>-shared.<n>.
 const PIN_COPIES = {
   "ADAPTATION.md": ({ version, commit }) => `Upstream pstack ${version} at \`${commit}\``,
   "README.md": ({ version, short, tree }) => `upstream pstack ${version} at [\`${short}\`](${tree})`,
   "README.zh-CN.md": ({ version, short, tree }) => `上游 pstack ${version}，跟踪提交 [\`${short}\`](${tree})`,
+  ".claude-plugin/plugin.json": ({ version }) => `"version": "${version}-shared.`,
+  ".codex-plugin/plugin.json": ({ version }) => `"version": "${version}-shared.`,
 };
 
 export function validatePin(root) {
@@ -560,7 +564,10 @@ export function validatePin(root) {
   } catch (error) {
     return [`UPSTREAM.json: ${error.message}`];
   }
-  const fields = { ...pin, short: String(pin.commit).slice(0, 8), tree: `${pin.repository}/tree/${pin.commit}/${pin.path}` };
+  if (!/^\d+\.\d+\.\d+$/.test(pin.version) || !/^[a-f0-9]{40}$/.test(pin.commit)) {
+    return ["UPSTREAM.json: upstream-pin: version must be major.minor.patch and commit a full 40-character SHA"];
+  }
+  const fields = { ...pin, short: pin.commit.slice(0, 8), tree: `${pin.repository}/tree/${pin.commit}/${pin.path}` };
   const problems = [];
   for (const [rel, cite] of Object.entries(PIN_COPIES)) {
     const expected = cite(fields);

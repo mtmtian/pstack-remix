@@ -21,16 +21,11 @@ CLAUDE_EXIT = re.compile(r"Exit code -?\d+\b")
 
 @dataclass
 class ShellCommand:
-    """One shell command a subagent or the host called, with the paths it named and the start of its output.
-
-    ran is whether the host's record shows the command ran: a Claude result with no error or one that reports the
-    command's exit code, or a Codex exit code. A call a permission rule or hook stopped, one Codex declined, and one
-    with no result did not run.
-    """
+    """One shell command a subagent or the host called, with the paths it named and the start of its output."""
     command: str
     paths: list[str]
     output: str | None = None
-    ran: bool = False
+    ran: bool = False  # the host's record shows it ran; set by _claude_result or _codex_command
 
 
 @dataclass
@@ -140,8 +135,9 @@ def claude_parent_commands(lines):
             arguments = block.get("input") if isinstance(block.get("input"), dict) else {}
             if (event.get("type") == "assistant" and event.get("parent_tool_use_id") is None and block.get("type") == "tool_use"
                     and block.get("name") == "Bash" and isinstance(arguments.get("command"), str)):
-                pending[block.get("id")] = ShellCommand(arguments["command"], ABSOLUTE_PATH.findall(arguments["command"]))
-                commands.append(pending[block.get("id")])
+                command = ShellCommand(arguments["command"], ABSOLUTE_PATH.findall(arguments["command"]))
+                pending[block.get("id")] = command
+                commands.append(command)
             elif event.get("type") == "user" and block.get("type") == "tool_result" and block.get("tool_use_id") in pending:
                 _claude_result(pending.pop(block["tool_use_id"]), block)
     return commands
@@ -179,7 +175,7 @@ def _codex_command(item):
     paths = ABSOLUTE_PATH.findall(" ".join(map(str, command)) if isinstance(command, list) else script)
     if isinstance(item.get("cwd"), str):
         paths.append(unquote(urlparse(item["cwd"]).path))
-    return ShellCommand(script, paths, _text(item.get("aggregated_output", item.get("stdout"))), type(item.get("exit_code")) is int)
+    return ShellCommand(script, paths, _text(item.get("aggregated_output", item.get("stdout"))), ran=type(item.get("exit_code")) is int)
 
 
 def _text(content):
