@@ -41,14 +41,14 @@ After maintained-source changes, refresh the existing installations with `agy pl
 
 ## Upstream sync
 
-`node scripts/check-upstream.mjs` reports whether upstream moved past the pin and which files changed; it reads through `gh api` only. Merge each changed file by its history in this fork, never by copying the upstream directory:
+`node scripts/check-upstream.mjs` reports whether upstream moved past the pin, the tracked path's commits since the pin, and every file they changed; it reads through `gh api` only. It walks those commits rather than comparing the two commits, because GitHub's compare lists at most 300 files for the whole monorepo, and the 0.15.36 sync's compare filled that limit without one pstack file. Merge each changed file by its history in this fork, never by copying the upstream directory:
 
 - A file this fork adapted: take upstream's intent and keep every adaptation this guide records; where upstream's wording is Cursor-specific, keep the fork's.
 - A new upstream file: adapt it as earlier syncs did, with local frontmatter, the runtime-contract line, and the fork's host primitives. A new guidance skill that uses nothing in the contract goes in `STANDALONE` instead of taking the line.
 - A file this fork never changed: apply the change, then check it against the decisions below. The 0.15.25 sync rewrote upstream's new fast-mode sentence in two otherwise untouched forensics playbooks.
 - A file this fork deleted, such as `.cursor-plugin/plugin.json`, `make-bot-ui`, or the Benny pack: keep it deleted unless the change removes the reason recorded under [Not taken from upstream](#not-taken-from-upstream).
 
-The [fork guards](./docs/ci.md#fork-guards) reject the denylisted Cursor primitives and require each local decision listed in `REQUIRED` in `scripts/check-fork.mjs`, by file and anchor sentence. A decision this guide records without such a rule is guarded only by reading, so read every change against the guide. When a sync changes a guarded decision on purpose, update its section here and its rule in the same commit. When `comparisonMayBeTruncated` is true, the file list is incomplete; sync through an intermediate upstream commit. Finish a sync by moving `UPSTREAM.json` and the first line of this guide to the new commit, adding a line to the sync log, recording each new or changed decision in its section, running the [verification](#verification) checks, and [refreshing the installations](#refresh-installations).
+The [fork guards](./docs/ci.md#fork-guards) reject the denylisted Cursor primitives and require each local decision listed in `REQUIRED` in `scripts/check-fork.mjs`, by file and anchor sentence. A decision this guide records without such a rule is guarded only by reading, so read every change against the guide. When a sync changes a guarded decision on purpose, update its section here and its rule in the same commit. Finish a sync by moving `UPSTREAM.json` and the first line of this guide to the new commit, adding a line to the sync log, recording each new or changed decision in its section, running the [verification](#verification) checks, and [refreshing the installations](#refresh-installations).
 
 ### Not taken from upstream
 

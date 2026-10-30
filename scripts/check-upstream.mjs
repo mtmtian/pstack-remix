@@ -9,23 +9,37 @@ if (!match || !/^[a-f0-9]{40}$/.test(pinned.commit) || !/^[\w/-]+$/.test(pinned.
 }
 const repo = match[1];
 const api = path => JSON.parse(execFileSync('gh', ['api', path], {encoding: 'utf8', maxBuffer: 8 * 1024 * 1024}));
+const PAGE = 100;
 const metadata = api(`repos/${repo}`);
-const commits = api(`repos/${repo}/commits?path=${encodeURIComponent(pinned.path)}&per_page=1`);
-if (!commits.length) throw new Error('No upstream commit found for the tracked path');
-const latest = commits[0].sha;
+const pathCommits = (sha, page) => api(`repos/${repo}/commits?path=${encodeURIComponent(pinned.path)}&sha=${sha}&per_page=${PAGE}&page=${page}`);
+const latest = pathCommits(metadata.default_branch, 1)[0]?.sha;
+if (!latest) throw new Error('No upstream commit found for the tracked path');
 const manifest = api(`repos/${repo}/contents/${pinned.path}/.cursor-plugin/plugin.json?ref=${latest}`);
 const version = JSON.parse(Buffer.from(manifest.content, 'base64').toString()).version;
-let comparison = null;
-if (latest !== pinned.commit) comparison = api(`repos/${repo}/compare/${pinned.commit}...${latest}`);
-const files = comparison?.files ?? [];
-const truncated = files.length >= 300;
+
+// The compare endpoint lists at most 300 files for the whole monorepo, so walk the tracked path's own commits back to the pin instead.
+const commits = [];
+for (let page = 1; latest !== pinned.commit; page++) {
+  const batch = pathCommits(latest, page);
+  const at = batch.findIndex(c => c.sha === pinned.commit);
+  commits.push(...(at < 0 ? batch : batch.slice(0, at)).map(c => ({sha: c.sha, subject: c.commit.message.split('\n')[0]})));
+  if (at >= 0) break;
+  if (batch.length < PAGE) throw new Error('The pinned commit is not in the tracked path history');
+}
+const changed = new Set();
+for (const {sha} of commits) {
+  for (let page = 1; ; page++) {
+    const {files} = api(`repos/${repo}/commits/${sha}?per_page=${PAGE}&page=${page}`);
+    for (const f of files) for (const name of [f.filename, f.previous_filename]) if (name?.startsWith(pinned.path + '/')) changed.add(name);
+    if (files.length < PAGE) break;
+  }
+}
 console.log(JSON.stringify({
   checkedAt: new Date().toISOString(), repository: metadata.full_name,
   fork: metadata.fork, parent: metadata.parent?.full_name ?? null, source: metadata.source?.full_name ?? null,
   pushedAt: metadata.pushed_at, pinnedCommit: pinned.commit, latestCommit: latest,
   pinnedVersion: pinned.version, latestVersion: version,
   status: latest === pinned.commit ? 'up-to-date' : 'review-required',
-  comparisonStatus: comparison?.status ?? 'identical', changedFiles: files.filter(f => f.filename.startsWith(pinned.path + '/')).map(f => f.filename),
-  comparisonMayBeTruncated: truncated,
+  commits, changedFiles: [...changed].sort(),
   instructions: 'Read-only check. Review the upstream diff against the shared source and both host adapters before changing the pin.'
 }, null, 2));
