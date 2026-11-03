@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -36,7 +36,7 @@ function setup(t) {
   writeFileSync(path.join(skill, "SKILL.md"), "---\nname: verify-notes\ndescription: test\n---\n");
   copyFileSync(helper, path.join(skill, "bin", "link-into"));
   const exclude = path.join(repo, ".git", "info", "exclude");
-  return { repo, worktree, skill, exclude, link: (checkout) => run(path.join(skill, "bin", "link-into"), [checkout], skill) };
+  return { base, repo, worktree, skill, exclude, link: (checkout) => run(path.join(skill, "bin", "link-into"), [checkout], skill) };
 }
 
 test("Given a personal skill, When it is linked into a checkout and its worktree, Then neither shows it and only info/exclude ignores it", (t) => {
@@ -68,6 +68,21 @@ test("Given something else at a destination, When linking, Then it stops before 
   assert.equal(refused.status, 1);
   assert.match(refused.err, /refusing: .*\.claude\/skills\/verify-notes already exists/);
   assert.equal(existsSync(path.join(repo, ".agents/skills/verify-notes")), false);
+  assert.equal(readFileSync(exclude, "utf8"), before);
+});
+
+test("Given a parent directory that is a link out of the checkout, When linking, Then it stops before writing anywhere", (t) => {
+  const { base, repo, exclude, link } = setup(t);
+  const before = readFileSync(exclude, "utf8");
+  const shared = path.join(base, "shared-skills");
+  mkdirSync(shared);
+  mkdirSync(path.join(repo, ".claude"));
+  symlinkSync(shared, path.join(repo, ".claude/skills"));
+  const refused = link(repo);
+  assert.equal(refused.status, 1);
+  assert.match(refused.err, /refusing: .*\.claude\/skills is a link or not a directory/);
+  assert.deepEqual(readdirSync(shared), []);
+  assert.equal(existsSync(path.join(repo, ".agents")), false);
   assert.equal(readFileSync(exclude, "utf8"), before);
 });
 

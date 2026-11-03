@@ -142,14 +142,14 @@ export const REQUIRED = [
   {
     id: "verification-skill-personal",
     file: "skills/create-verification-skill/SKILL.md",
-    pattern: /By default the skill is a personal local skill: [^\n]*?Generate it in the repository, shared with the team, only when the user explicitly asks for that\./,
+    pattern: /By default the skill is a personal local skill: its canonical directory(?:, [^,\n]+,)? lives outside the repository and is linked into each checkout, with its ignore rules in `info\/exclude`, never `\.gitignore`\. Generate it in the repository, shared with the team, only when the user explicitly asks for that\./,
     hint: "a generated verification skill stays outside the repository unless the user asks to share it",
     section: "verification-skill-placement",
   },
   {
     id: "formal-verification-skill-personal",
     file: "skills/create-formal-verification-skill/SKILL.md",
-    pattern: /By default the skill is a personal local skill: [^\n]*?Generate it in the repository, shared with the team, only when the user explicitly asks for that\./,
+    pattern: /By default the skill is a personal local skill: its canonical directory(?:, [^,\n]+,)? lives outside the repository and is linked into each checkout, with its ignore rules in `info\/exclude`, never `\.gitignore`\. Generate it in the repository, shared with the team, only when the user explicitly asks for that\./,
     hint: "a generated formal verification skill stays outside the repository unless the user asks to share it",
     section: "verification-skill-placement",
   },
@@ -163,8 +163,8 @@ export const REQUIRED = [
   {
     id: "verification-link-helper",
     file: "references/link-into",
-    pattern: /It never writes \.gitignore\./,
-    hint: "the link helper writes only info/exclude and never overwrites a destination",
+    pattern: /exclude="\$\(git -C "\$checkout" rev-parse --path-format=absolute --git-common-dir\)\/info\/exclude"/,
+    hint: "the link helper writes its ignore rules to the common git directory's info/exclude, which every worktree shares",
     section: "verification-skill-placement",
   },
   {

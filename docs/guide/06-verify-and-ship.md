@@ -50,7 +50,7 @@ Apps change, and feature maps go out of date. When yours drifts, run:
 $maintain-verification-skill
 ```
 
-[`$maintain-verification-skill`](../../skills/maintain-verification-skill/SKILL.md) audits the generated skill: one read-only source reader per feature in parallel, then one live pass that drives every mapped feature, running existing replays first. A stale replay is classified, never quietly redone by the agent: it is rewritten when the feature still works, and kept as the reproduction when the feature is broken. It ends in exactly one of three outcomes. `clean` means full coverage and nothing to ship. `changed` means one PR of proven corrections, confined to the verification skill's own directory. `blocked` names the blocker. It never edits product code. If the live pass catches a product regression, it reports the regression instead of hiding it with a doc edit.
+[`$maintain-verification-skill`](../../skills/maintain-verification-skill/SKILL.md) audits the generated skill: one read-only source reader per feature in parallel, then one live pass that drives every mapped feature, running existing replays first. A stale replay is classified, never quietly redone by the agent: it is rewritten when the feature still works, and kept as the reproduction when the feature is broken. It ends in exactly one of three outcomes. `clean` means full coverage and nothing to ship. `changed` means proven corrections, confined to the verification skill's own directory, shipped as one PR, or as a commit in a personal skill's own repository. `blocked` names the blocker. It never edits product code. If the live pass catches a product regression, it reports the regression instead of hiding it with a doc edit.
 
 ## Prove a property with a formal verification skill
 

@@ -14,7 +14,7 @@ A feature map rots the moment the app changes. This skill is the upkeep loop for
 Pick one, and say which:
 
 - **clean** — every feature got source and live coverage; nothing worth shipping. No branch, no PR.
-- **changed** — one PR ships proven doc, harness, or map corrections.
+- **changed** — proven doc, harness, or map corrections ship: in one PR for a skill in the repository, or as a commit in its own repository for a personal local skill.
 - **blocked** — coverage could not finish or a proven fix could not ship safely. Say exactly what blocked it.
 
 Product gaps do not change the outcome: report them with whichever outcome applies, and never ship a fix for them from this skill.

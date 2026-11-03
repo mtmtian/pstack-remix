@@ -12,8 +12,8 @@
 #   /.verify/
 # to $(git rev-parse --git-common-dir)/info/exclude, which every worktree of the repository
 # shares. It never writes .gitignore. A destination that already resolves to this skill is left
-# alone; any other file, directory or link there stops the script with exit 1, before anything
-# is linked. It then confirms that both links and .verify/ are ignored and that the Claude link
+# alone; any other file, directory or link there, or a parent directory that is itself a link,
+# stops the script with exit 1, before anything is linked or excluded. It then confirms that both links and .verify/ are ignored and that the Claude link
 # reaches SKILL.md.
 set -euo pipefail
 
@@ -31,6 +31,15 @@ case "$skill/" in "$checkout"/*) echo "the skill directory is inside the checkou
 agents="$checkout/.agents/skills/$name"
 claude="$checkout/.claude/skills/$name"
 claude_target="../../.agents/skills/$name"
+
+# Every parent of a link is a real directory inside the checkout, or not there yet: a parent that
+# is a link would put this skill's links outside the checkout.
+for dir in "$checkout/.agents" "$checkout/.agents/skills" "$checkout/.claude" "$checkout/.claude/skills"; do
+  if [ -L "$dir" ] || { [ -e "$dir" ] && [ ! -d "$dir" ]; }; then
+    echo "refusing: $dir is a link or not a directory; link the skill under real directories" >&2
+    exit 1
+  fi
+done
 
 # A destination is free, already this skill, or a conflict.
 check() { # <destination>
