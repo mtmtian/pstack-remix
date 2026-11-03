@@ -24,6 +24,11 @@ SELECTION_FLAGS = {
     "grok": ("-m", "--reasoning-effort", "{}"), "gemini": ("--model", "--effort", "{}"), "pi": ("--model", "--thinking", "{}"),
 }
 DEFAULT_TIMEOUT = 900
+# Codex's sandbox per mode. workspace-write refuses binding 127.0.0.1 and launching Chrome, and adding its
+# network_access only fixes the first, so a worker that must start a local server or a browser needs codex's
+# danger-full-access, which only an explicit --full-access selects.
+CODEX_SANDBOX = {"ro": "read-only", "rw": "workspace-write"}
+CODEX_FULL_ACCESS = "danger-full-access"
 # Seconds a timed-out or cancelled agent gets after SIGTERM before its process group is killed.
 TERMINATION_GRACE = 1
 # Created in every out_dir before its first meta.json, so they mark an xagent attempt; result.md is a common name
@@ -138,7 +143,14 @@ def snapshot(workdir, out):
     return digest.hexdigest()
 
 
-def command(agent, mode, workdir, out, prompt, allowed, chosen):
+def sandbox(agent, mode, full_access):
+    """Return the codex sandbox a run gets; the other CLIs have no such setting, so None."""
+    if agent != "codex":
+        return None
+    return CODEX_FULL_ACCESS if full_access else CODEX_SANDBOX[mode]
+
+
+def command(agent, mode, workdir, out, prompt, allowed, chosen, codex_sandbox):
     if agent == "claude":
         args = ["claude", "-p", "--output-format", "json", "--permission-mode", "plan" if mode == "ro" else "acceptEdits", *chosen]
         if os.environ.get("XAGENT_EPHEMERAL") == "1":
@@ -147,7 +159,7 @@ def command(agent, mode, workdir, out, prompt, allowed, chosen):
             args += ["--allowedTools", *[f"Bash({prefix}:*)" for prefix in allowed]]
         return args, out / "claude.json", "result"
     if agent == "codex":
-        return ["codex", "exec", "--skip-git-repo-check", "--ephemeral", "-s", "read-only" if mode == "ro" else "workspace-write", "-C", str(workdir), "-c", 'shell_environment_policy.set.XAGENT_DEPTH="1"', *chosen, "-o", str(out / "result.md"), "-"], out / "agent.log", None
+        return ["codex", "exec", "--skip-git-repo-check", "--ephemeral", "-s", codex_sandbox, "-C", str(workdir), "-c", 'shell_environment_policy.set.XAGENT_DEPTH="1"', *chosen, "-o", str(out / "result.md"), "-"], out / "agent.log", None
     if agent == "grok":
         return ["grok", "--cwd", str(workdir), "--prompt-file", str(out / "prompt.md"), "--permission-mode", "auto", "--sandbox", "workspace", "--output-format", "json", *chosen], out / "grok.json", "text"
     if agent == "gemini":
@@ -216,10 +228,13 @@ def main():
     parser.add_argument("out_dir", type=Path)
     parser.add_argument("timeout", nargs="?", type=float, default=DEFAULT_TIMEOUT)
     parser.add_argument("--effort", choices=EFFORTS, help="reasoning effort passed to the CLI's own effort setting")
+    parser.add_argument("--full-access", action="store_true", help=f"codex rw only: run codex with {CODEX_FULL_ACCESS} instead of workspace-write, so the worker can start local servers and browsers; only in an exclusive worktree")
     options = parser.parse_args()
     agent, model = options.agent
     if os.environ.get("XAGENT_DEPTH", "0") != "0":
         parser.error("refusing nested dispatch from inside an xagent worker")
+    if options.full_access and (agent, options.mode) != ("codex", "rw"):
+        parser.error(f"--full-access applies only to codex rw, not {agent} {options.mode}")
     if not math.isfinite(options.timeout) or options.timeout <= 0:
         parser.error("timeout must be a positive number of seconds")
     workdir, out = options.workdir.resolve(), options.out_dir.resolve()
@@ -243,7 +258,8 @@ def main():
     for name, text in zip(OUT_FILES, (prompt, "", "")):
         (out / name).write_text(text)
     meta = dict(
-        agent=agent, model=model, effort=options.effort, mode=options.mode, workdir=str(workdir), exit=None,
+        agent=agent, model=model, effort=options.effort, mode=options.mode, sandbox=sandbox(agent, options.mode, options.full_access),
+        workdir=str(workdir), exit=None,
         timed_out=False, cancelled=False, seconds=0, status="DROPOUT",
         changed_workdir=None, snapshot_before=None, snapshot_after=None, resolved_models=None,
         completed=False, reason="incomplete",
@@ -265,7 +281,7 @@ def main():
     if options.mode == "ro":
         env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["PATH"] = os.pathsep.join([env.get("PATH", ""), str(Path.home() / ".local/bin"), str(Path.home() / ".npm-global/bin"), str(Path.home() / ".grok/bin")])
-    args, stdout_path, json_field = command(agent, options.mode, workdir, out, prompt, allowed, selection(agent, model, options.effort))
+    args, stdout_path, json_field = command(agent, options.mode, workdir, out, prompt, allowed, selection(agent, model, options.effort), meta["sandbox"])
     try:
         code, timed_out, cancelled = run_process(args, workdir, out, stdout_path, options.timeout, env)
         meta.update(exit=code, timed_out=timed_out, cancelled=cancelled)

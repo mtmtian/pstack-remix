@@ -5,7 +5,8 @@
 # XAGENT_E2E_MODELS="claude/opus codex/gpt-6-astra" pins those agents' models in the selection check.
 # XAGENT_E2E_AGENTS="codex gemini pi" picks the vendors in the fix, review and selection matrix (default:
 # codex grok gemini pi), and XAGENT_E2E_REVIEWER picks the codex host's reviewer while claude is logged out
-# (default: grok). The probe, nested-dispatch, timeout and codex-hosted cases always run codex, gemini (agy) and pi.
+# (default: grok). The probe, nested-dispatch, timeout, codex sandbox and codex-hosted cases always run codex, gemini (agy)
+# and pi.
 set -uo pipefail
 export XAGENT_EPHEMERAL=1
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -58,6 +59,11 @@ printf 'Fix the bug in stats.py so that `python3 -m unittest` passes. Do not edi
 printf 'Run the shell command `git init probe-repo` in the terminal. Report exactly what happened.\n' > "$run/probe.md"
 printf 'Run exactly this shell command and quote its exit code and its full stderr verbatim: %s grok ro . test_stats.py nested-out\n' "$xagent" > "$run/nested.md"
 printf 'Reply with one sentence saying you are ready. Do not read, run or change anything.\n' > "$run/select.md"
+# Only a process allowed to listen on 127.0.0.1 writes bound.txt, so the file, not the worker's report, decides.
+cat > "$run/bind.md" <<'MD'
+Run exactly this shell command once, then quote its exit code and its full output verbatim. Do not retry it, change it, or create bound.txt any other way.
+python3 -c "import socket; s = socket.socket(); s.bind(('127.0.0.1', 0)); s.listen(); open('bound.txt', 'w').write(str(s.getsockname()[1]))"
+MD
 cat > "$run/host.md" <<MD
 You are the pstack parent agent. Read $root/skills/xagent/SKILL.md, then use xagent ($xagent) to run two workers in parallel:
 the brief $run/review.md with $reviewer, read-only, against $run/wt-host-review, out-dir $run/host-review;
@@ -70,7 +76,7 @@ Report each worker's status and what you verified, including the receipt and ind
 MD
 
 # Readers without an enforced read-only sandbox must not share the parent checkout either.
-for w in $agents probe-gemini probe-agy probe-pi nested host-pi host-review; do git -C "$repo" worktree add -q "$run/wt-$w" -b "wt-$w"; done
+for w in $agents probe-gemini probe-agy probe-pi nested bind-default bind-full host-pi host-review; do git -C "$repo" worktree add -q "$run/wt-$w" -b "wt-$w"; done
 for a in claude codex grok gemini pi; do git -C "$repo" worktree add -q --detach "$run/wt-review-$a"; done
 for a in $agents; do git -C "$repo" worktree add -q --detach "$run/wt-select-$a"; done
 spec() { local s; for s in ${XAGENT_E2E_MODELS:-}; do [ "${s%%/*}" = "$1" ] && { echo "$s"; return; }; done; echo "$1"; }
@@ -85,6 +91,8 @@ done
 (cd "$run/wt-probe-agy" && timeout -k 2 480 agy -p "$(cat "$run/probe.md")" --mode accept-edits > "$run/probe-agy.md" 2> "$run/probe-agy.log") &
 "$xagent" pi rw "$run/wt-probe-pi" "$run/probe.md" "$run/probe-pi" 480 &
 "$xagent" codex rw "$run/wt-nested" "$run/nested.md" "$run/nested-codex" 480 &
+"$xagent" codex rw "$run/wt-bind-default" "$run/bind.md" "$run/bind-default" 480 &
+"$xagent" codex rw "$run/wt-bind-full" "$run/bind.md" "$run/bind-full" 480 --full-access &
 # Codex as the host, in its own configured sandbox, dispatching through xagent like any pstack parent.
 (cd "$run" && timeout -k 2 900 codex exec --skip-git-repo-check --ephemeral -c 'shell_environment_policy.set.XAGENT_EPHEMERAL="1"' -o "$run/host-codex.md" - < "$run/host.md" > "$run/host-codex.log" 2>&1) &
 "$xagent" gemini ro "$repo" "$run/review.md" "$run/timeout-gemini" 5 & timeout_pid=$!
@@ -126,6 +134,12 @@ mirror_exit=$?
 [ "$mirror_exit" = 0 ] && [ -z "$missing" ] && ok "agy settings.json mirrors the shared allowlist" || bad "agy allowlist query failed or lacks: $missing"
 [ ! -e "$run/wt-nested/nested-out" ] && grep -q 'refusing nested dispatch' "$run/nested-codex/result.md" \
   && ok "a codex worker cannot dispatch again" || bad "nested dispatch from a codex worker was not refused"
+s=$(status "$run/bind-default"); b=$(field "$run/bind-default" sandbox)
+[ "$s" != DROPOUT ] && [ -n "$s" ] && [ "$b" = workspace-write ] && [ ! -e "$run/wt-bind-default/bound.txt" ] \
+  && ok "codex rw keeps workspace-write by default and cannot listen on 127.0.0.1" || bad "default codex rw: status ${s:-none}, sandbox ${b:-none}, bound.txt $([ -e "$run/wt-bind-default/bound.txt" ] && echo present || echo absent)"
+s=$(status "$run/bind-full"); b=$(field "$run/bind-full" sandbox)
+[ "$s" != DROPOUT ] && [ -n "$s" ] && [ "$b" = danger-full-access ] && [ -s "$run/wt-bind-full/bound.txt" ] \
+  && ok "codex rw --full-access records danger-full-access and listens on 127.0.0.1" || bad "codex rw --full-access: status ${s:-none}, sandbox ${b:-none}, bound.txt $([ -s "$run/wt-bind-full/bound.txt" ] && echo present || echo absent)"
 s=$(status "$run/host-review"); [ "$s" = ISSUES ] && ok "codex host got a $reviewer review (ISSUES)" || bad "codex host review via $reviewer: ${s:-none}"
 check_test_source "codex host review" "$run/wt-host-review"
 s=$(status "$run/host-pi"); [ "$s" = PASS ] && ok "codex host got a pi fix (PASS)" || bad "codex host fix via pi: ${s:-none}"
