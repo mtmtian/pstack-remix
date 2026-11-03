@@ -22,7 +22,10 @@ signal_group = helpers["signal_group"]
 class BoundedVerificationTest(unittest.TestCase):
     def test_given_stale_bytecode_when_source_changes_in_same_second_then_current_source_is_checked(self):
         with tempfile.TemporaryDirectory(prefix="pstack-stale-bytecode-") as directory:
-            source = Path(directory) / "stats.py"
+            # Resolve symlinks such as macOS /var -> /private/var, so a pycache_prefix
+            # (Apple's /usr/bin/python3 sets one) maps this process and the child
+            # to the same cached .pyc path.
+            source = Path(directory).resolve() / "stats.py"
             good = "def mean(xs):\n    return sum(xs) / len(xs)\n"
             bad = good.replace(" / ", " * ")
             for _ in range(5):
