@@ -76,7 +76,7 @@ print(result)
 PY
 cat > "$run/bind.md" <<MD
 Run exactly this shell command once in your working directory, then quote its exit code and its full output verbatim. Do not retry it, change it, or create bind-result.txt any other way.
-python3 $run/bind_probe.py
+python3 $(printf %q "$run/bind_probe.py")
 MD
 cat > "$run/host.md" <<MD
 You are the pstack parent agent. Read $root/skills/xagent/SKILL.md, then use xagent ($xagent) to run two workers in parallel:
