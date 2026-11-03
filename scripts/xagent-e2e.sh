@@ -5,7 +5,9 @@
 # XAGENT_E2E_MODELS="claude/opus codex/gpt-6-astra" pins those agents' models in the selection check.
 # XAGENT_E2E_AGENTS="codex gemini pi" picks the vendors in the fix, review and selection matrix (default:
 # codex grok gemini pi), and XAGENT_E2E_REVIEWER picks the codex host's reviewer while claude is logged out
-# (default: grok). The probe, nested-dispatch, timeout and codex-hosted cases always run codex, gemini (agy) and pi.
+# (default: grok). The probe, nested-dispatch, timeout, codex sandbox and codex-hosted cases always run, between them
+# using codex, gemini (agy) and pi. The codex sandbox case expects macOS's seatbelt and a codex config that leaves
+# sandbox_workspace_write.network_access off; with it on, the default can listen and that case fails.
 set -uo pipefail
 export XAGENT_EPHEMERAL=1
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -20,6 +22,12 @@ ok() { echo "ok   $1"; }
 bad() { echo "FAIL $1"; fail=1; }
 field() { python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))[sys.argv[2]]).strip("\""))' "$1/meta.json" "$2" 2>/dev/null; }
 status() { field "$1" status; }
+# check_bind label name sandbox prefix: the receipt records the sandbox and the probe the worker ran recorded the prefix.
+check_bind() {
+  local label=$1 name=$2 sandbox=$3 prefix=$4 s b r
+  s=$(status "$run/$name"); b=$(field "$run/$name" sandbox); r=$(cat "$run/wt-$name/bind-result.txt" 2>/dev/null || echo "no bind-result.txt")
+  [ "$s" != DROPOUT ] && [ -n "$s" ] && [ "$b" = "$sandbox" ] && [[ "$r" == "$prefix"* ]] && ok "$label" || bad "$label: status ${s:-none}, sandbox ${b:-none}, probe: $r"
+}
 
 check_test_source() {
   local label=$1 workdir=$2 out rc
@@ -58,6 +66,25 @@ printf 'Fix the bug in stats.py so that `python3 -m unittest` passes. Do not edi
 printf 'Run the shell command `git init probe-repo` in the terminal. Report exactly what happened.\n' > "$run/probe.md"
 printf 'Run exactly this shell command and quote its exit code and its full stderr verbatim: %s grok ro . test_stats.py nested-out\n' "$xagent" > "$run/nested.md"
 printf 'Reply with one sentence saying you are ready. Do not read, run or change anything.\n' > "$run/select.md"
+# The probe writes what the OS answered into the worker's checkout, so the file, not the worker's report, decides,
+# and a worker that never ran it leaves no file to pass with.
+cat > "$run/bind_probe.py" <<'PY'
+import socket
+from pathlib import Path
+try:
+    with socket.socket() as server:
+        server.bind(("127.0.0.1", 0))
+        server.listen()
+        result = f"bound {server.getsockname()[1]}"
+except OSError as error:
+    result = f"refused {error.errno} {error.strerror}"
+Path("bind-result.txt").write_text(result + "\n")
+print(result)
+PY
+cat > "$run/bind.md" <<MD
+Run exactly this shell command once in your working directory, then quote its exit code and its full output verbatim. Do not retry it, change it, or create bind-result.txt any other way.
+python3 $(printf %q "$run/bind_probe.py")
+MD
 cat > "$run/host.md" <<MD
 You are the pstack parent agent. Read $root/skills/xagent/SKILL.md, then use xagent ($xagent) to run two workers in parallel:
 the brief $run/review.md with $reviewer, read-only, against $run/wt-host-review, out-dir $run/host-review;
@@ -70,7 +97,7 @@ Report each worker's status and what you verified, including the receipt and ind
 MD
 
 # Readers without an enforced read-only sandbox must not share the parent checkout either.
-for w in $agents probe-gemini probe-agy probe-pi nested host-pi host-review; do git -C "$repo" worktree add -q "$run/wt-$w" -b "wt-$w"; done
+for w in $agents probe-gemini probe-agy probe-pi nested bind-default bind-full host-pi host-review; do git -C "$repo" worktree add -q "$run/wt-$w" -b "wt-$w"; done
 for a in claude codex grok gemini pi; do git -C "$repo" worktree add -q --detach "$run/wt-review-$a"; done
 for a in $agents; do git -C "$repo" worktree add -q --detach "$run/wt-select-$a"; done
 spec() { local s; for s in ${XAGENT_E2E_MODELS:-}; do [ "${s%%/*}" = "$1" ] && { echo "$s"; return; }; done; echo "$1"; }
@@ -85,6 +112,8 @@ done
 (cd "$run/wt-probe-agy" && timeout -k 2 480 agy -p "$(cat "$run/probe.md")" --mode accept-edits > "$run/probe-agy.md" 2> "$run/probe-agy.log") &
 "$xagent" pi rw "$run/wt-probe-pi" "$run/probe.md" "$run/probe-pi" 480 &
 "$xagent" codex rw "$run/wt-nested" "$run/nested.md" "$run/nested-codex" 480 &
+"$xagent" codex rw "$run/wt-bind-default" "$run/bind.md" "$run/bind-default" 480 &
+"$xagent" codex rw "$run/wt-bind-full" "$run/bind.md" "$run/bind-full" 480 --full-access &
 # Codex as the host, in its own configured sandbox, dispatching through xagent like any pstack parent.
 (cd "$run" && timeout -k 2 900 codex exec --skip-git-repo-check --ephemeral -c 'shell_environment_policy.set.XAGENT_EPHEMERAL="1"' -o "$run/host-codex.md" - < "$run/host.md" > "$run/host-codex.log" 2>&1) &
 "$xagent" gemini ro "$repo" "$run/review.md" "$run/timeout-gemini" 5 & timeout_pid=$!
@@ -126,6 +155,8 @@ mirror_exit=$?
 [ "$mirror_exit" = 0 ] && [ -z "$missing" ] && ok "agy settings.json mirrors the shared allowlist" || bad "agy allowlist query failed or lacks: $missing"
 [ ! -e "$run/wt-nested/nested-out" ] && grep -q 'refusing nested dispatch' "$run/nested-codex/result.md" \
   && ok "a codex worker cannot dispatch again" || bad "nested dispatch from a codex worker was not refused"
+check_bind "codex rw keeps workspace-write by default and the OS refuses listening on 127.0.0.1" bind-default workspace-write "refused "
+check_bind "codex rw --full-access records danger-full-access and listens on 127.0.0.1" bind-full danger-full-access "bound "
 s=$(status "$run/host-review"); [ "$s" = ISSUES ] && ok "codex host got a $reviewer review (ISSUES)" || bad "codex host review via $reviewer: ${s:-none}"
 check_test_source "codex host review" "$run/wt-host-review"
 s=$(status "$run/host-pi"); [ "$s" = PASS ] && ok "codex host got a pi fix (PASS)" || bad "codex host fix via pi: ${s:-none}"

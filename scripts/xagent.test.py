@@ -206,6 +206,48 @@ class XAgentTests(unittest.TestCase):
                     self.assertIn("-p", args)
                     self.assertEqual(args.count("--no-session-persistence"), int(setting == "1"))
 
+    def test_given_codex_when_full_access_is_not_requested_then_it_keeps_its_mode_sandbox_and_the_receipt_records_it(self):
+        captured = self.base / "sandbox-argv.json"
+        self.env["XAGENT_TEST_ARGV"] = str(captured)
+        for mode, expected in (("ro", "read-only"), ("rw", "workspace-write")):
+            with self.subTest(mode=mode):
+                result, meta = self.run_case("pass", "codex", out=self.base / f"sandbox-{mode}", mode=mode)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                args = json.loads(captured.read_text())
+                self.assertEqual(args[args.index("-s") + 1], expected)
+                self.assertEqual(meta["sandbox"], expected)
+
+    def test_given_codex_rw_when_full_access_is_requested_then_it_runs_unsandboxed_and_the_receipt_records_it(self):
+        captured = self.base / "full-access-argv.json"
+        self.env["XAGENT_TEST_ARGV"] = str(captured)
+        result, meta = self.run_case("pass", "codex", out=self.base / "full-access", mode="rw", extra=("--full-access",))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        args = json.loads(captured.read_text())
+        self.assertEqual(args[args.index("-s") + 1], "danger-full-access")
+        self.assertIn('shell_environment_policy.set.XAGENT_DEPTH="1"', args)
+        self.assertEqual((meta["status"], meta["sandbox"]), ("PASS", "danger-full-access"))
+
+    def test_given_full_access_for_anything_but_codex_rw_then_usage_fails_before_any_worker_starts(self):
+        captured = self.base / "full-access-rejected-argv.json"
+        self.env["XAGENT_TEST_ARGV"] = str(captured)
+        cases = [("codex", "ro")] + [(agent, mode) for agent in ("claude", "grok", "gemini", "pi") for mode in ("ro", "rw")]
+        for index, (agent, mode) in enumerate(cases):
+            with self.subTest(agent=agent, mode=mode):
+                out = self.base / f"full-access-rejected-{index}"
+                result = subprocess.run(self.args(out, agent, mode=mode, extra=("--full-access",)), env=self.env, capture_output=True, text=True, timeout=15)
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertIn("--full-access applies only to codex rw", result.stderr)
+                self.assertFalse(out.exists())
+                self.assertFalse(captured.exists())
+
+    def test_given_agents_without_a_codex_sandbox_then_the_receipt_records_none(self):
+        for agent in ("claude", "grok", "gemini", "pi"):
+            for mode in ("ro", "rw"):
+                with self.subTest(agent=agent, mode=mode):
+                    result, meta = self.run_case("pass", agent, out=self.base / f"no-sandbox-{agent}-{mode}", mode=mode)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual((meta["status"], meta["sandbox"]), ("PASS", None))
+
     def test_given_no_valid_terminal_verdict_then_result_is_dropout(self):
         for case in ("nonfinal", "quoted", "fenced", "unclosed_fence", "indented", "tab"):
             with self.subTest(case=case):
