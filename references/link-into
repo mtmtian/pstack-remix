@@ -12,8 +12,8 @@
 #   /.verify/
 # to $(git rev-parse --git-common-dir)/info/exclude, which every worktree of the repository
 # shares. It never writes .gitignore. A destination that already resolves to this skill is left
-# alone; any other file, directory or link there, or a parent directory that is itself a link,
-# stops the script with exit 1, before anything is linked or excluded. It then confirms that both links and .verify/ are ignored and that the Claude link
+# alone; any other file, directory or link there, a parent directory that is itself a link, or an
+# info/exclude that is a link, stops the script with exit 1, before anything is linked or excluded. It then confirms that both links and .verify/ are ignored and that the Claude link
 # reaches SKILL.md.
 set -euo pipefail
 
@@ -53,7 +53,13 @@ check "$agents"
 check "$claude"
 
 exclude="$(git -C "$checkout" rev-parse --path-format=absolute --git-common-dir)/info/exclude"
-mkdir -p "$(dirname "$exclude")"
+# Writes go to that file itself, never through a link to another file such as .gitignore.
+info="$(dirname "$exclude")"
+if [ -L "$info" ] || { [ -e "$info" ] && [ ! -d "$info" ]; } || [ -L "$exclude" ] || { [ -e "$exclude" ] && [ ! -f "$exclude" ]; }; then
+  echo "refusing: $exclude or its directory is a link or not a regular file" >&2
+  exit 1
+fi
+mkdir -p "$info"
 touch "$exclude"
 for line in "/.agents/skills/$name" "/.claude/skills/$name" "/.verify/"; do
   if ! grep -qxF "$line" "$exclude"; then

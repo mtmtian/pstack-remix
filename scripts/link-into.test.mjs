@@ -86,6 +86,27 @@ test("Given a parent directory that is a link out of the checkout, When linking,
   assert.equal(readFileSync(exclude, "utf8"), before);
 });
 
+test("Given an info/exclude that is a link, When linking, Then it stops without writing through the link", (t) => {
+  for (const target of ["../../.gitignore", "elsewhere"]) {
+    const { base, repo, exclude, link } = setup(t);
+    const info = path.dirname(exclude);
+    if (target === "elsewhere") {
+      rmSync(info, { recursive: true, force: true });
+      mkdirSync(path.join(base, "elsewhere"));
+      symlinkSync(path.join(base, "elsewhere"), info);
+    } else {
+      rmSync(exclude, { force: true });
+      symlinkSync(target, exclude);
+    }
+    const refused = link(repo);
+    assert.equal(refused.status, 1, target);
+    assert.match(refused.err, /refusing: .*info\/exclude or its directory is a link/, target);
+    assert.equal(existsSync(path.join(repo, ".gitignore")), false, target);
+    if (target === "elsewhere") assert.deepEqual(readdirSync(path.join(base, "elsewhere")), []);
+    assert.equal(existsSync(path.join(repo, ".agents")), false, target);
+  }
+});
+
 test("Given a skill directory inside the checkout, When linking, Then it refuses", (t) => {
   const { repo, skill } = setup(t);
   const inside = path.join(repo, "tools", "verify-notes");
