@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# Link a personal verification skill into a checkout (the main checkout or any worktree).
+# Copy this file to <skill-dir>/bin/link-into in the skill's canonical directory, outside
+# every repository, and run it from there:
+#   bin/link-into <checkout-root>
+# The skill's name is its directory name (verify-<app>). Where nothing is there yet, it creates
+#   <checkout>/.agents/skills/<name> -> <skill-dir>
+#   <checkout>/.claude/skills/<name> -> ../../.agents/skills/<name>
+# and adds any missing line of
+#   /.agents/skills/<name>
+#   /.claude/skills/<name>
+#   /.verify/
+# to $(git rev-parse --git-common-dir)/info/exclude, which every worktree of the repository
+# shares. It never writes .gitignore. A destination that already resolves to this skill is left
+# alone; any other file, directory or link there stops the script with exit 1, before anything
+# is linked. It then confirms that both links and .verify/ are ignored and that the Claude link
+# reaches SKILL.md.
+set -euo pipefail
+
+usage() { echo "usage: $0 <checkout-root>" >&2; exit 2; }
+[ $# -eq 1 ] || usage
+
+skill="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+name="$(basename "$skill")"
+[ -f "$skill/SKILL.md" ] || { echo "no SKILL.md in $skill; run the copy in <skill-dir>/bin/" >&2; exit 1; }
+checkout="$(cd "$1" 2>/dev/null && pwd -P)" || usage
+top="$(git -C "$checkout" rev-parse --show-toplevel 2>/dev/null)" || { echo "not a git checkout: $checkout" >&2; exit 1; }
+[ "$(cd "$top" && pwd -P)" = "$checkout" ] || { echo "pass the checkout root: $top" >&2; exit 1; }
+case "$skill/" in "$checkout"/*) echo "the skill directory is inside the checkout; keep it outside every repository: $skill" >&2; exit 1;; esac
+
+agents="$checkout/.agents/skills/$name"
+claude="$checkout/.claude/skills/$name"
+claude_target="../../.agents/skills/$name"
+
+# A destination is free, already this skill, or a conflict.
+check() { # <destination>
+  if [ -e "$1" ] || [ -L "$1" ]; then
+    [ "$(cd "$1" 2>/dev/null && pwd -P)" = "$skill" ] && return 0
+    echo "refusing: $1 already exists and is not this skill ($skill)" >&2
+    exit 1
+  fi
+}
+check "$agents"
+check "$claude"
+
+exclude="$(git -C "$checkout" rev-parse --path-format=absolute --git-common-dir)/info/exclude"
+mkdir -p "$(dirname "$exclude")"
+touch "$exclude"
+for line in "/.agents/skills/$name" "/.claude/skills/$name" "/.verify/"; do
+  if ! grep -qxF "$line" "$exclude"; then
+    [ -s "$exclude" ] && [ "$(tail -c 1 "$exclude")" != "" ] && echo >> "$exclude"
+    echo "$line" >> "$exclude"
+    echo "excluded: $line ($exclude)"
+  fi
+done
+
+link() { # <destination> <target>
+  if [ -e "$1" ] || [ -L "$1" ]; then echo "ok (already this skill): $1"; return 0; fi
+  mkdir -p "$(dirname "$1")"
+  ln -s "$2" "$1"
+  echo "linked: $1 -> $2"
+}
+link "$agents" "$skill"
+link "$claude" "$claude_target"
+
+for path in ".agents/skills/$name" ".claude/skills/$name" ".verify/x"; do
+  git -C "$checkout" check-ignore -q "$path" || { echo "not ignored in $checkout: $path" >&2; exit 1; }
+done
+[ -f "$claude/SKILL.md" ] || { echo "link does not reach SKILL.md: $claude" >&2; exit 1; }

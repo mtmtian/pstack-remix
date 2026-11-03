@@ -101,6 +101,10 @@ Where upstream names a Cursor primitive, the fork names the host capability; the
 - Host-rendered charts and output instead of `/visualize`, and the host's entry points instead of Custom Modes.
 - The local `check-plan.mjs` markers (its tests' fixtures use them) and the local `poteto-agent.md` frontmatter.
 
+### Verification skill placement
+
+Generated verification skills are personal local skills by default, at the user's request on 2026-11-03 (0.15.36-shared.3), because the user's own workflow stays out of business repositories. Upstream writes the generated skill in `.agents/skills/` and adds `.verify/` to `.gitignore`, so every checkout either commits the skill or carries an uncommitted change. Here `create-verification-skill` and `create-formal-verification-skill` put the canonical directory outside every repository, with its own local git and no remote, and link it into each checkout and worktree with [`references/link-into`](./references/link-into), copied into the skill as `bin/link-into`. The ignore rules, `/.agents/skills/<name>`, `/.claude/skills/<name>`, and `/.verify/`, go only to the `info/exclude` of the repository's common git directory, which all its worktrees share; the link lines carry no trailing slash because git sees a symlink as a file. Upstream's in-repository layout, `.gitignore` included, applies only when the user explicitly asks for a skill shared in the repository. The two maintain skills follow a link to the canonical directory and commit there instead of opening a PR. The [project skills guide](./references/project-skills.md#verification-skills) holds the steps, and `scripts/link-into.test.mjs` runs the helper in a repository with a worktree.
+
 ### Models and effort
 
 Models come from `config.json`, where every role inherits the parent by default, instead of upstream's Cursor slug defaults. Poteto-mode's Subagents section keeps upstream's "Code delegates tier by difficulty" routing: each code playbook's delegate reads its role, the hardest changes read `hardest tasks`, prose and judgment read `judgment and prose`, and verification workers read `verification workers`. `how`, `why`, and `reflect` name their role keys, such as `how explorer` and `reflect judgment`, so a configured role is the one they read.
@@ -137,7 +141,7 @@ interrogate takes upstream's adversaries (#986): each one tries to break the cha
 - `sharpen` keeps upstream's prompt: it hands back the rewritten prompt and does not do the task.
 - `ketchup-video` is model-invocable, with its video embedded when the host can show it and otherwise linked as a local file.
 - `reflect` never edits a skill inside an installed plugin and copies it to `.agents/skills/<skill>/` or `~/.agents/skills/<skill>/` with the discovery link.
-- `create-formal-verification-skill` writes the generated verify skill in `.agents/skills/` with the discovery link, `maintain-formal-verification-skill` looks in both `.agents/skills/` and `.claude/skills/`, and setup-pstack mentions the create skill once, in the same mention-only form as its verification step.
+- `create-formal-verification-skill` writes the generated verify skill with both discovery links, as a personal local skill unless the user asks to share it (see [Verification skill placement](#verification-skill-placement)), `maintain-formal-verification-skill` looks in both `.agents/skills/` and `.claude/skills/`, and setup-pstack mentions the create skill once, in the same mention-only form as its verification step.
 - watch-pr takes the fork-head fix in stack discovery (#801), so the local merge-gates fixture has `isCrossRepository`, and the deadline cap on polling sleeps (#802), so the local `--once` test expects a native run past its deadline to sleep zero seconds.
 
 ## Antigravity integration
