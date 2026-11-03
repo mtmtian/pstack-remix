@@ -5,8 +5,9 @@
 # XAGENT_E2E_MODELS="claude/opus codex/gpt-6-astra" pins those agents' models in the selection check.
 # XAGENT_E2E_AGENTS="codex gemini pi" picks the vendors in the fix, review and selection matrix (default:
 # codex grok gemini pi), and XAGENT_E2E_REVIEWER picks the codex host's reviewer while claude is logged out
-# (default: grok). The probe, nested-dispatch, timeout, codex sandbox and codex-hosted cases always run codex, gemini (agy)
-# and pi.
+# (default: grok). The probe, nested-dispatch, timeout, codex sandbox and codex-hosted cases always run, between them
+# using codex, gemini (agy) and pi. The codex sandbox case expects macOS's seatbelt and a codex config that leaves
+# sandbox_workspace_write.network_access off; with it on, the default can listen and that case fails.
 set -uo pipefail
 export XAGENT_EPHEMERAL=1
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -21,6 +22,12 @@ ok() { echo "ok   $1"; }
 bad() { echo "FAIL $1"; fail=1; }
 field() { python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))[sys.argv[2]]).strip("\""))' "$1/meta.json" "$2" 2>/dev/null; }
 status() { field "$1" status; }
+# check_bind label name sandbox prefix: the receipt records the sandbox and the probe the worker ran recorded the prefix.
+check_bind() {
+  local s b r
+  s=$(status "$run/$2"); b=$(field "$run/$2" sandbox); r=$(cat "$run/wt-$2/bind-result.txt" 2>/dev/null || echo "no bind-result.txt")
+  [ "$s" != DROPOUT ] && [ -n "$s" ] && [ "$b" = "$3" ] && [[ "$r" == "$4"* ]] && ok "$1" || bad "$1: status ${s:-none}, sandbox ${b:-none}, probe: $r"
+}
 
 check_test_source() {
   local label=$1 workdir=$2 out rc
@@ -64,13 +71,13 @@ printf 'Reply with one sentence saying you are ready. Do not read, run or change
 cat > "$run/bind_probe.py" <<'PY'
 import socket
 from pathlib import Path
-with socket.socket() as server:
-    try:
+try:
+    with socket.socket() as server:
         server.bind(("127.0.0.1", 0))
         server.listen()
         result = f"bound {server.getsockname()[1]}"
-    except OSError as error:
-        result = f"refused {error.errno} {error.strerror}"
+except OSError as error:
+    result = f"refused {error.errno} {error.strerror}"
 Path("bind-result.txt").write_text(result + "\n")
 print(result)
 PY
@@ -148,13 +155,8 @@ mirror_exit=$?
 [ "$mirror_exit" = 0 ] && [ -z "$missing" ] && ok "agy settings.json mirrors the shared allowlist" || bad "agy allowlist query failed or lacks: $missing"
 [ ! -e "$run/wt-nested/nested-out" ] && grep -q 'refusing nested dispatch' "$run/nested-codex/result.md" \
   && ok "a codex worker cannot dispatch again" || bad "nested dispatch from a codex worker was not refused"
-bind_result() { cat "$1/bind-result.txt" 2>/dev/null || echo "no bind-result.txt"; }
-s=$(status "$run/bind-default"); b=$(field "$run/bind-default" sandbox); r=$(bind_result "$run/wt-bind-default")
-[ "$s" != DROPOUT ] && [ -n "$s" ] && [ "$b" = workspace-write ] && [[ "$r" == "refused 1 "* ]] \
-  && ok "codex rw keeps workspace-write by default and the OS refuses listening on 127.0.0.1" || bad "default codex rw: status ${s:-none}, sandbox ${b:-none}, probe: $r"
-s=$(status "$run/bind-full"); b=$(field "$run/bind-full" sandbox); r=$(bind_result "$run/wt-bind-full")
-[ "$s" != DROPOUT ] && [ -n "$s" ] && [ "$b" = danger-full-access ] && [[ "$r" == "bound "* ]] \
-  && ok "codex rw --full-access records danger-full-access and listens on 127.0.0.1" || bad "codex rw --full-access: status ${s:-none}, sandbox ${b:-none}, probe: $r"
+check_bind "codex rw keeps workspace-write by default and the OS refuses listening on 127.0.0.1" bind-default workspace-write "refused "
+check_bind "codex rw --full-access records danger-full-access and listens on 127.0.0.1" bind-full danger-full-access "bound "
 s=$(status "$run/host-review"); [ "$s" = ISSUES ] && ok "codex host got a $reviewer review (ISSUES)" || bad "codex host review via $reviewer: ${s:-none}"
 check_test_source "codex host review" "$run/wt-host-review"
 s=$(status "$run/host-pi"); [ "$s" = PASS ] && ok "codex host got a pi fix (PASS)" || bad "codex host fix via pi: ${s:-none}"

@@ -228,7 +228,7 @@ def main():
     parser.add_argument("out_dir", type=Path)
     parser.add_argument("timeout", nargs="?", type=float, default=DEFAULT_TIMEOUT)
     parser.add_argument("--effort", choices=EFFORTS, help="reasoning effort passed to the CLI's own effort setting")
-    parser.add_argument("--full-access", action="store_true", help=f"codex rw only: run codex with {CODEX_FULL_ACCESS} instead of workspace-write, so the worker can start local servers and browsers; only in an exclusive worktree")
+    parser.add_argument("--full-access", action="store_true", help=f"codex rw only: run codex with {CODEX_FULL_ACCESS} instead of {CODEX_SANDBOX['rw']}, so the worker can start local servers and browsers; only in an exclusive worktree")
     options = parser.parse_args()
     agent, model = options.agent
     if os.environ.get("XAGENT_DEPTH", "0") != "0":

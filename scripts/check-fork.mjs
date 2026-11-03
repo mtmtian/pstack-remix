@@ -183,8 +183,8 @@ export const REQUIRED = [
   {
     id: "interrogate-adversaries-rw",
     file: "skills/interrogate/SKILL.md",
-    pattern: /Spawn each adversary as a worker that can edit files and run commands in its own worktree; an `xagent:<agent>` adversary runs `rw`[^\n]*adversary runs only the commands in `<plugin-root>\/bin\/xagent-allowed-commands`/,
-    hint: "each adversary edits and runs commands in its own worktree; an xagent one runs rw, within its agent's allowlist",
+    pattern: /Spawn each adversary as a worker that can edit files and run commands in its own worktree; an `xagent:<agent>` adversary runs `rw`, a codex one with `--full-access` when the scope can only be exercised through a local server or a browser,[^\n]*adversary runs only the commands in `<plugin-root>\/bin\/xagent-allowed-commands`/,
+    hint: "each adversary edits and runs commands in its own worktree; an xagent one runs rw (codex with --full-access when the scope needs a local server or browser), within its agent's allowlist",
     section: "interrogate",
   },
   {

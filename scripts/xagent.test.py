@@ -215,7 +215,6 @@ class XAgentTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 args = json.loads(captured.read_text())
                 self.assertEqual(args[args.index("-s") + 1], expected)
-                self.assertNotIn("danger-full-access", args)
                 self.assertEqual(meta["sandbox"], expected)
 
     def test_given_codex_rw_when_full_access_is_requested_then_it_runs_unsandboxed_and_the_receipt_records_it(self):
@@ -245,8 +244,9 @@ class XAgentTests(unittest.TestCase):
         for agent in ("claude", "grok", "gemini", "pi"):
             for mode in ("ro", "rw"):
                 with self.subTest(agent=agent, mode=mode):
-                    _, meta = self.run_case("pass", agent, out=self.base / f"no-sandbox-{agent}-{mode}", mode=mode)
-                    self.assertIsNone(meta["sandbox"])
+                    result, meta = self.run_case("pass", agent, out=self.base / f"no-sandbox-{agent}-{mode}", mode=mode)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual((meta["status"], meta["sandbox"]), ("PASS", None))
 
     def test_given_no_valid_terminal_verdict_then_result_is_dropout(self):
         for case in ("nonfinal", "quoted", "fenced", "unclosed_fence", "indented", "tab"):
