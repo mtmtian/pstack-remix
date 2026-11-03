@@ -257,8 +257,7 @@ def main():
     prompt = brief + "\n\n" + "\n".join(notes) + "\n"
     for name, text in zip(OUT_FILES, (prompt, "", "")):
         (out / name).write_text(text)
-    # Until the attempt ends there is no verdict. A receipt left by a killed xagent keeps this state, so status says
-    # neither running nor dropped out; completed=False is what marks it unfinished.
+    # No verdict until the attempt ends; completed=False marks it unfinished, including after a hard kill.
     meta = dict(
         agent=agent, model=model, effort=options.effort, mode=options.mode, sandbox=sandbox(agent, options.mode, options.full_access),
         workdir=str(workdir), exit=None,

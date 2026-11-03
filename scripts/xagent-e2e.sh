@@ -24,9 +24,9 @@ field() { python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[
 status() { field "$1" status; }
 # check_bind label name sandbox prefix: the receipt records the sandbox and the probe the worker ran recorded the prefix.
 check_bind() {
-  local label=$1 name=$2 sandbox=$3 prefix=$4 s b r
-  s=$(status "$run/$name"); b=$(field "$run/$name" sandbox); r=$(cat "$run/wt-$name/bind-result.txt" 2>/dev/null || echo "no bind-result.txt")
-  [ "$s" != DROPOUT ] && [ -n "$s" ] && [ "$b" = "$sandbox" ] && [[ "$r" == "$prefix"* ]] && ok "$label" || bad "$label: status ${s:-none}, sandbox ${b:-none}, probe: $r"
+  local label=$1 name=$2 sandbox=$3 prefix=$4 c s b r
+  c=$(field "$run/$name" completed); s=$(status "$run/$name"); b=$(field "$run/$name" sandbox); r=$(cat "$run/wt-$name/bind-result.txt" 2>/dev/null || echo "no bind-result.txt")
+  [ "$c" = true ] && [ "$s" != DROPOUT ] && [ "$b" = "$sandbox" ] && [[ "$r" == "$prefix"* ]] && ok "$label" || bad "$label: status ${s:-none}, sandbox ${b:-none}, probe: $r"
 }
 
 check_test_source() {
