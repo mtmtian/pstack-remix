@@ -59,10 +59,24 @@ printf 'Fix the bug in stats.py so that `python3 -m unittest` passes. Do not edi
 printf 'Run the shell command `git init probe-repo` in the terminal. Report exactly what happened.\n' > "$run/probe.md"
 printf 'Run exactly this shell command and quote its exit code and its full stderr verbatim: %s grok ro . test_stats.py nested-out\n' "$xagent" > "$run/nested.md"
 printf 'Reply with one sentence saying you are ready. Do not read, run or change anything.\n' > "$run/select.md"
-# Only a process allowed to listen on 127.0.0.1 writes bound.txt, so the file, not the worker's report, decides.
-cat > "$run/bind.md" <<'MD'
-Run exactly this shell command once, then quote its exit code and its full output verbatim. Do not retry it, change it, or create bound.txt any other way.
-python3 -c "import socket; s = socket.socket(); s.bind(('127.0.0.1', 0)); s.listen(); open('bound.txt', 'w').write(str(s.getsockname()[1]))"
+# The probe writes what the OS answered into the worker's checkout, so the file, not the worker's report, decides,
+# and a worker that never ran it leaves no file to pass with.
+cat > "$run/bind_probe.py" <<'PY'
+import socket
+from pathlib import Path
+with socket.socket() as server:
+    try:
+        server.bind(("127.0.0.1", 0))
+        server.listen()
+        result = f"bound {server.getsockname()[1]}"
+    except OSError as error:
+        result = f"refused {error.errno} {error.strerror}"
+Path("bind-result.txt").write_text(result + "\n")
+print(result)
+PY
+cat > "$run/bind.md" <<MD
+Run exactly this shell command once in your working directory, then quote its exit code and its full output verbatim. Do not retry it, change it, or create bind-result.txt any other way.
+python3 $run/bind_probe.py
 MD
 cat > "$run/host.md" <<MD
 You are the pstack parent agent. Read $root/skills/xagent/SKILL.md, then use xagent ($xagent) to run two workers in parallel:
@@ -134,12 +148,13 @@ mirror_exit=$?
 [ "$mirror_exit" = 0 ] && [ -z "$missing" ] && ok "agy settings.json mirrors the shared allowlist" || bad "agy allowlist query failed or lacks: $missing"
 [ ! -e "$run/wt-nested/nested-out" ] && grep -q 'refusing nested dispatch' "$run/nested-codex/result.md" \
   && ok "a codex worker cannot dispatch again" || bad "nested dispatch from a codex worker was not refused"
-s=$(status "$run/bind-default"); b=$(field "$run/bind-default" sandbox)
-[ "$s" != DROPOUT ] && [ -n "$s" ] && [ "$b" = workspace-write ] && [ ! -e "$run/wt-bind-default/bound.txt" ] \
-  && ok "codex rw keeps workspace-write by default and cannot listen on 127.0.0.1" || bad "default codex rw: status ${s:-none}, sandbox ${b:-none}, bound.txt $([ -e "$run/wt-bind-default/bound.txt" ] && echo present || echo absent)"
-s=$(status "$run/bind-full"); b=$(field "$run/bind-full" sandbox)
-[ "$s" != DROPOUT ] && [ -n "$s" ] && [ "$b" = danger-full-access ] && [ -s "$run/wt-bind-full/bound.txt" ] \
-  && ok "codex rw --full-access records danger-full-access and listens on 127.0.0.1" || bad "codex rw --full-access: status ${s:-none}, sandbox ${b:-none}, bound.txt $([ -s "$run/wt-bind-full/bound.txt" ] && echo present || echo absent)"
+bind_result() { cat "$1/bind-result.txt" 2>/dev/null || echo "no bind-result.txt"; }
+s=$(status "$run/bind-default"); b=$(field "$run/bind-default" sandbox); r=$(bind_result "$run/wt-bind-default")
+[ "$s" != DROPOUT ] && [ -n "$s" ] && [ "$b" = workspace-write ] && [[ "$r" == "refused 1 "* ]] \
+  && ok "codex rw keeps workspace-write by default and the OS refuses listening on 127.0.0.1" || bad "default codex rw: status ${s:-none}, sandbox ${b:-none}, probe: $r"
+s=$(status "$run/bind-full"); b=$(field "$run/bind-full" sandbox); r=$(bind_result "$run/wt-bind-full")
+[ "$s" != DROPOUT ] && [ -n "$s" ] && [ "$b" = danger-full-access ] && [[ "$r" == "bound "* ]] \
+  && ok "codex rw --full-access records danger-full-access and listens on 127.0.0.1" || bad "codex rw --full-access: status ${s:-none}, sandbox ${b:-none}, probe: $r"
 s=$(status "$run/host-review"); [ "$s" = ISSUES ] && ok "codex host got a $reviewer review (ISSUES)" || bad "codex host review via $reviewer: ${s:-none}"
 check_test_source "codex host review" "$run/wt-host-review"
 s=$(status "$run/host-pi"); [ "$s" = PASS ] && ok "codex host got a pi fix (PASS)" || bad "codex host fix via pi: ${s:-none}"
