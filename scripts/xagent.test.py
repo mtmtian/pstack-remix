@@ -329,6 +329,9 @@ class XAgentTests(unittest.TestCase):
                 conn, _ = server.accept()
                 with conn:
                     pid = json.loads(conn.recv(4096))["pid"]
+                # While the worker runs, the receipt holds no verdict, so a reader cannot mistake it for a dropout.
+                running = json.loads((out / "meta.json").read_text())
+                self.assertEqual((running["status"], running["completed"], running["reason"]), (None, False, "incomplete"))
                 if cancel:
                     process.send_signal(signal.SIGTERM)
                 stdout, stderr = process.communicate(timeout=5)
