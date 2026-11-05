@@ -384,7 +384,7 @@ class XAgentTests(unittest.TestCase):
                 conn, _ = server.accept()
                 with conn:
                     worker = json.loads(conn.recv(4096))["pid"]
-                running = self.xagent_wait("--timeout", "1", out)
+                running = self.xagent_wait("--timeout", "5", out)
                 self.assertEqual(running.returncode, 124, running.stdout + running.stderr)
                 self.assertEqual(running.stdout, f"{out.resolve()} status=null completed=false reason=running\n")
                 process.kill()
@@ -408,8 +408,13 @@ class XAgentTests(unittest.TestCase):
         self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
         self.assertEqual(result.stdout, f"{out.resolve()} status=null completed=false reason=not_started\n")
 
+    def test_given_an_out_dir_that_is_not_a_directory_when_waited_then_it_is_unreadable_and_others_still_end(self):
+        result = self.xagent_wait(self.brief, self.base / "never-started")
+        self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+        self.assertEqual(result.stdout.splitlines(), [f"{self.brief.resolve()} status=null completed=false reason=unreadable", f"{(self.base / 'never-started').resolve()} status=null completed=false reason=not_started"])
+
     def test_given_a_malformed_wait_timeout_then_usage_fails(self):
-        for value in ("0", "-1", "nan"):
+        for value in ("0", "-1", "4", "nan"):
             with self.subTest(value=value):
                 result = self.xagent_wait("--timeout", value, self.base)
                 self.assertEqual(result.returncode, 2, result.stdout + result.stderr)

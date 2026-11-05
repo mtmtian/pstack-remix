@@ -38,9 +38,10 @@ TERMINATION_GRACE = 1
 RECEIPT_MARKERS = ("prompt.md", "agent.log")
 OUT_FILES = (*RECEIPT_MARKERS, "result.md")
 # xagent wait: seconds between checks, and how long an out_dir may go without a meta.json before its run counts as
-# never started (a usage error, which writes none). A run writes its first meta.json well inside a second.
+# never started (a usage error, which writes none). A run writes its first meta.json well inside a second. A wait
+# --timeout below the grace could never tell a missing receipt from a slow start, so it is refused.
 WAIT_POLL = 0.5
-WAIT_START_GRACE = 10
+WAIT_START_GRACE = 5
 # How each CLI's own report of the models a run used names the requested one. Claude resolves an alias such as opus
 # to claude-opus-<version>, ignores a context-window suffix such as [1m] on either side, and may add a small model for
 # its own housekeeping; grok reports a routed model such as magpie/likecode-grok/grok-4.7 by its last segment. Agents
@@ -247,6 +248,8 @@ def outcome(out, waited):
         meta = json.loads((out / "meta.json").read_text())
     except FileNotFoundError:
         return None if waited < WAIT_START_GRACE else (None, False, "not_started")
+    except (OSError, ValueError):
+        return None, False, "unreadable"
     if meta.get("completed") is True:
         return meta.get("status"), True, meta.get("reason")
     # An unfinished receipt whose xagent has exited means xagent itself was killed before recording an outcome.
@@ -254,20 +257,21 @@ def outcome(out, waited):
 
 
 def wait(argv):
-    parser = argparse.ArgumentParser(prog="xagent wait", description="Wait until each attempt's xagent process has exited and print one line per out_dir as it ends. Exit 0 when every attempt completed without DROPOUT, 3 otherwise, 124 when --timeout passed first.")
+    parser = argparse.ArgumentParser(prog="xagent wait", description="Wait until each attempt has ended, with its receipt completed or its xagent process gone, and print one line per out_dir as it ends. Exit 0 when every attempt completed without DROPOUT, 3 otherwise, 124 when --timeout passed first.")
     parser.add_argument("out_dirs", nargs="+", type=Path, metavar="out_dir")
-    parser.add_argument("--timeout", type=float, help="stop after this many seconds; attempts still running print reason=running")
+    parser.add_argument("--timeout", type=float, help=f"stop after this many seconds, at least {WAIT_START_GRACE}; attempts still running print reason=running")
     options = parser.parse_args(argv)
-    if options.timeout is not None and (not math.isfinite(options.timeout) or options.timeout <= 0):
-        parser.error("timeout must be a positive number of seconds")
+    if options.timeout is not None and not (math.isfinite(options.timeout) and options.timeout >= WAIT_START_GRACE):
+        parser.error(f"timeout must be at least {WAIT_START_GRACE} seconds")
     started = time.monotonic()
     pending, failed = list(dict.fromkeys(path.resolve() for path in options.out_dirs)), False
     while True:
         for out in list(pending):
             ended = outcome(out, time.monotonic() - started)
             if ended:
-                print(wait_line(out, *ended), flush=True)
-                failed |= not ended[1] or ended[0] == "DROPOUT"
+                status, completed, reason = ended
+                print(wait_line(out, status, completed, reason), flush=True)
+                failed |= not completed or status == "DROPOUT"
                 pending.remove(out)
         if not pending:
             return 3 if failed else 0
