@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
-"""Black-box xagent regressions. Vendor CLIs are replaced, Git and processes are real."""
+"""Black-box xagent regressions. Vendor CLIs are replaced, Git and processes are real; one wait race runs in-process."""
 import contextlib
+import importlib.machinery
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -417,6 +419,22 @@ class XAgentTests(unittest.TestCase):
             # Still unreaped after the wait, so the wait saw a zombie rather than a gone process.
             state = subprocess.run(["ps", "-o", "stat=", "-p", str(process.pid)], capture_output=True, text=True).stdout
             self.assertTrue(state.lstrip().startswith("Z"), state)
+
+    def test_given_xagent_records_its_outcome_and_exits_while_wait_checks_it_when_waited_then_that_outcome_is_reported(self):
+        # No real process can be scheduled between wait's receipt read and its process check, so this runs wait's check in-process.
+        loader = importlib.machinery.SourceFileLoader("xagent_under_test", str(XAGENT))
+        xagent = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+        loader.exec_module(xagent)
+        out = self.base / "race-out"
+        out.mkdir()
+        xagent.write_meta(out, {"status": None, "completed": False, "reason": None, "pid": os.getpid()})
+
+        def records_pass_then_exits(pid):
+            xagent.write_meta(out, {"status": "PASS", "completed": True, "reason": None, "pid": pid})
+            return False
+
+        xagent.alive = records_pass_then_exits
+        self.assertEqual(xagent.outcome(out, 0), ("PASS", True, None))
 
     def test_given_a_run_that_never_wrote_a_receipt_when_waited_with_the_shortest_timeout_then_the_first_call_reports_not_started(self):
         out = self.base / "usage-error-out"

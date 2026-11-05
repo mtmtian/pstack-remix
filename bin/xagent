@@ -254,7 +254,7 @@ def wait_line(out, status, completed, reason):
     return f"{out} status={status or 'null'} completed={json.dumps(completed)} reason={reason or 'null'}"
 
 
-def outcome(out, waited):
+def outcome(out, waited, exited=False):
     """Return (status, completed, reason) once the attempt in out has ended, or None while it may still be running."""
     try:
         meta = json.loads((out / "meta.json").read_text())
@@ -264,8 +264,13 @@ def outcome(out, waited):
         return None, False, "unreadable"
     if meta.get("completed") is True:
         return meta.get("status"), True, meta.get("reason")
-    # An unfinished receipt whose xagent has exited means xagent itself was killed before recording an outcome.
-    return None if alive(meta.get("pid")) else ("DROPOUT", False, "killed")
+    if exited:
+        # Still unfinished after its xagent exited: xagent itself was killed before recording an outcome.
+        return "DROPOUT", False, "killed"
+    if alive(meta.get("pid")):
+        return None
+    # xagent records its outcome before it exits, so the exit just seen may have come after the read above: read again.
+    return outcome(out, waited, exited=True)
 
 
 def wait(argv):
