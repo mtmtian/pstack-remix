@@ -43,6 +43,7 @@ if case == 'wait':
         s.connect(os.environ['XAGENT_TEST_SOCKET'])
         s.sendall(json.dumps({'pid':os.getpid()}).encode())
     time.sleep(30)
+if case == 'slow': time.sleep(1)
 if agent == 'claude': print(json.dumps(invalid_json[case]) if case in invalid_json else json.dumps({'result':reply, **report}))
 elif agent == 'grok': print(json.dumps(invalid_json[case]) if case in invalid_json else json.dumps({'text':reply, **report}))
 elif agent == 'codex':
@@ -350,6 +351,68 @@ class XAgentTests(unittest.TestCase):
 
     def test_given_worker_ignores_term_when_parent_is_cancelled_then_it_is_killed_and_recorded(self):
         self.wait_case(cancel=True)
+
+
+    def xagent_wait(self, *args, timeout=20):
+        return subprocess.run([str(XAGENT), "wait", *map(str, args)], env=self.env, capture_output=True, text=True, timeout=timeout)
+
+    def test_given_attempts_in_the_background_when_waited_then_each_ends_with_its_receipt_status(self):
+        env = {**self.env, "XAGENT_TEST_CASE": "slow"}
+        outs = {agent: self.base / f"bg-{agent}" for agent in ("grok", "codex")}
+        processes = {agent: subprocess.Popen(self.args(out, agent), env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) for agent, out in outs.items()}
+        try:
+            result = self.xagent_wait(*outs.values())
+        finally:
+            for process in processes.values():
+                process.wait(timeout=15)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertCountEqual(result.stdout.splitlines(), [f"{out.resolve()} status=PASS completed=true reason=null" for out in outs.values()])
+        for agent, out in outs.items():
+            meta = json.loads((out / "meta.json").read_text())
+            self.assertEqual(meta["pid"], processes[agent].pid)
+
+    def test_given_xagent_is_killed_mid_run_when_waited_then_it_is_a_dropout_and_a_timeout_reports_running_first(self):
+        out = self.base / "killed-out"
+        with socket.socket(socket.AF_UNIX) as server:
+            server.bind(str(self.base / "ready.sock"))
+            server.listen(1)
+            server.settimeout(5)
+            env = {**self.env, "XAGENT_TEST_CASE": "wait", "XAGENT_TEST_SOCKET": str(self.base / "ready.sock")}
+            process = subprocess.Popen(self.args(out, agent="pi"), env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            worker = None
+            try:
+                conn, _ = server.accept()
+                with conn:
+                    worker = json.loads(conn.recv(4096))["pid"]
+                running = self.xagent_wait("--timeout", "1", out)
+                self.assertEqual(running.returncode, 124, running.stdout + running.stderr)
+                self.assertEqual(running.stdout, f"{out.resolve()} status=null completed=false reason=running\n")
+                process.kill()
+                process.wait(timeout=5)
+                killed = self.xagent_wait(out)
+                self.assertEqual(killed.returncode, 3, killed.stdout + killed.stderr)
+                self.assertEqual(killed.stdout, f"{out.resolve()} status=DROPOUT completed=false reason=killed\n")
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait(timeout=5)
+                if worker is not None:
+                    try: os.killpg(worker, signal.SIGKILL)
+                    except ProcessLookupError: pass
+
+    def test_given_a_run_that_never_wrote_a_receipt_when_waited_then_it_is_reported_not_started(self):
+        out = self.base / "usage-error-out"
+        usage = subprocess.run(self.args(out, extra=("--effort", "huge")), env=self.env, capture_output=True, text=True, timeout=15)
+        self.assertEqual(usage.returncode, 2)
+        result = self.xagent_wait(out)
+        self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+        self.assertEqual(result.stdout, f"{out.resolve()} status=null completed=false reason=not_started\n")
+
+    def test_given_a_malformed_wait_timeout_then_usage_fails(self):
+        for value in ("0", "-1", "nan"):
+            with self.subTest(value=value):
+                result = self.xagent_wait("--timeout", value, self.base)
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
 
 
 if __name__ == "__main__":

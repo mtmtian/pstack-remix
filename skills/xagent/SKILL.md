@@ -15,6 +15,8 @@ One CLI turns any local agent into a pstack worker, whichever agent is the host.
 
 `~/.local/bin/xagent` links to the checkout's `bin/xagent` on this machine. Each attempt needs a new empty out-dir, separate from workdir. Each run writes `prompt.md`, `result.md`, `agent.log` and an atomically replaced `meta.json`; pi also writes `guard.log`. The receipt includes `status`, `exit`, `seconds`, `completed`, `timed_out`, `cancelled`, `reason` and `changed_workdir`, plus the requested `model` and `effort` (null when the CLI's own setting applied), `sandbox`, the codex sandbox xagent requested for the run (`read-only`, `workspace-write` or `danger-full-access`; null for the other agents), and `resolved_models`, the models the CLI reports the run used (claude and grok from their JSON `modelUsage`, codex from the `model:` line of its log; null when the CLI reports none). A receipt with `completed=false` is an interrupted/in-progress attempt, never completion evidence. Timeout and cancellation stop the worker's process group, with one second for termination before a forced stop, and preserve partial output.
 
+`xagent wait [--timeout <sec>] <out-dir>...` blocks until each attempt's xagent process has exited, which it reads from the receipt's `pid`, and prints `<out-dir> status=<status> completed=<bool> reason=<reason>` as each one ends. An exited xagent whose receipt is still unfinished prints `status=DROPOUT completed=false reason=killed`; an out-dir with no receipt after 10 seconds, as a usage error leaves it, prints `reason=not_started`. It exits 0 when every attempt completed without `DROPOUT`, and 3 otherwise. With `--timeout`, attempts still running print `reason=running` and it exits 124; call it again to keep waiting, for a host whose shell calls have a time limit.
+
 [Maintenance](references/maintenance.md) holds xagent's own checks and the `XAGENT_EPHEMERAL` switch for disposable Claude checks; read it when changing xagent or running such checks.
 
 ## Agents
@@ -43,7 +45,7 @@ Before dispatching pi, read [the pi write guard](references/pi-guard.md).
 
 1. Write one standalone brief file per task. xagent appends the verdict contract and a do-not-delegate line.
 2. Give every attempt its own empty out-dir and every worker its own git worktree at the intended SHA. Keep the initial SHA and scope in its brief.
-3. Launch runs in the background with the host's own mechanism and wait for real completion. Several xagent calls may run in parallel.
+3. Launch runs in the background with the host's own mechanism, then wait for real completion with `xagent wait`, not a hand-written shell loop. Several xagent calls may run in parallel.
 4. Check actual process completion and `meta.json` `completed`/`status`, never the exit code alone. Only an unquoted final verdict outside a code block is accepted. `DROPOUT` means no usable verdict: inspect partial changes and process termination before rerunning once into a new output directory, then record a gap. Do not automatically retry a cancelled task. Usage errors return 2 without starting a worker.
 5. `PASS` is the worker's claim. Missing required checks count as incomplete work; optional unverified checks must be named. Read the diff and rerun the checks yourself before accepting it.
 6. Workers cannot dispatch again: xagent refuses when `XAGENT_DEPTH` is set.

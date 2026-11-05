@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Run one local agent, collect its verdict, and leave a bounded execution receipt."""
+"""Run one local agent, collect its verdict, and leave a bounded execution receipt.
+
+`xagent wait <out-dir>...` waits for attempts started in the background; see `xagent wait --help`."""
 import argparse
 import hashlib
 import json
@@ -35,6 +37,10 @@ TERMINATION_GRACE = 1
 # elsewhere and marks nothing.
 RECEIPT_MARKERS = ("prompt.md", "agent.log")
 OUT_FILES = (*RECEIPT_MARKERS, "result.md")
+# xagent wait: seconds between checks, and how long an out_dir may go without a meta.json before its run counts as
+# never started (a usage error, which writes none). A run writes its first meta.json well inside a second.
+WAIT_POLL = 0.5
+WAIT_START_GRACE = 10
 # How each CLI's own report of the models a run used names the requested one. Claude resolves an alias such as opus
 # to claude-opus-<version>, ignores a context-window suffix such as [1m] on either side, and may add a small model for
 # its own housekeeping; grok reports a routed model such as magpie/likecode-grok/grok-4.7 by its last segment. Agents
@@ -219,7 +225,62 @@ def write_meta(out, meta):
     temporary.replace(out / "meta.json")
 
 
+def alive(pid):
+    if not isinstance(pid, int):
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def wait_line(out, status, completed, reason):
+    return f"{out} status={status or 'null'} completed={json.dumps(completed)} reason={reason or 'null'}"
+
+
+def outcome(out, waited):
+    """Return (status, completed, reason) once the attempt in out has ended, or None while it may still be running."""
+    try:
+        meta = json.loads((out / "meta.json").read_text())
+    except FileNotFoundError:
+        return None if waited < WAIT_START_GRACE else (None, False, "not_started")
+    if meta.get("completed") is True:
+        return meta.get("status"), True, meta.get("reason")
+    # An unfinished receipt whose xagent has exited means xagent itself was killed before recording an outcome.
+    return None if alive(meta.get("pid")) else ("DROPOUT", False, "killed")
+
+
+def wait(argv):
+    parser = argparse.ArgumentParser(prog="xagent wait", description="Wait until each attempt's xagent process has exited and print one line per out_dir as it ends. Exit 0 when every attempt completed without DROPOUT, 3 otherwise, 124 when --timeout passed first.")
+    parser.add_argument("out_dirs", nargs="+", type=Path, metavar="out_dir")
+    parser.add_argument("--timeout", type=float, help="stop after this many seconds; attempts still running print reason=running")
+    options = parser.parse_args(argv)
+    if options.timeout is not None and (not math.isfinite(options.timeout) or options.timeout <= 0):
+        parser.error("timeout must be a positive number of seconds")
+    started = time.monotonic()
+    pending, failed = list(dict.fromkeys(path.resolve() for path in options.out_dirs)), False
+    while True:
+        for out in list(pending):
+            ended = outcome(out, time.monotonic() - started)
+            if ended:
+                print(wait_line(out, *ended), flush=True)
+                failed |= not ended[1] or ended[0] == "DROPOUT"
+                pending.remove(out)
+        if not pending:
+            return 3 if failed else 0
+        if options.timeout is not None and time.monotonic() - started >= options.timeout:
+            for out in pending:
+                print(wait_line(out, None, False, "running"), flush=True)
+            return 124
+        time.sleep(WAIT_POLL)
+
+
 def main():
+    if sys.argv[1:2] == ["wait"]:
+        return wait(sys.argv[2:])
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("agent", type=agent_spec, metavar="<agent>[/<model>]", help=f"one of {', '.join(AGENTS)}; a model after the first / is passed to that CLI")
     parser.add_argument("mode", choices=("ro", "rw"))
@@ -259,7 +320,7 @@ def main():
         (out / name).write_text(text)
     meta = dict(
         agent=agent, model=model, effort=options.effort, mode=options.mode, sandbox=sandbox(agent, options.mode, options.full_access),
-        workdir=str(workdir), exit=None,
+        workdir=str(workdir), pid=os.getpid(), exit=None,
         timed_out=False, cancelled=False, seconds=0, status="DROPOUT",
         changed_workdir=None, snapshot_before=None, snapshot_after=None, resolved_models=None,
         completed=False, reason="incomplete",
