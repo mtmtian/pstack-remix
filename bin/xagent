@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Run one local agent, collect its verdict, and leave a bounded execution receipt."""
+"""Run one local agent, collect its verdict, and leave a bounded execution receipt.
+
+`xagent wait <out-dir>...` waits for attempts started in the background; see `xagent wait --help`."""
 import argparse
 import hashlib
 import json
@@ -35,6 +37,11 @@ TERMINATION_GRACE = 1
 # elsewhere and marks nothing.
 RECEIPT_MARKERS = ("prompt.md", "agent.log")
 OUT_FILES = (*RECEIPT_MARKERS, "result.md")
+# xagent wait: seconds between checks, and how long an out_dir may go without a meta.json before its run counts as
+# never started (a usage error, which writes none). A run writes its first meta.json well inside a second. A wait
+# --timeout below the grace could never tell a missing receipt from a slow start, so it is refused.
+WAIT_POLL = 0.5
+WAIT_START_GRACE = 5
 # How each CLI's own report of the models a run used names the requested one. Claude resolves an alias such as opus
 # to claude-opus-<version>, ignores a context-window suffix such as [1m] on either side, and may add a small model for
 # its own housekeeping; grok reports a routed model such as magpie/likecode-grok/grok-4.7 by its last segment. Agents
@@ -219,7 +226,84 @@ def write_meta(out, meta):
     temporary.replace(out / "meta.json")
 
 
+def zombie(pid):
+    """Whether pid has exited but its parent has not reaped it yet, which kill(pid, 0) cannot tell from running."""
+    try:
+        if sys.platform.startswith("linux"):
+            # The state letter follows the command name, which is in parentheses and may itself contain ")".
+            return Path(f"/proc/{pid}/stat").read_text().rpartition(")")[2].split()[:1] == ["Z"]
+        return subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True, timeout=5).stdout.lstrip().startswith("Z")
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def alive(pid):
+    if not isinstance(pid, int):
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        pass
+    # A launcher that has not reaped a killed xagent yet leaves a zombie, and wait cannot reap another process's child.
+    return not zombie(pid)
+
+
+def wait_line(out, status, completed, reason):
+    return f"{out} status={status or 'null'} completed={json.dumps(completed)} reason={reason or 'null'}"
+
+
+def outcome(out, waited, exited=False):
+    """Return (status, completed, reason) once the attempt in out has ended, or None while it may still be running."""
+    try:
+        meta = json.loads((out / "meta.json").read_text())
+    except FileNotFoundError:
+        return None if waited < WAIT_START_GRACE else (None, False, "not_started")
+    except (OSError, ValueError):
+        return None, False, "unreadable"
+    if meta.get("completed") is True:
+        return meta.get("status"), True, meta.get("reason")
+    if exited:
+        # Still unfinished after its xagent exited: xagent itself was killed before recording an outcome.
+        return "DROPOUT", False, "killed"
+    if alive(meta.get("pid")):
+        return None
+    # xagent records its outcome before it exits, so the exit just seen may have come after the read above: read again.
+    return outcome(out, waited, exited=True)
+
+
+def wait(argv):
+    parser = argparse.ArgumentParser(prog="xagent wait", description="Wait until each attempt has ended, with its receipt completed or its xagent process gone, and print one line per out_dir as it ends. Exit 0 when every attempt completed without DROPOUT, 3 otherwise, 124 when --timeout passed first.")
+    parser.add_argument("out_dirs", nargs="+", type=Path, metavar="out_dir")
+    parser.add_argument("--timeout", type=float, help=f"stop after this many seconds, at least {WAIT_START_GRACE}; attempts still running print reason=running")
+    options = parser.parse_args(argv)
+    if options.timeout is not None and not (math.isfinite(options.timeout) and options.timeout >= WAIT_START_GRACE):
+        parser.error(f"timeout must be at least {WAIT_START_GRACE} seconds")
+    started = time.monotonic()
+    pending, failed = list(dict.fromkeys(path.resolve() for path in options.out_dirs)), False
+    while True:
+        # One clock reading per pass: a pass that reaches --timeout has then given each missing receipt the full grace.
+        waited = time.monotonic() - started
+        for out in list(pending):
+            ended = outcome(out, waited)
+            if ended:
+                status, completed, reason = ended
+                print(wait_line(out, status, completed, reason), flush=True)
+                failed |= not completed or status == "DROPOUT"
+                pending.remove(out)
+        if not pending:
+            return 3 if failed else 0
+        if options.timeout is not None and waited >= options.timeout:
+            for out in pending:
+                print(wait_line(out, None, False, "running"), flush=True)
+            return 124
+        time.sleep(WAIT_POLL)
+
+
 def main():
+    if sys.argv[1:2] == ["wait"]:
+        return wait(sys.argv[2:])
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("agent", type=agent_spec, metavar="<agent>[/<model>]", help=f"one of {', '.join(AGENTS)}; a model after the first / is passed to that CLI")
     parser.add_argument("mode", choices=("ro", "rw"))
@@ -260,7 +344,7 @@ def main():
     # No verdict until the attempt ends; completed=False marks it unfinished, including after a hard kill.
     meta = dict(
         agent=agent, model=model, effort=options.effort, mode=options.mode, sandbox=sandbox(agent, options.mode, options.full_access),
-        workdir=str(workdir), exit=None,
+        workdir=str(workdir), pid=os.getpid(), exit=None,
         timed_out=False, cancelled=False, seconds=0, status=None,
         changed_workdir=None, snapshot_before=None, snapshot_after=None, resolved_models=None,
         completed=False, reason="incomplete",
