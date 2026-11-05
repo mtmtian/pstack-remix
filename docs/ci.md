@@ -9,6 +9,15 @@ brew install coreutils
 export PATH="$(brew --prefix coreutils)/libexec/gnubin:$PATH"
 ```
 
+If the `bun` on `PATH` is another version, install the pinned one into a cache directory and put it first in the current shell. npm may skip the package's install script, so run it explicitly:
+
+```sh
+BUN_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/pstack-bun/$(cat .bun-version)"
+npm install --prefix "$BUN_DIR" --no-save --no-package-lock "bun@$(cat .bun-version)"
+(cd "$BUN_DIR/node_modules/bun" && node install.js)
+export PATH="$BUN_DIR/node_modules/.bin:$PATH"
+```
+
 Install the locked development dependencies once, then run the same checks as GitHub Actions, which also set `STATECHART_INSTALL=1` so that the statechart render test runs:
 
 ```sh

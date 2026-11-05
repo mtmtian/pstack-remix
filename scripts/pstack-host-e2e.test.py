@@ -384,7 +384,10 @@ class HostHarnessAcceptanceTest(FIXTURES["HarnessFixture"]):
             self.assertIn("timed out", (self.scope / name).read_text())
 
     def test_given_stale_passing_bytecode_then_parent_and_independent_verification_reject_bad_source(self):
-        source = self.parent / "stats.py"
+        # Resolve symlinks such as macOS /var -> /private/var, so a pycache_prefix
+        # (Apple's /usr/bin/python3 sets one) maps this process and the child
+        # to the same cached .pyc path.
+        source = self.parent.resolve() / "stats.py"
         for _ in range(5):
             source.write_text(FIXED_STATS)
             py_compile.compile(str(source), doraise=True, invalidation_mode=py_compile.PycInvalidationMode.TIMESTAMP)

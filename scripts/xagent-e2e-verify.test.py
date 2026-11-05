@@ -25,7 +25,10 @@ class VerifyFixtureTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="xagent-e2e-verify-")
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        # Resolve symlinks such as macOS /var -> /private/var, so a pycache_prefix
+        # (Apple's /usr/bin/python3 sets one) maps this process and its children
+        # to the same cached .pyc path.
+        self.root = Path(self.temp.name).resolve()
 
     def make_repo(self, name):
         repo = self.root / name

@@ -775,7 +775,7 @@ def main():
     run.mkdir(parents=True, exist_ok=True)
     if any(run.iterdir()):
         parser.error("use a new empty run directory")
-    sources = ["bin/xagent", "bin/xagent-pi-guard.ts", "references/runtime.md", "references/claude-runtime.md", "references/codex-runtime.md", "skills/xagent/SKILL.md", "skills/swarm/SKILL.md", "skills/interrogate/SKILL.md", "scripts/pstack-host-e2e.py", "scripts/pstack-host-e2e.test.py", "scripts/pstack-host-e2e-native.test.py",
+    sources = ["bin/xagent", "bin/xagent-pi-guard.ts", "references/runtime.md", "references/claude-runtime.md", "references/codex-runtime.md", "skills/xagent/SKILL.md", "skills/xagent/references/maintenance.md", "skills/xagent/references/pi-guard.md", "skills/swarm/SKILL.md", "skills/interrogate/SKILL.md", "scripts/pstack-host-e2e.py", "scripts/pstack-host-e2e.test.py", "scripts/pstack-host-e2e-native.test.py",
                "scripts/pstack-host-e2e-fixtures.py", "scripts/e2e-native-evidence.py", "scripts/e2e-process.py"]
     (run / "source-hashes.json").write_text(json.dumps({name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest() for name in sources}, indent=2) + "\n")
     hosts = options.host or list(HOSTS)
