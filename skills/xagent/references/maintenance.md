@@ -1,18 +1,6 @@
-# xagent maintenance and agent notes
+# xagent maintenance
 
-Details from [the xagent skill](../SKILL.md) that only maintaining xagent or dispatching pi or grok needs.
-
-## pi write guard
-
-The pi write guard accepts plain relative or absolute paths, including paths through existing internal symlinks. Use plain paths instead of `@`, `~`, URI or Unicode-space aliases that pi would normalize. Bash checks accept a limited non-expanding command syntax with ordinary quoted arguments, and reject output redirection and `--output` options. Tests/build scripts still execute project code, so this is an accident guard, not a sandbox.
-
-## grok read-only sandbox
-
-Grok's built-in read-only sandbox refuses to start while `/var/run/docker.sock` is a symlink, so its readers can still write the workdir.
-
-## One-time setup and the agy allowlist
-
-claude needs `claude auth login` once. The agy allowlist mirrors `bin/xagent-allowed-commands`; `scripts/xagent-e2e.sh` fails on drift.
+Read when changing [xagent](../SKILL.md) or running disposable Claude checks.
 
 ## XAGENT_EPHEMERAL
 
