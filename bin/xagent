@@ -226,6 +226,17 @@ def write_meta(out, meta):
     temporary.replace(out / "meta.json")
 
 
+def zombie(pid):
+    """Whether pid has exited but its parent has not reaped it yet, which kill(pid, 0) cannot tell from running."""
+    try:
+        if sys.platform.startswith("linux"):
+            # The state letter follows the command name, which is in parentheses and may itself contain ")".
+            return Path(f"/proc/{pid}/stat").read_text().rpartition(")")[2].split()[:1] == ["Z"]
+        return subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True, timeout=5).stdout.lstrip().startswith("Z")
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 def alive(pid):
     if not isinstance(pid, int):
         return False
@@ -234,8 +245,9 @@ def alive(pid):
     except ProcessLookupError:
         return False
     except PermissionError:
-        return True
-    return True
+        pass
+    # A launcher that has not reaped a killed xagent yet leaves a zombie, and wait cannot reap another process's child.
+    return not zombie(pid)
 
 
 def wait_line(out, status, completed, reason):
@@ -266,8 +278,10 @@ def wait(argv):
     started = time.monotonic()
     pending, failed = list(dict.fromkeys(path.resolve() for path in options.out_dirs)), False
     while True:
+        # One clock reading per pass: a pass that reaches --timeout has then given each missing receipt the full grace.
+        waited = time.monotonic() - started
         for out in list(pending):
-            ended = outcome(out, time.monotonic() - started)
+            ended = outcome(out, waited)
             if ended:
                 status, completed, reason = ended
                 print(wait_line(out, status, completed, reason), flush=True)
@@ -275,7 +289,7 @@ def wait(argv):
                 pending.remove(out)
         if not pending:
             return 3 if failed else 0
-        if options.timeout is not None and time.monotonic() - started >= options.timeout:
+        if options.timeout is not None and waited >= options.timeout:
             for out in pending:
                 print(wait_line(out, None, False, "running"), flush=True)
             return 124

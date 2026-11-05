@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Black-box xagent regressions. Vendor CLIs are replaced, Git and processes are real."""
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -371,8 +372,9 @@ class XAgentTests(unittest.TestCase):
             meta = json.loads((out / "meta.json").read_text())
             self.assertEqual(meta["pid"], processes[agent].pid)
 
-    def test_given_xagent_is_killed_mid_run_when_waited_then_it_is_a_dropout_and_a_timeout_reports_running_first(self):
-        out = self.base / "killed-out"
+    @contextlib.contextmanager
+    def stuck_attempt(self, out):
+        """Start a pi attempt whose worker ignores SIGTERM and sleeps, and yield its xagent process once the worker runs."""
         with socket.socket(socket.AF_UNIX) as server:
             server.bind(str(self.base / "ready.sock"))
             server.listen(1)
@@ -384,27 +386,43 @@ class XAgentTests(unittest.TestCase):
                 conn, _ = server.accept()
                 with conn:
                     worker = json.loads(conn.recv(4096))["pid"]
-                running = self.xagent_wait("--timeout", "5", out)
-                self.assertEqual(running.returncode, 124, running.stdout + running.stderr)
-                self.assertEqual(running.stdout, f"{out.resolve()} status=null completed=false reason=running\n")
-                process.kill()
-                process.wait(timeout=5)
-                killed = self.xagent_wait(out)
-                self.assertEqual(killed.returncode, 3, killed.stdout + killed.stderr)
-                self.assertEqual(killed.stdout, f"{out.resolve()} status=DROPOUT completed=false reason=killed\n")
+                yield process
             finally:
                 if process.poll() is None:
                     process.kill()
-                    process.wait(timeout=5)
+                process.wait(timeout=5)
                 if worker is not None:
                     try: os.killpg(worker, signal.SIGKILL)
                     except ProcessLookupError: pass
 
-    def test_given_a_run_that_never_wrote_a_receipt_when_waited_then_it_is_reported_not_started(self):
+    def test_given_xagent_is_killed_mid_run_when_waited_then_it_is_a_dropout_and_a_timeout_reports_running_first(self):
+        out = self.base / "killed-out"
+        with self.stuck_attempt(out) as process:
+            running = self.xagent_wait("--timeout", "5", out)
+            self.assertEqual(running.returncode, 124, running.stdout + running.stderr)
+            self.assertEqual(running.stdout, f"{out.resolve()} status=null completed=false reason=running\n")
+            process.kill()
+            process.wait(timeout=5)
+            killed = self.xagent_wait(out)
+            self.assertEqual(killed.returncode, 3, killed.stdout + killed.stderr)
+            self.assertEqual(killed.stdout, f"{out.resolve()} status=DROPOUT completed=false reason=killed\n")
+
+    def test_given_xagent_is_killed_and_its_launcher_has_not_reaped_it_when_waited_then_it_is_a_dropout(self):
+        out = self.base / "zombie-out"
+        with self.stuck_attempt(out) as process:
+            process.kill()
+            killed = self.xagent_wait("--timeout", "5", out)
+            self.assertEqual(killed.returncode, 3, killed.stdout + killed.stderr)
+            self.assertEqual(killed.stdout, f"{out.resolve()} status=DROPOUT completed=false reason=killed\n")
+            # Still unreaped after the wait, so the wait saw a zombie rather than a gone process.
+            state = subprocess.run(["ps", "-o", "stat=", "-p", str(process.pid)], capture_output=True, text=True).stdout
+            self.assertTrue(state.lstrip().startswith("Z"), state)
+
+    def test_given_a_run_that_never_wrote_a_receipt_when_waited_with_the_shortest_timeout_then_the_first_call_reports_not_started(self):
         out = self.base / "usage-error-out"
         usage = subprocess.run(self.args(out, extra=("--effort", "huge")), env=self.env, capture_output=True, text=True, timeout=15)
         self.assertEqual(usage.returncode, 2)
-        result = self.xagent_wait(out)
+        result = self.xagent_wait("--timeout", "5", out)
         self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
         self.assertEqual(result.stdout, f"{out.resolve()} status=null completed=false reason=not_started\n")
 
