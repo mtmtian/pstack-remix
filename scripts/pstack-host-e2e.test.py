@@ -504,7 +504,7 @@ class HostHarnessAcceptanceTest(FIXTURES["HarnessFixture"]):
         receipts = self.final_handoff_receipts()
         retry = self.receipt(
             "codex", "rw", Path(receipts[0]["workdir"]), name="pending-retry",
-            completed=False, status="DROPOUT", exit=None,
+            completed=False, status=None, exit=None,
         )
         checks = self.valid_receipts([*receipts, retry])
         self.assertTrue(checks["configured_writer_dispatched"])

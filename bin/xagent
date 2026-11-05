@@ -257,10 +257,11 @@ def main():
     prompt = brief + "\n\n" + "\n".join(notes) + "\n"
     for name, text in zip(OUT_FILES, (prompt, "", "")):
         (out / name).write_text(text)
+    # No verdict until the attempt ends; completed=False marks it unfinished, including after a hard kill.
     meta = dict(
         agent=agent, model=model, effort=options.effort, mode=options.mode, sandbox=sandbox(agent, options.mode, options.full_access),
         workdir=str(workdir), exit=None,
-        timed_out=False, cancelled=False, seconds=0, status="DROPOUT",
+        timed_out=False, cancelled=False, seconds=0, status=None,
         changed_workdir=None, snapshot_before=None, snapshot_after=None, resolved_models=None,
         completed=False, reason="incomplete",
     )
