@@ -319,6 +319,9 @@ def main():
         parser.error("refusing nested dispatch from inside an xagent worker")
     if options.full_access and (agent, options.mode) != ("codex", "rw"):
         parser.error(f"--full-access applies only to codex rw, not {agent} {options.mode}")
+    if not options.effort:
+        # An omitted --effort is legitimate (no effective value), but a forgotten one silently runs the CLI's default.
+        print(f"xagent: no --effort given; {agent} runs at its own configured default effort", file=sys.stderr)
     if not math.isfinite(options.timeout) or options.timeout <= 0:
         parser.error("timeout must be a positive number of seconds")
     workdir, out = options.workdir.resolve(), options.out_dir.resolve()

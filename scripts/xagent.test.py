@@ -133,6 +133,7 @@ class XAgentTests(unittest.TestCase):
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertEqual(meta["status"], "PASS")
                     self.assertEqual((meta["agent"], meta["model"], meta["effort"]), (agent, model, "high"))
+                    self.assertNotIn("no --effort", result.stderr)
                     args = json.loads(captured.read_text())
                     pairs = list(zip(args, args[1:]))
                     for pair in SELECTION_FLAGS[agent](model, "high"):
@@ -177,6 +178,7 @@ class XAgentTests(unittest.TestCase):
                 result, meta = self.run_case("pass", agent, out=self.base / f"default-{agent}")
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual((meta["model"], meta["effort"]), (None, None))
+                self.assertIn(f"xagent: no --effort given; {agent} runs at its own configured default effort", result.stderr)
                 args = json.loads(captured.read_text())
                 self.assertFalse({"--model", "-m", "--effort", "--reasoning-effort", "--thinking"} & set(args), args)
                 self.assertFalse(any("model_reasoning_effort" in arg for arg in args), args)
