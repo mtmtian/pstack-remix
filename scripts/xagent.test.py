@@ -133,7 +133,7 @@ class XAgentTests(unittest.TestCase):
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertEqual(meta["status"], "PASS")
                     self.assertEqual((meta["agent"], meta["model"], meta["effort"]), (agent, model, "high"))
-                    self.assertNotIn("no --effort", result.stderr)
+                    self.assertNotIn("xagent: no --effort given", result.stderr)
                     args = json.loads(captured.read_text())
                     pairs = list(zip(args, args[1:]))
                     for pair in SELECTION_FLAGS[agent](model, "high"):
@@ -178,10 +178,19 @@ class XAgentTests(unittest.TestCase):
                 result, meta = self.run_case("pass", agent, out=self.base / f"default-{agent}")
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual((meta["model"], meta["effort"]), (None, None))
-                self.assertIn(f"xagent: no --effort given; {agent} runs at its own configured default effort", result.stderr)
+                self.assertIn("xagent: no --effort given", result.stderr)
                 args = json.loads(captured.read_text())
                 self.assertFalse({"--model", "-m", "--effort", "--reasoning-effort", "--thinking"} & set(args), args)
                 self.assertFalse(any("model_reasoning_effort" in arg for arg in args), args)
+
+    def test_given_no_effort_when_usage_fails_after_the_flags_then_no_effort_warning_is_printed(self):
+        out = self.base / "busy-out"
+        out.mkdir()
+        (out / "earlier.txt").write_text("earlier attempt\n")
+        result = subprocess.run(self.args(out), env=self.env, capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("out_dir must be empty", result.stderr)
+        self.assertNotIn("xagent: no --effort given", result.stderr)
 
     def test_given_a_malformed_model_or_effort_then_usage_fails_before_any_worker_starts(self):
         captured = self.base / "rejected-argv.json"

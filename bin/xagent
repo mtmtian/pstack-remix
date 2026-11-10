@@ -319,9 +319,6 @@ def main():
         parser.error("refusing nested dispatch from inside an xagent worker")
     if options.full_access and (agent, options.mode) != ("codex", "rw"):
         parser.error(f"--full-access applies only to codex rw, not {agent} {options.mode}")
-    if not options.effort:
-        # An omitted --effort is legitimate (no effective value), but a forgotten one silently runs the CLI's default.
-        print(f"xagent: no --effort given; {agent} runs at its own configured default effort", file=sys.stderr)
     if not math.isfinite(options.timeout) or options.timeout <= 0:
         parser.error("timeout must be a positive number of seconds")
     workdir, out = options.workdir.resolve(), options.out_dir.resolve()
@@ -333,6 +330,9 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     if any(out.iterdir()):
         parser.error("out_dir must be empty; use a new directory for each retry")
+    if not options.effort:
+        # An omitted --effort is legitimate (no effective value), but a forgotten one silently runs the CLI's default.
+        print(f"xagent: no --effort given; {agent} runs at its own configured default effort", file=sys.stderr)
     allowed = [line.strip() for line in (ROOT / "xagent-allowed-commands").read_text().splitlines() if line.strip() and not line.lstrip().startswith("#")]
     notes = ["You are a delegated worker: do the task yourself and do not delegate it to other agents."]
     if options.mode == "ro":
