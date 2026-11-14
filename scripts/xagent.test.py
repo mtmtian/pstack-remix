@@ -47,16 +47,8 @@ if case == 'wait':
         s.sendall(json.dumps({'pid':os.getpid()}).encode())
     time.sleep(30)
 if case == 'slow': time.sleep(1)
-agy_errors = {
-    'agy_not_retryable': 'AGY_ERROR: {"short_error":"User location is not supported","status":"INVALID_ARGUMENT","error_code":400,"code_kind":"http","retryable":false,"error_id":"e1"}',
-    'agy_retryable': 'AGY_ERROR: {"short_error":"Overloaded","status":"UNAVAILABLE","error_code":503,"code_kind":"http","retryable":true,"error_id":"e2"}',
-    'agy_unmarked': 'AGY_ERROR: {"short_error":"Unknown","error_code":500}',
-    'agy_malformed': 'AGY_ERROR: {"short_error":"cut off","retryable":false',
-    'agy_plain': 'Error: FAILED_PRECONDITION (code 400): User location is not supported for the API use.',
-}
-if case in agy_errors:
-    print('Error: FAILED_PRECONDITION (code 400): User location is not supported for the API use.', file=sys.stderr)
-    print(agy_errors[case], file=sys.stderr)
+if os.environ.get('XAGENT_TEST_STDERR'):
+    print(os.environ['XAGENT_TEST_STDERR'], file=sys.stderr)
     sys.exit(1)
 if agent == 'claude': print(json.dumps(invalid_json[case]) if case in invalid_json else json.dumps({'result':reply, **report}))
 elif agent == 'grok': print(json.dumps(invalid_json[case]) if case in invalid_json else json.dumps({'text':reply, **report}))
@@ -134,15 +126,26 @@ class XAgentTests(unittest.TestCase):
                 self.assertNotIn("--model", args)
 
     def test_given_agy_declares_its_failure_not_retryable_then_the_dropout_reason_says_so(self):
-        for case, reason in (("agy_not_retryable", "not_retryable"), ("agy_retryable", "process_failed"), ("agy_unmarked", "process_failed"), ("agy_malformed", "process_failed"), ("agy_plain", "process_failed")):
-            with self.subTest(case=case):
-                result, meta = self.run_case(case, "gemini")
+        location = "Error: FAILED_PRECONDITION (code 400): User location is not supported for the API use."
+        cases = (
+            ('AGY_ERROR: {"short_error":"User location is not supported","status":"INVALID_ARGUMENT","error_code":400,"retryable":false}', "not_retryable"),
+            (location + '\nAGY_ERROR: {"short_error":"User location is not supported","retryable":false}', "not_retryable"),
+            ('AGY_ERROR: {"short_error":"Overloaded","status":"UNAVAILABLE","error_code":503,"retryable":true}', "process_failed"),
+            ('AGY_ERROR: {"short_error":"Unknown","error_code":500}', "process_failed"),
+            ('AGY_ERROR: {"short_error":"cut off","retryable":false', "process_failed"),
+            (location, "process_failed"),
+        )
+        for number, (line, reason) in enumerate(cases):
+            with self.subTest(line=line):
+                self.env["XAGENT_TEST_STDERR"] = line
+                result, meta = self.run_case("stderr_fail", "gemini", out=self.base / f"agy-{number}")
                 self.assertEqual(result.returncode, 3, result.stderr)
                 self.assertEqual((meta["status"], meta["reason"], meta["exit"]), ("DROPOUT", reason, 1))
-                self.assertIn("AGY_ERROR" if case != "agy_plain" else "FAILED_PRECONDITION", (self.base / f"{case}-gemini" / "agent.log").read_text())
+                self.assertIn(line, (self.base / f"agy-{number}" / "agent.log").read_text())
 
     def test_given_another_cli_logs_an_agy_error_line_then_its_failure_stays_process_failed(self):
-        result, meta = self.run_case("agy_not_retryable", "codex")
+        self.env["XAGENT_TEST_STDERR"] = 'AGY_ERROR: {"short_error":"User location is not supported","retryable":false}'
+        result, meta = self.run_case("stderr_fail", "codex")
         self.assertEqual((meta["status"], meta["reason"]), ("DROPOUT", "process_failed"))
 
     def test_given_a_model_and_effort_when_each_adapter_runs_then_its_cli_gets_them_and_the_receipt_records_them(self):

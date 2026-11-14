@@ -88,18 +88,16 @@ def resolved_models(agent, payload, log):
     return sorted(usage) if isinstance(usage, dict) and usage else None
 
 
-def not_retryable(agent, log):
-    """Whether the CLI's own log declares the failure not retryable; only agy reports that."""
-    if agent != "gemini":
-        return False
-    for line in AGY_ERROR.findall(log):
-        try:
-            error = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(error, dict) and error.get("retryable") is False:
-            return True
-    return False
+def failure_reason(agent, log_text):
+    """not_retryable when the CLI's own log declares the failure so (only agy does), else process_failed."""
+    if agent == "gemini":
+        for line in AGY_ERROR.findall(log_text):
+            try:
+                if json.loads(line).get("retryable") is False:
+                    return "not_retryable"
+            except ValueError:
+                pass
+    return "process_failed"
 
 
 def classify(code, timed_out, text):
@@ -399,10 +397,9 @@ def main():
                 raise ValueError("agent JSON reply field must be a string")
             (out / "result.md").write_text(reply)
         status = classify(code, timed_out, (out / "result.md").read_text())
-        log = (out / "agent.log").read_text(errors="replace")
-        failure = "not_retryable" if not_retryable(agent, log) else "process_failed"
-        reason = "cancelled" if cancelled else "timeout" if timed_out else failure if code else "invalid_verdict" if status == "DROPOUT" else None
-        meta["resolved_models"] = resolved_models(agent, payload, log)
+        log_text = (out / "agent.log").read_text(errors="replace")
+        reason = "cancelled" if cancelled else "timeout" if timed_out else failure_reason(agent, log_text) if code else "invalid_verdict" if status == "DROPOUT" else None
+        meta["resolved_models"] = resolved_models(agent, payload, log_text)
         # A CLI may run its default instead of a model the account may not use, and still exit 0.
         if model and meta["resolved_models"] and status != "DROPOUT" and not any(MODEL_MATCHES[agent](model, used) for used in meta["resolved_models"]):
             status, reason = "DROPOUT", "model_mismatch"
