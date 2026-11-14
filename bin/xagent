@@ -54,6 +54,8 @@ MODEL_MATCHES = {
 # Codex prints its settings, including the model, at the top of its log.
 CODEX_MODEL_LINE = re.compile(r"^model:\s*(\S+)\s*$", re.MULTILINE)
 VERDICT = re.compile(r"(?:STATUS: (PASS|ISSUES|BLOCKED)|\*\*STATUS: (PASS|ISSUES|BLOCKED)\*\*)")
+# agy ends a failed run with one such line on stderr; "retryable": false means rerunning cannot succeed.
+AGY_ERROR = re.compile(r"^AGY_ERROR: (\{.*\})\s*$", re.MULTILINE)
 
 
 def agent_spec(value):
@@ -84,6 +86,20 @@ def resolved_models(agent, payload, log):
         return [match.group(1)] if match else None
     usage = payload.get("modelUsage") if isinstance(payload, dict) and agent in MODEL_MATCHES else None
     return sorted(usage) if isinstance(usage, dict) and usage else None
+
+
+def not_retryable(agent, log):
+    """Whether the CLI's own log declares the failure not retryable; only agy reports that."""
+    if agent != "gemini":
+        return False
+    for line in AGY_ERROR.findall(log):
+        try:
+            error = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(error, dict) and error.get("retryable") is False:
+            return True
+    return False
 
 
 def classify(code, timed_out, text):
@@ -383,8 +399,10 @@ def main():
                 raise ValueError("agent JSON reply field must be a string")
             (out / "result.md").write_text(reply)
         status = classify(code, timed_out, (out / "result.md").read_text())
-        reason = "cancelled" if cancelled else "timeout" if timed_out else "process_failed" if code else "invalid_verdict" if status == "DROPOUT" else None
-        meta["resolved_models"] = resolved_models(agent, payload, (out / "agent.log").read_text(errors="replace"))
+        log = (out / "agent.log").read_text(errors="replace")
+        failure = "not_retryable" if not_retryable(agent, log) else "process_failed"
+        reason = "cancelled" if cancelled else "timeout" if timed_out else failure if code else "invalid_verdict" if status == "DROPOUT" else None
+        meta["resolved_models"] = resolved_models(agent, payload, log)
         # A CLI may run its default instead of a model the account may not use, and still exit 0.
         if model and meta["resolved_models"] and status != "DROPOUT" and not any(MODEL_MATCHES[agent](model, used) for used in meta["resolved_models"]):
             status, reason = "DROPOUT", "model_mismatch"
