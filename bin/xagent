@@ -95,7 +95,7 @@ def failure_reason(agent, log_text):
             try:
                 if json.loads(line).get("retryable") is False:
                     return "not_retryable"
-            except ValueError:
+            except (ValueError, RecursionError):
                 pass
     return "process_failed"
 
