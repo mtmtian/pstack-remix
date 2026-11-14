@@ -39,7 +39,7 @@ Role names follow the bundled workflow: the code playbook roles `feature`, `refa
 
 Shared `required_panel_members`, for example `["xagent:grok", "xagent:gemini"]`, adds those external agents to every panel and the default panel on both hosts. It is rejected in a host override; `null` removes it.
 
-Shared `auxiliary_panel_members`, for example `["xagent:gemini"]`, marks external panel members whose failure after the retry is a reported gap instead of a blocker. It adds no member to any panel, so list the agent in the panels it should join. It is rejected in a host override; `null` removes it.
+Shared `auxiliary_panel_members`, for example `["xagent:gemini"]`, marks external panel members whose unresolved outcome is a reported gap instead of a blocker. It adds no member to any panel, so list the agent in the panels it should join. It is rejected in a host override; `null` removes it.
 
 Shared `xagent_effort_caps`, for example `{"gemini": "high"}`, sets the highest effort each external agent receives, for a CLI whose model accepts fewer levels than `reasoning_effort` or a raised job asks for. Read the levels from that CLI's model list, such as `agy models`, before saving. It changes only the effort, never the model. It is rejected in a host override; `null` removes it.
 
