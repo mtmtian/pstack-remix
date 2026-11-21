@@ -186,7 +186,7 @@ const runToFiles = (
 async function findTlc(cwd: string) {
   // Java runs in the scratch folder, so a relative path resolves from where the command started.
   const { TLA2TOOLS } = process.env;
-  const JAVA = process.env.JAVA?.includes("/") ? path.resolve(process.env.JAVA) : process.env.JAVA;
+  const JAVA = process.env.JAVA && /[\\/]/.test(process.env.JAVA) ? path.resolve(process.env.JAVA) : process.env.JAVA;
   if (TLA2TOOLS) return { jar: path.resolve(TLA2TOOLS), java: JAVA || "java" };
   const mise = (...args: string[]) =>
     runChild("mise", args, { cwd, env: { ...process.env, MISE_CEILING_PATHS: cwd } });

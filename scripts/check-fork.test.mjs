@@ -226,6 +226,7 @@ const DROPPED = [
   ["xagent-allowlist", "bin/xagent-allowed-commands", null],
   ["runtime-remote-boundary", "references/runtime.md", "Never push the trunk directly. Merges, `--auto`,", "Merges,"],
   ["babysit-merge-authorization", "skills/poteto-mode/playbooks/babysit.md", "Babysitting never authorizes merging. ", ""],
+  ["worker-merge-authorization", "skills/poteto-mode/worker.md", "Stop for anything the shared runtime contract's authorization list names, among them a merge, a deploy,", "Stop only for a deploy,"],
   ["auto-merge-on-request", "skills/poteto-mode/playbooks/shipping.md", "only when the user asked for merge-when-ready, and only on a PR", "only on a PR"],
   ["autopilot-merge-authorization", "skills/poteto-mode/playbooks/autopilot-full.md", "Only the operator's explicit authorization to merge this queue, together with your clean verdict, permits the merge.", "Green CI alone never authorizes a merge."],
   ["fast-mode-on-request", "skills/poteto-mode/SKILL.md", "Fast mode and priority service tiers cost more, so use them only when the user asked.", "Use fast mode only when the job is urgent, meaning CI or trunk is red or a person is blocked on the result right now."],
