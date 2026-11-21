@@ -101,7 +101,7 @@ Where upstream names a Cursor primitive, the fork names the host capability; the
 - The selected state directory instead of the root agent's system-prompt store.
 - `.agents/skills` and `~/.agents/skills` paths instead of `.cursor/skills`, and `poteto-agent.md` resolving poteto-mode from the Claude install record or the Codex plugin cache instead of `~/.cursor/plugins/`.
 - Host-rendered charts and output instead of `/visualize`, and the host's entry points instead of Custom Modes.
-- The local `poteto-agent.md` frontmatter.
+- The local `poteto-agent.md` frontmatter, which keeps `model: inherit`.
 
 ### Verification skill placement
 
@@ -109,7 +109,7 @@ Generated verification skills are personal local skills by default, at the user'
 
 ### Models and effort
 
-Models come from `config.json`, where every role inherits the parent by default, instead of upstream's Cursor slug defaults. Poteto-mode's Subagents section keeps upstream's "Code delegates tier by difficulty" routing: each code playbook's delegate reads its role, the hardest changes read `hardest tasks`, prose and judgment read `judgment and prose`, and verification workers read `verification workers`. `how` names its role key, `how explainer`, for the one read-only worker that explores and explains in a single pass, so a configured role is the one it reads. `why` and `reflect` run in the parent with no workers and read no role. A config that still sets their retired keys or `how explorer` stays valid, because `bin/config.mjs` accepts any role name.
+Models come from `config.json`, where every role inherits the parent by default, instead of upstream's Cursor slug defaults. Poteto-mode's Subagents section keeps upstream's "Code delegates tier by difficulty" routing: each code playbook's delegate reads its role, the hardest changes read `hardest tasks`, prose and judgment read `judgment and prose`, and verification workers read `verification workers`. `how` names its role key, `how explainer`, for the one read-only worker that explores and explains in a single pass, so a configured role is the one it reads. `why` and `reflect` run in the parent with no workers and read no role. A config that still sets the retired `how explorer`, `why investigators`, `why synthesizer`, `reflect judgment`, or `reflect tooling` stays valid, because `bin/config.mjs` accepts any role name.
 
 Effort moves per job within the role's model ("match effort to the job"): workers start from the resolved role and `reasoning_effort`, rise one step for the hardest work, and drop one step for judgment or two or more for routine work. The value goes only through each host's separate effort control (Codex `reasoning_effort`, the Claude Agent `effort` field, T3 `target.options`, `bin/xagent --effort`), and never changes a role's model, T3 target, or `xagent:<agent>` entry, so panels stay diverse. Native agent definitions own their effort: on Codex and Claude Code a worker's effort goes to a native agent type only when its definition sets none, so `reasoning_effort` mainly reaches `xagent:` workers, whose CLIs otherwise run at the user's interactive default.
 
