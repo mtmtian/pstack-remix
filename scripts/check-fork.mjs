@@ -256,13 +256,6 @@ export const REQUIRED = [
     section: "local-decisions",
   },
   {
-    id: "orchestrate-merge-authorization",
-    file: "skills/poteto-mode/playbooks/orchestrate.md",
-    pattern: /carries the PR from build to merge, merging only under the run's merge authorization\./,
-    hint: "Orchestrate's PR owners merge only under the run's merge authorization",
-    section: "local-decisions",
-  },
-  {
     id: "autopilot-merge-authorization",
     file: "skills/poteto-mode/playbooks/autopilot-full.md",
     pattern: /Only the operator's explicit authorization to merge this queue, together with your clean verdict, permits the merge\./,
