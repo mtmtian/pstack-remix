@@ -47,6 +47,9 @@ if case == 'wait':
         s.sendall(json.dumps({'pid':os.getpid()}).encode())
     time.sleep(30)
 if case == 'slow': time.sleep(1)
+if os.environ.get('XAGENT_TEST_STDERR'):
+    print(os.environ['XAGENT_TEST_STDERR'], file=sys.stderr)
+    sys.exit(1)
 if agent == 'claude': print(json.dumps(invalid_json[case]) if case in invalid_json else json.dumps({'result':reply, **report}))
 elif agent == 'grok': print(json.dumps(invalid_json[case]) if case in invalid_json else json.dumps({'text':reply, **report}))
 elif agent == 'codex':
@@ -121,6 +124,28 @@ class XAgentTests(unittest.TestCase):
                 args = json.loads(captured.read_text())
                 self.assertEqual(args[args.index("--mode") + 1], "plan" if mode == "ro" else "accept-edits")
                 self.assertNotIn("--model", args)
+
+    def test_given_agy_declares_its_failure_not_retryable_then_the_dropout_reason_says_so(self):
+        location = "Error: FAILED_PRECONDITION (code 400): User location is not supported for the API use."
+        cases = (
+            (location + '\nAGY_ERROR: {"short_error":"User location is not supported","retryable":false}', "not_retryable"),
+            ('AGY_ERROR: {"short_error":"Overloaded","status":"UNAVAILABLE","error_code":503,"retryable":true}', "process_failed"),
+            ('AGY_ERROR: {"short_error":"Unknown","error_code":500}', "process_failed"),
+            ('AGY_ERROR: {"short_error":"cut off","retryable":false,}', "process_failed"),
+            (location, "process_failed"),
+        )
+        for number, (line, reason) in enumerate(cases):
+            with self.subTest(line=line):
+                self.env["XAGENT_TEST_STDERR"] = line
+                result, meta = self.run_case("pass", "gemini", out=self.base / f"agy-{number}")  # XAGENT_TEST_STDERR makes the stub fail
+                self.assertEqual(result.returncode, 3, result.stderr)
+                self.assertEqual((meta["status"], meta["reason"], meta["exit"]), ("DROPOUT", reason, 1))
+                self.assertIn(line, (self.base / f"agy-{number}" / "agent.log").read_text())
+
+    def test_given_another_cli_logs_an_agy_error_line_then_its_failure_stays_process_failed(self):
+        self.env["XAGENT_TEST_STDERR"] = 'AGY_ERROR: {"short_error":"User location is not supported","retryable":false}'
+        result, meta = self.run_case("pass", "codex")  # XAGENT_TEST_STDERR makes the stub fail
+        self.assertEqual((meta["status"], meta["reason"]), ("DROPOUT", "process_failed"))
 
     def test_given_a_model_and_effort_when_each_adapter_runs_then_its_cli_gets_them_and_the_receipt_records_them(self):
         captured = self.base / "selection-argv.json"
