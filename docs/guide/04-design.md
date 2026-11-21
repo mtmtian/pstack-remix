@@ -10,13 +10,7 @@ One attempt at a hard design locks in the first shape the model thought of. `$ar
 $architect design the import pipeline before writing any code. i care most about how callers use it.
 ```
 
-[`$architect`](../../skills/architect/SKILL.md) grounds itself first, running `$how` over the code the design touches and `$why` when it moves ownership or layers. Then it runs `$arena` to produce competing design sketches, with the caller's usage written first in each, followed by types, signatures, and a module map.
-
-By default it proceeds straight from the synthesized design into implementation. If you want to see the design first, say so:
-
-```text
-$architect with checkpoint. stop and show me before implementing.
-```
+[`$architect`](../../skills/architect/SKILL.md) traces every system the change touches first. Then it sketches two different shapes, each with types, signatures, and module boundaries, and picks the one where each piece of state has one owner, each task has one way to do it, and callers need to know least. For a large or contested design, it runs `$arena` instead of sketching alone. If you want to see the design before any code, say so in the prompt.
 
 ## Fan out attempts with `$arena`
 
@@ -71,7 +65,7 @@ Read the Dropped list too. You can override the verdict.
 You might be wondering whether every change needs this. No. Most changes need none of it. A rough ladder:
 
 - A small, finished change you're unsure about needs `$interrogate` alone.
-- A change that crosses function boundaries or moves ownership earns `$architect`, which brings `$arena` with it.
+- A change that crosses function boundaries or moves ownership earns `$architect`, which brings `$arena` with it when the design is large or contested.
 - A standalone decision where independent attempts would help, like naming, formats, or an algorithm, is `$arena` directly.
 - A coverage matrix, set of parallel checks, or race with declared arms is `$swarm`.
 - A contested design that's expensive to reverse gets `$architect`, then `$interrogate` before shipping.
