@@ -1,10 +1,8 @@
 {
   "skills/poteto-mode/scripts/bootstrap.ts": "ccd2ed08fd9da9d0d942e5f2491cfc74bb92d8a08fa51755e0da1ac8de287361",
   "skills/poteto-mode/scripts/bun.lock": "667d9cf7222e9aae3fa42a4be383e657784216e9df115da02227fbc5ac7bbe46",
-  "skills/poteto-mode/scripts/check-plan.mjs": "8d230489ee022675358643ffe2076fb7dac75633167fad1737887d2f171ef05f",
-  "skills/poteto-mode/scripts/check-plan.test.ts": "774704d9cbc49f25c117683e341de777c31d9d675c0eee553a40f88105f6af96",
   "skills/poteto-mode/scripts/github-remote.ts": "037c002757c80157742e102dd76f8a1998e0c6f898437b4739d7bb28a746582b",
-  "skills/poteto-mode/scripts/package.json": "c9db6bb9362c6e319e395b358b113ebc72ab06b6c5e3a095093f6ebfdafe1c57",
+  "skills/poteto-mode/scripts/package.json": "0b7aa62edc524bf9d3f735b17f10ab7fea22797b80b7edc4a91620a570332d13",
   "skills/poteto-mode/scripts/watch-pr/cli.test.ts": "c091b239f3421193a05ecd47d9d10f9cfd9502cbb8ea33b7747fa47d3f25e764",
   "skills/poteto-mode/scripts/watch-pr/cli.ts": "226515dd8f32f56ea5f81e53047112de36e66d43ff41114e0f6794c648f0b530",
   "skills/poteto-mode/scripts/watch-pr/fakes.test-helper.ts": "1b58a84b93db4093ea606abed0721f28d49e20c6ff55823f553181678f478080",

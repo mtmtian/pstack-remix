@@ -42,7 +42,7 @@ Codex and Claude Code share the skills and configuration, but use different nati
 
 ## Start a task with `poteto-mode`
 
-`poteto-mode` matches the request to a playbook, copies its steps into the todo list, and uses other skills as those steps need them. A skipped step remains visible with its reason. State what should change and how to tell it is done; do not list skills unless you want to override a specific playbook choice.
+`poteto-mode` matches the request to a playbook, copies its steps into the todo list, and uses other skills as those steps need them. State what should change and how to tell it is done; do not list skills unless you want to override a specific playbook choice.
 
 When the current conversation already holds the task, short follow-ups such as "continue" or "keep going until the check passes" are enough. Say "new task" when the subject changes, or state that the question is read-only. The mode does not create a separate persistent host mode. For a long finite task, request the host's native goal explicitly and give it a checkable finish condition. Scheduling is separate and needs its own explicit request.
 
@@ -93,10 +93,9 @@ Close calls:
 
 - `how` explains current behavior; `why` traces the reasons; `teach` turns one or both into a plain explanation.
 - `arena` gives each worker the same brief and compares attempts; `swarm` assigns slices or a race and aggregates evidence.
-- `architect` settles a design and normally continues into implementation; add a review checkpoint if the user wants to approve the design first.
 - `interrogate` tries to break the diff; `blast-radius` investigates possible breakage outside it and proves a key safety fact.
 - `recall` rebuilds context across recent chats; `ketchup` covers only this chat since the user's last message; resuming one specific task or branch uses the Session pickup playbook.
-- `figure-it-out` designs one rigorous run; the Orchestrate playbook handles a program spanning multiple phases or PRs.
+- `figure-it-out` designs one rigorous run; the Autonomous run playbook drives one task to a finish condition.
 
 ## Playbooks and principles
 
@@ -104,7 +103,7 @@ Playbooks are steps inside `poteto-mode`, not separate skills. Phrases such as "
 
 `principle-*` skills state one engineering rule that `poteto-mode` can apply and cite. Users usually steer with the principle name, for example, "apply prove it works and show the actual output." Direct invocation remains available.
 
-pstack has no standalone `orchestrate` skill; Orchestrate is a playbook. Goals and recurring schedules come from the active host and remain separate from pstack. A playbook pushes its own branch and opens its PR, as upstream does; installing or invoking pstack does not authorize merges or other external writes, or create a schedule.
+pstack has no `orchestrate` skill or playbook; another plugin provides any `orchestrate` command. Goals and recurring schedules come from the active host and remain separate from pstack. A playbook pushes its own branch and opens its PR, as upstream does; installing or invoking pstack does not authorize merges or other external writes, or create a schedule.
 
 ## Fix a run that went wrong
 

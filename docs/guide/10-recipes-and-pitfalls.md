@@ -106,7 +106,7 @@ To watch the catch-up instead, run [`$ketchup-video`](../../skills/ketchup-video
 
 ## The pitfalls
 
-- **Enumerating skills in the prompt.** "use $how then $architect then $arena" reorders steps the playbook already sequences. State the goal and constraints. Name a skill only to override a default.
+- **Enumerating skills in the prompt.** "use $architect then $arena then $interrogate" reorders steps the playbook already sequences. State the goal and constraints. Name a skill only to override a default.
 - **A vague finish condition.** "make it better" gives `/goal` nothing to check. Give a command or artifact that can pass or fail. A goal is finite work, not a timer.
 - **Parallel agents in one worktree.** They overwrite each other, and nobody can tell which agent changed what. Say "own worktree per attempt" and the isolation is free.
 - **Using `$arena` for coverage.** `$arena` repeats one design or code brief, then picks a base and grafts the best parts. `$swarm` partitions slices or declared race arms and aggregates one report.

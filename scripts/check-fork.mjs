@@ -177,7 +177,7 @@ export const REQUIRED = [
   {
     id: "statechart-absolute-tools",
     file: "skills/statechart/scripts/run.ts",
-    pattern: /process\.env\.JAVA\?\.includes\("\/"\) \? path\.resolve\(process\.env\.JAVA\) : process\.env\.JAVA;\n\s*if \(TLA2TOOLS\) return \{ jar: path\.resolve\(TLA2TOOLS\)/,
+    pattern: /process\.env\.JAVA && \/\[\\\\\/\]\/\.test\(process\.env\.JAVA\) \? path\.resolve\(process\.env\.JAVA\) : process\.env\.JAVA;\n\s*if \(TLA2TOOLS\) return \{ jar: path\.resolve\(TLA2TOOLS\)/,
     hint: "JAVA and TLA2TOOLS resolve to absolute paths, since Java runs in TLC's scratch folder",
     section: "local-decisions",
   },
@@ -249,17 +249,17 @@ export const REQUIRED = [
     section: "local-decisions",
   },
   {
+    id: "worker-merge-authorization",
+    file: "skills/poteto-mode/worker.md",
+    pattern: /Stop for anything the shared runtime contract's authorization list names, among them a merge,/,
+    hint: "a delegated worker stops for merges and the other authorization-gated actions unless the operator's authorization covers them",
+    section: "local-decisions",
+  },
+  {
     id: "auto-merge-on-request",
     file: "skills/poteto-mode/playbooks/shipping.md",
     pattern: /Arm `--auto` [^.]*only when the user asked for merge-when-ready/,
     hint: "`--auto` is armed only when the user asked for merge-when-ready",
-    section: "local-decisions",
-  },
-  {
-    id: "orchestrate-merge-authorization",
-    file: "skills/poteto-mode/playbooks/orchestrate.md",
-    pattern: /carries the PR from build to merge, merging only under the run's merge authorization\./,
-    hint: "Orchestrate's PR owners merge only under the run's merge authorization",
     section: "local-decisions",
   },
   {

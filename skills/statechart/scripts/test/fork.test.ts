@@ -66,3 +66,14 @@ test("relative JAVA and TLA2TOOLS resolve from where the command started, not fr
   const args = fs.readFileSync(log, "utf8").split("\n");
   assert.equal(args[args.indexOf("-cp") + 1], path.join(cwd, "tla2tools.jar"));
 });
+
+test("a relative JAVA written with Windows separators resolves from where the command started too", () => {
+  const cwd = scratch();
+  const log = path.join(cwd, "java.log");
+  // On POSIX `bin\java` is one file name, so finding it proves the path was resolved against cwd.
+  script(path.join(cwd, "bin\\java"), `printf '%s\\n' "$@" >> '${log}'\nexit 1`);
+  const r = runOn(cwd, { JAVA: "bin\\java", TLA2TOOLS: "tla2tools.jar" });
+  assert.equal(r.status, 2, r.stderr);
+  assert.match(r.stderr, /SANY could not read/);
+  assert.ok(fs.existsSync(log), r.stderr);
+});
