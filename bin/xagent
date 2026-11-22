@@ -248,15 +248,16 @@ def keep_worker_result(out):
     try:
         info = result.lstat()
     except FileNotFoundError:
-        return None
-    if stat.S_ISREG(info.st_mode) and info.st_size == 0:
+        info = None
+    if info is None or (stat.S_ISREG(info.st_mode) and info.st_size == 0):
+        if info is None:
+            result.write_text("")
         return None
     name, number = f"{WORKER_RESULT}.md", 1
     while os.path.lexists(out / name):
         number += 1
         name = f"{WORKER_RESULT}-{number}.md"
     result.rename(out / name)
-    # A failure before the reply is written leaves result.md empty, as it was when the run began.
     result.write_text("")
     return name
 
@@ -418,7 +419,8 @@ def main():
         meta.update(exit=code, timed_out=timed_out, cancelled=cancelled)
         meta["worker_result"] = keep_worker_result(out)
         # A CLI killed or failed before it wrote its reply file leaves none.
-        text = reply_path.read_text() if reply_path.exists() else ""
+        # errors="replace": output cut off mid-character by a timeout is still the partial reply.
+        text = reply_path.read_text(errors="replace") if reply_path.exists() else ""
         payload = None
         if json_field:
             payload = json.loads(text)

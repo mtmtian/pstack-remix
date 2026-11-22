@@ -53,10 +53,11 @@ if os.environ.get('XAGENT_TEST_WORKER_REPORT'):
         (out / 'elsewhere.txt').write_text('not xagent\'s\n')
         (out / 'result.md').unlink()
         (out / 'result.md').symlink_to(out / 'elsewhere.txt')
+    elif os.environ['XAGENT_TEST_WORKER_REPORT'] == 'delete': (out / 'result.md').unlink()
     else: (out / 'result.md').write_text('# Worker report\n' + 'detail\n' * 114)
     if os.environ['XAGENT_TEST_WORKER_REPORT'] == 'clobber': (out / 'worker-result.md').write_text('earlier\n')
 if case == 'partial_timeout':
-    print('Partial findings.', flush=True)
+    sys.stdout.buffer.write(b'Partial findings.\n\xe2\x80'); sys.stdout.flush()
     time.sleep(30)
 if os.environ.get('XAGENT_TEST_STDERR'):
     print(os.environ['XAGENT_TEST_STDERR'], file=sys.stderr)
@@ -169,7 +170,8 @@ class XAgentTests(unittest.TestCase):
                 out = self.base / f"timeout-{agent}"
                 _, meta = self.run_case("partial_timeout", agent, out=out, timeout="1")
                 self.assertEqual((meta["status"], meta["reason"], meta["worker_result"]), ("DROPOUT", "timeout", "worker-result.md"))
-                self.assertEqual((out / "result.md").read_text().strip(), "Partial findings.")
+                # The stand-in is cut off mid-character, as a timeout can leave it.
+                self.assertTrue((out / "result.md").read_text().startswith("Partial findings.\n"))
                 self.assertTrue((out / "worker-result.md").read_text().startswith("# Worker report\n"))
 
     def test_given_a_worker_report_and_a_malformed_reply_then_the_report_is_kept_and_result_md_is_not_the_report(self):
@@ -179,6 +181,13 @@ class XAgentTests(unittest.TestCase):
         self.assertEqual((meta["status"], meta["reason"], meta["worker_result"]), ("DROPOUT", "execution_error", "worker-result.md"))
         self.assertEqual((out / "result.md").read_text(), "")
         self.assertTrue((out / "worker-result.md").read_text().startswith("# Worker report\n"))
+
+    def test_given_a_worker_that_deleted_result_md_and_a_malformed_reply_then_result_md_is_still_there_and_empty(self):
+        self.env["XAGENT_TEST_WORKER_REPORT"] = "delete"
+        out = self.base / "deleted"
+        _, meta = self.run_case("json_array", "claude", out=out)
+        self.assertEqual((meta["status"], meta["reason"], meta["worker_result"]), ("DROPOUT", "execution_error", None))
+        self.assertEqual((out / "result.md").read_text(), "")
 
     def test_given_codex_exits_without_a_reply_then_the_failure_reason_is_kept_and_result_md_is_empty(self):
         self.env["XAGENT_TEST_STDERR"] = "boom"
