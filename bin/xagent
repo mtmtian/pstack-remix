@@ -37,6 +37,10 @@ TERMINATION_GRACE = 1
 # elsewhere and marks nothing.
 RECEIPT_MARKERS = ("prompt.md", "agent.log")
 OUT_FILES = (*RECEIPT_MARKERS, "result.md")
+# Where codex's -o and the agy and pi stdout write the worker's final reply, copied into result.md after the run: a
+# report the worker writes to result.md itself can then neither be overwritten by it nor interleave with an open stdout.
+REPLY = "reply.md"
+WORKER_RESULT = "worker-result"
 # xagent wait: seconds between checks, and how long an out_dir may go without a meta.json before its run counts as
 # never started (a usage error, which writes none). A run writes its first meta.json well inside a second. A wait
 # --timeout below the grace could never tell a missing receipt from a slow start, so it is refused.
@@ -178,17 +182,17 @@ def command(agent, mode, workdir, out, prompt, allowed, chosen, codex_sandbox):
             args += ["--no-session-persistence"]
         if mode == "rw":
             args += ["--allowedTools", *[f"Bash({prefix}:*)" for prefix in allowed]]
-        return args, out / "claude.json", "result"
+        return args, out / "claude.json", out / "claude.json", "result"
     if agent == "codex":
-        return ["codex", "exec", "--skip-git-repo-check", "--ephemeral", "-s", codex_sandbox, "-C", str(workdir), "-c", 'shell_environment_policy.set.XAGENT_DEPTH="1"', *chosen, "-o", str(out / "result.md"), "-"], out / "agent.log", None
+        return ["codex", "exec", "--skip-git-repo-check", "--ephemeral", "-s", codex_sandbox, "-C", str(workdir), "-c", 'shell_environment_policy.set.XAGENT_DEPTH="1"', *chosen, "-o", str(out / REPLY), "-"], out / "agent.log", out / REPLY, None
     if agent == "grok":
-        return ["grok", "--cwd", str(workdir), "--prompt-file", str(out / "prompt.md"), "--permission-mode", "auto", "--sandbox", "workspace", "--output-format", "json", *chosen], out / "grok.json", "text"
+        return ["grok", "--cwd", str(workdir), "--prompt-file", str(out / "prompt.md"), "--permission-mode", "auto", "--sandbox", "workspace", "--output-format", "json", *chosen], out / "grok.json", out / "grok.json", "text"
     if agent == "gemini":
-        return ["agy", "-p", prompt, "--mode", "plan" if mode == "ro" else "accept-edits", *chosen], out / "result.md", None
+        return ["agy", "-p", prompt, "--mode", "plan" if mode == "ro" else "accept-edits", *chosen], out / REPLY, out / REPLY, None
     args = ["pi", "-p", "--no-session", "--tools", "read,grep,find,ls" if mode == "ro" else "read,grep,find,ls,edit,write,bash", *chosen]
     if mode == "rw":
         args += ["-e", str(ROOT / "xagent-pi-guard.ts")]
-    return [*args, "--", prompt], out / "result.md", None
+    return [*args, "--", prompt], out / REPLY, out / REPLY, None
 
 
 def kill_group(pid, sig):
@@ -232,6 +236,30 @@ def run_process(args, workdir, out, stdout_path, timeout, env):
             process.wait()
         for sig, handler in previous.items():
             signal.signal(sig, handler)
+
+
+def keep_worker_result(out):
+    """Move a result.md the worker wrote to worker-result.md and return that name, or None when there was none.
+
+    Only an empty regular file is the placeholder xagent wrote; anything else, including a symlink, is the worker's.
+    A name the worker already took is never overwritten: the next free worker-result-<n>.md is used.
+    """
+    result = out / "result.md"
+    try:
+        info = result.lstat()
+    except FileNotFoundError:
+        info = None
+    if info is None or (stat.S_ISREG(info.st_mode) and info.st_size == 0):
+        if info is None:
+            result.write_text("")
+        return None
+    name, number = f"{WORKER_RESULT}.md", 1
+    while os.path.lexists(out / name):
+        number += 1
+        name = f"{WORKER_RESULT}-{number}.md"
+    result.rename(out / name)
+    result.write_text("")
+    return name
 
 
 def write_meta(out, meta):
@@ -354,6 +382,8 @@ def main():
         notes.append("In a read-only review, every defect you report means STATUS: ISSUES, even when you finished the review successfully. A suggested fix is not an applied fix. PASS means you found no remaining defects.")
     if agent == "gemini":
         notes.append("Do not run shell commands; read the files instead. Any shell command ends your turn with no reply." if options.mode == "ro" else "The only shell commands you may run are: " + ", ".join(allowed) + ". Any other shell command ends your turn with no reply.")
+    if options.mode == "rw":
+        notes.append(f"xagent saves your final reply as {out}/result.md; write any report file elsewhere, such as {out}/report.md, and leave result.md and reply.md alone.")
     notes += ["Verdict: ISSUES when defects remain or the task (including required checks) is incomplete; BLOCKED when you could not do it; otherwise PASS. Name any unverified optional checks.", "End your reply with exactly one final line: STATUS: PASS, STATUS: ISSUES, or STATUS: BLOCKED."]
     prompt = brief + "\n\n" + "\n".join(notes) + "\n"
     for name, text in zip(OUT_FILES, (prompt, "", "")):
@@ -364,7 +394,7 @@ def main():
         workdir=str(workdir), pid=os.getpid(), exit=None,
         timed_out=False, cancelled=False, seconds=0, status=None,
         changed_workdir=None, snapshot_before=None, snapshot_after=None, resolved_models=None,
-        completed=False, reason="incomplete",
+        worker_result=None, completed=False, reason="incomplete",
     )
     write_meta(out, meta)
     started = time.monotonic()
@@ -383,20 +413,24 @@ def main():
     if options.mode == "ro":
         env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["PATH"] = os.pathsep.join([env.get("PATH", ""), str(Path.home() / ".local/bin"), str(Path.home() / ".npm-global/bin"), str(Path.home() / ".grok/bin")])
-    args, stdout_path, json_field = command(agent, options.mode, workdir, out, prompt, allowed, selection(agent, model, options.effort), meta["sandbox"])
+    args, stdout_path, reply_path, json_field = command(agent, options.mode, workdir, out, prompt, allowed, selection(agent, model, options.effort), meta["sandbox"])
     try:
         code, timed_out, cancelled = run_process(args, workdir, out, stdout_path, options.timeout, env)
         meta.update(exit=code, timed_out=timed_out, cancelled=cancelled)
+        meta["worker_result"] = keep_worker_result(out)
+        # A CLI killed or failed before it wrote its reply file leaves none.
+        # errors="replace": output cut off mid-character by a timeout is still the partial reply.
+        text = reply_path.read_text(errors="replace") if reply_path.exists() else ""
         payload = None
         if json_field:
-            payload = json.loads(stdout_path.read_text())
+            payload = json.loads(text)
             if not isinstance(payload, dict):
                 raise ValueError("agent JSON response must be an object")
-            reply = payload.get(json_field)
-            if not isinstance(reply, str):
+            text = payload.get(json_field)
+            if not isinstance(text, str):
                 raise ValueError("agent JSON reply field must be a string")
-            (out / "result.md").write_text(reply)
-        status = classify(code, timed_out, (out / "result.md").read_text())
+        (out / "result.md").write_text(text)
+        status = classify(code, timed_out, text)
         log_text = (out / "agent.log").read_text(errors="replace")
         reason = "cancelled" if cancelled else "timeout" if timed_out else failure_reason(agent, log_text) if code else "invalid_verdict" if status == "DROPOUT" else None
         meta["resolved_models"] = resolved_models(agent, payload, log_text)

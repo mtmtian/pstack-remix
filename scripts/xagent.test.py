@@ -47,6 +47,18 @@ if case == 'wait':
         s.sendall(json.dumps({'pid':os.getpid()}).encode())
     time.sleep(30)
 if case == 'slow': time.sleep(1)
+if os.environ.get('XAGENT_TEST_WORKER_REPORT'):
+    out = pathlib.Path(os.environ['XAGENT_TEST_OUT'])
+    if os.environ['XAGENT_TEST_WORKER_REPORT'] == 'symlink':
+        (out / 'elsewhere.txt').write_text('not xagent\'s\n')
+        (out / 'result.md').unlink()
+        (out / 'result.md').symlink_to(out / 'elsewhere.txt')
+    elif os.environ['XAGENT_TEST_WORKER_REPORT'] == 'delete': (out / 'result.md').unlink()
+    else: (out / 'result.md').write_text('# Worker report\n' + 'detail\n' * 114)
+    if os.environ['XAGENT_TEST_WORKER_REPORT'] == 'clobber': (out / 'worker-result.md').write_text('earlier\n')
+if case == 'partial_timeout':
+    sys.stdout.buffer.write(b'Partial findings.\n\xe2\x80'); sys.stdout.flush()
+    time.sleep(30)
 if os.environ.get('XAGENT_TEST_STDERR'):
     print(os.environ['XAGENT_TEST_STDERR'], file=sys.stderr)
     sys.exit(1)
@@ -97,9 +109,9 @@ class XAgentTests(unittest.TestCase):
     def args(self, out, agent="grok", work=None, timeout="10", mode="ro", extra=()):
         return [str(XAGENT), agent, mode, str(work or self.work), str(self.brief), str(out), timeout, *extra]
 
-    def run_case(self, case, agent="grok", work=None, out=None, mode="ro", extra=()):
+    def run_case(self, case, agent="grok", work=None, out=None, mode="ro", extra=(), timeout="10"):
         out = out or self.base / (case + "-" + agent.replace("/", "_"))
-        result = subprocess.run(self.args(out, agent, work, mode=mode, extra=extra), env={**self.env, "XAGENT_TEST_CASE": case}, capture_output=True, text=True, timeout=15)
+        result = subprocess.run(self.args(out, agent, work, timeout=timeout, mode=mode, extra=extra), env={**self.env, "XAGENT_TEST_CASE": case, "XAGENT_TEST_OUT": str(out)}, capture_output=True, text=True, timeout=15)
         self.assertTrue((out / "meta.json").exists(), result.stderr)
         return result, json.loads((out / "meta.json").read_text())
 
@@ -112,6 +124,77 @@ class XAgentTests(unittest.TestCase):
                 self.assertIs(meta["changed_workdir"], False)
                 self.assertRegex(meta["snapshot_before"], r"^[a-f0-9]{64}$")
                 self.assertEqual(meta["snapshot_before"], meta["snapshot_after"])
+                # A worker that leaves result.md alone has nothing kept, and result.md is the final reply.
+                out = self.base / ("pass-" + agent)
+                self.assertIsNone(meta["worker_result"])
+                self.assertEqual((out / "result.md").read_text().strip(), "Completed.\nSTATUS: PASS")
+                self.assertEqual((out / "reply.md").exists(), agent in ("codex", "gemini", "pi"))
+                self.assertFalse(any(path.name.startswith("worker-result") for path in out.iterdir()))
+                self.assertNotIn("result.md", (out / "prompt.md").read_text())
+
+    def test_given_a_rw_worker_that_writes_result_md_then_its_report_is_kept_and_result_md_is_the_final_reply(self):
+        self.env["XAGENT_TEST_WORKER_REPORT"] = "1"
+        report = "# Worker report\n" + "detail\n" * 114
+        for agent in ("claude", "codex", "grok", "gemini", "pi"):
+            with self.subTest(agent=agent):
+                out = self.base / f"report-{agent}"
+                result, meta = self.run_case("pass", agent, out=out, mode="rw")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual((meta["status"], meta["reason"], meta["worker_result"]), ("PASS", None, "worker-result.md"))
+                self.assertEqual((out / "result.md").read_text().strip(), "Completed.\nSTATUS: PASS")
+                self.assertEqual((out / "worker-result.md").read_text(), report)
+                self.assertIn(f"{out}/result.md", (out / "prompt.md").read_text())
+
+    def test_given_a_worker_that_already_wrote_worker_result_md_then_its_report_gets_the_next_free_name(self):
+        self.env["XAGENT_TEST_WORKER_REPORT"] = "clobber"
+        out = self.base / "clobber"
+        _, meta = self.run_case("pass", "codex", out=out)
+        self.assertEqual(meta["worker_result"], "worker-result-2.md")
+        self.assertEqual((out / "worker-result.md").read_text(), "earlier\n")
+        self.assertTrue((out / "worker-result-2.md").read_text().startswith("# Worker report\n"))
+        self.assertEqual(meta["status"], "PASS")
+
+    def test_given_a_worker_that_replaces_result_md_with_a_symlink_then_the_link_is_moved_not_followed(self):
+        self.env["XAGENT_TEST_WORKER_REPORT"] = "symlink"
+        out = self.base / "symlink"
+        _, meta = self.run_case("pass", "codex", out=out)
+        self.assertEqual(meta["worker_result"], "worker-result.md")
+        self.assertTrue((out / "worker-result.md").is_symlink())
+        self.assertEqual((out / "elsewhere.txt").read_text(), "not xagent's\n")
+        self.assertEqual((out / "result.md").read_text(), "Completed.\nSTATUS: PASS\n")
+
+    def test_given_a_worker_report_and_a_timeout_then_the_report_and_the_partial_output_are_both_kept(self):
+        self.env["XAGENT_TEST_WORKER_REPORT"] = "1"
+        for agent in ("gemini", "pi"):
+            with self.subTest(agent=agent):
+                out = self.base / f"timeout-{agent}"
+                _, meta = self.run_case("partial_timeout", agent, out=out, timeout="1")
+                self.assertEqual((meta["status"], meta["reason"], meta["worker_result"]), ("DROPOUT", "timeout", "worker-result.md"))
+                # The stand-in is cut off mid-character, as a timeout can leave it.
+                self.assertTrue((out / "result.md").read_text().startswith("Partial findings.\n"))
+                self.assertTrue((out / "worker-result.md").read_text().startswith("# Worker report\n"))
+
+    def test_given_a_worker_report_and_a_malformed_reply_then_the_report_is_kept_and_result_md_is_not_the_report(self):
+        self.env["XAGENT_TEST_WORKER_REPORT"] = "1"
+        out = self.base / "malformed"
+        _, meta = self.run_case("json_array", "claude", out=out)
+        self.assertEqual((meta["status"], meta["reason"], meta["worker_result"]), ("DROPOUT", "execution_error", "worker-result.md"))
+        self.assertEqual((out / "result.md").read_text(), "")
+        self.assertTrue((out / "worker-result.md").read_text().startswith("# Worker report\n"))
+
+    def test_given_a_worker_that_deleted_result_md_and_a_malformed_reply_then_result_md_is_still_there_and_empty(self):
+        self.env["XAGENT_TEST_WORKER_REPORT"] = "delete"
+        out = self.base / "deleted"
+        _, meta = self.run_case("json_array", "claude", out=out)
+        self.assertEqual((meta["status"], meta["reason"], meta["worker_result"]), ("DROPOUT", "execution_error", None))
+        self.assertEqual((out / "result.md").read_text(), "")
+
+    def test_given_codex_exits_without_a_reply_then_the_failure_reason_is_kept_and_result_md_is_empty(self):
+        self.env["XAGENT_TEST_STDERR"] = "boom"
+        out = self.base / "codex-no-reply"
+        _, meta = self.run_case("pass", "codex", out=out)
+        self.assertEqual((meta["status"], meta["reason"]), ("DROPOUT", "process_failed"))
+        self.assertEqual((out / "result.md").read_text(), "")
 
     def test_given_gemini_run_then_agy_uses_its_own_configured_model(self):
         captured = self.base / "agy-argv.json"
