@@ -105,14 +105,19 @@ MD
 for w in $agents probe-gemini probe-agy probe-pi nested bind-default bind-full host-pi host-review; do git -C "$repo" worktree add -q "$run/wt-$w" -b "wt-$w"; done
 for a in $review_agents; do git -C "$repo" worktree add -q --detach "$run/wt-review-$a"; done
 for a in $agents; do git -C "$repo" worktree add -q --detach "$run/wt-select-$a"; done
-# agy 1.5.17 loses concurrent launches at startup; relaunch only on that error, at most twice, inside the 480 s budget.
+# agy 1.5.17 loses concurrent launches at startup. Relaunch, at most twice after a random 1-3 s pause, only when the
+# launch exited 1 with that exact stderr line and no "retryable": false line (bin/xagent's rule), and only while
+# budget remains in the 480 s; a launch never gets `timeout 0`, which disables the limit.
 probe_agy() (
-  deadline=$((SECONDS + 480)) tries=0 err="$run/probe-agy.err"
+  deadline=$((SECONDS + 480)) tries=0 err="$run/probe-agy.err" rc=0
+  : > "$run/probe-agy.log"
   cd "$run/wt-probe-agy" || exit
-  while :; do
+  while [ $((deadline - SECONDS)) -gt 0 ]; do
     timeout -k 2 $((deadline - SECONDS)) agy -p "$(cat "$run/probe.md")" --mode accept-edits > "$run/probe-agy.md" 2> "$err"
+    rc=$?
     cat "$err" >> "$run/probe-agy.log"
-    grep -qx 'error: failed to start conversation: backend returned an empty conversation id' "$err" && [ "$tries" -lt 2 ] && [ $((deadline - SECONDS)) -gt 6 ] || break
+    [ "$rc" = 1 ] && [ "$tries" -lt 2 ] && grep -qx 'error: failed to start conversation: backend returned an empty conversation id' "$err" \
+      && ! grep -q '"retryable" *: *false' "$err" || break
     tries=$((tries + 1)); sleep $((RANDOM % 3 + 1))
   done
 )
@@ -159,8 +164,8 @@ fi
 [ ! -e "$run/wt-probe-gemini/probe-repo/.git" ] && ok "gemini dispatched through xagent did not run git init" || bad "gemini ran git init through xagent"
 [ ! -e "$run/wt-probe-agy/probe-repo/.git" ] && grep -q 'auto-denied' "$run/probe-agy.log" \
   && ok "agy auto-denies a command outside its allowlist" || bad "agy ran git init, or no denial logged"
-# pi may wrap the command, as in `pwd && git init probe-repo`; the guard blocks the whole line.
-[ ! -e "$run/wt-probe-pi/probe-repo/.git" ] && grep -q '^blocked: .*git init' "$run/probe-pi/guard.log" 2>/dev/null \
+# pi may wrap the command, as in `pwd && git init probe-repo`; the guard blocks the whole line, so match the command position.
+[ ! -e "$run/wt-probe-pi/probe-repo/.git" ] && grep -Eq '^blocked: *(.*(&&|\|\||;|\|) *)?git init probe-repo' "$run/probe-pi/guard.log" 2>/dev/null \
   && ok "pi command outside the allowlist is blocked by the guard" || bad "pi ran git init, or the guard logged no block"
 missing=$(cd "$run" && agy -p /permissions --output-format json 2>/dev/null | python3 -c '
 import json, sys

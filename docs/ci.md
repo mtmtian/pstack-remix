@@ -124,7 +124,7 @@ gh api -X DELETE repos/mtmtian/pstack-remix/branches/main/protection
 
 ## Checks that still require a host
 
-PR CI does not call real model vendors or run a live host workflow. For changes to xagent or cross-agent routing, run the separately authorized [vendor and dual-host checks](../ADAPTATION.md#verification). Keep their receipts separate from offline test results.
+PR CI does not call real model vendors or run a live host workflow. Run the separately authorized vendor and dual-host checks that [Verification](../ADAPTATION.md#verification) names for your change. Keep their receipts separate from offline test results.
 
 `scripts/t3-targets.test.mjs` exercises T3 role/panel preview through the public CLI, including exact model identity, effort option mapping, inherited parents, unavailable targets, required xagent members and read-only behavior. The [T3 live procedure](./t3-verification.md) checks application-owned child execution separately.
 
