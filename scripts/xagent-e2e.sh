@@ -4,8 +4,10 @@
 # claude joins once `claude auth login` is done; until then it is only checked to come back as DROPOUT.
 # XAGENT_E2E_MODELS="claude/opus codex/gpt-6-astra" pins those agents' models in the selection check.
 # XAGENT_E2E_AGENTS="codex gemini pi" picks the vendors in the fix, review and selection matrix (default:
-# codex grok gemini pi), and XAGENT_E2E_REVIEWER picks the codex host's reviewer while claude is logged out
-# (default: grok). The probe, nested-dispatch, timeout, codex sandbox and codex-hosted cases always run, between them
+# codex gemini pi; grok stays selectable, as in XAGENT_E2E_AGENTS="codex grok gemini pi"), and XAGENT_E2E_REVIEWER
+# picks the codex host's reviewer while claude is logged out (default: gemini, any agent works, grok included). The
+# default is another vendor than the codex host, and agy (gemini) is already required by the cases that always run,
+# so it needs no extra CLI; pi already does the host's fix. The probe, nested-dispatch, timeout, codex sandbox and codex-hosted cases always run, between them
 # using codex, gemini (agy) and pi. The codex sandbox case expects macOS's seatbelt and a codex config that leaves
 # sandbox_workspace_write.network_access off; with it on, the default can listen and that case fails.
 set -uo pipefail
@@ -15,8 +17,10 @@ xagent="$root/bin/xagent"
 verify="$root/scripts/xagent-e2e-verify.py"
 run=${1:-$(mktemp -d "${TMPDIR:-/tmp}/xagent-e2e.XXXXXX")}
 mkdir -p "$run" && run=$(cd "$run" && pwd)
-agents=${XAGENT_E2E_AGENTS:-codex grok gemini pi} reviewer=${XAGENT_E2E_REVIEWER:-grok}
+agents=${XAGENT_E2E_AGENTS:-codex gemini pi} reviewer=${XAGENT_E2E_REVIEWER:-gemini}
 claude auth status >/dev/null 2>&1 && agents="claude $agents" reviewer=claude claude_ready=1 || claude_ready=0
+# claude always gets a review worktree: logged out it is the DROPOUT case, logged in it is already in $agents.
+review_agents=$agents; [ "$claude_ready" = 1 ] || review_agents="claude $agents"
 fail=0
 ok() { echo "ok   $1"; }
 bad() { echo "FAIL $1"; fail=1; }
@@ -64,7 +68,7 @@ printf 'Review stats.py in this directory for correctness bugs. Do not modify an
 printf 'Fix the bug in stats.py so that `python3 -m unittest` passes. Do not edit test_stats.py. Run `python3 -m unittest` yourself to confirm before replying.\n' > "$run/fix.md"
 # git init shares the git prefix with the allowed git status, so it also checks whole-word matching.
 printf 'Run the shell command `git init probe-repo` in the terminal. Report exactly what happened.\n' > "$run/probe.md"
-printf 'Run exactly this shell command and quote its exit code and its full stderr verbatim: %s grok ro . test_stats.py nested-out\n' "$xagent" > "$run/nested.md"
+printf 'Run exactly this shell command and quote its exit code and its full stderr verbatim: %s pi ro . test_stats.py nested-out\n' "$xagent" > "$run/nested.md"
 printf 'Reply with one sentence saying you are ready. Do not read, run or change anything.\n' > "$run/select.md"
 # The probe writes what the OS answered into the worker's checkout, so the file, not the worker's report, decides,
 # and a worker that never ran it leaves no file to pass with.
@@ -98,8 +102,19 @@ MD
 
 # Readers without an enforced read-only sandbox must not share the parent checkout either.
 for w in $agents probe-gemini probe-agy probe-pi nested bind-default bind-full host-pi host-review; do git -C "$repo" worktree add -q "$run/wt-$w" -b "wt-$w"; done
-for a in claude codex grok gemini pi; do git -C "$repo" worktree add -q --detach "$run/wt-review-$a"; done
+for a in $review_agents; do git -C "$repo" worktree add -q --detach "$run/wt-review-$a"; done
 for a in $agents; do git -C "$repo" worktree add -q --detach "$run/wt-select-$a"; done
+# agy 1.5.17 loses concurrent launches at startup; relaunch only on that error, at most twice, inside the 480 s budget.
+probe_agy() {
+  local deadline=$((SECONDS + 480)) tries=0 err="$run/probe-agy.err"
+  cd "$run/wt-probe-agy" || return
+  while :; do
+    timeout -k 2 $((deadline - SECONDS)) agy -p "$(cat "$run/probe.md")" --mode accept-edits > "$run/probe-agy.md" 2> "$err"
+    cat "$err" >> "$run/probe-agy.log"
+    grep -q 'failed to start conversation: backend returned an empty conversation id' "$err" && [ "$tries" -lt 2 ] && [ $((deadline - SECONDS)) -gt 6 ] || break
+    tries=$((tries + 1)); sleep $((RANDOM % 3 + 1))
+  done
+}
 spec() { local s; for s in ${XAGENT_E2E_MODELS:-}; do [ "${s%%/*}" = "$1" ] && { echo "$s"; return; }; done; echo "$1"; }
 for a in $agents; do
   "$xagent" "$a" ro "$run/wt-review-$a" "$run/review.md" "$run/review-$a" 480 &
@@ -109,7 +124,7 @@ done
 [ "$claude_ready" = 1 ] || "$xagent" claude ro "$run/wt-review-claude" "$run/review.md" "$run/review-claude" 120 &
 "$xagent" gemini rw "$run/wt-probe-gemini" "$run/probe.md" "$run/probe-gemini" 480 &
 # xagent tells gemini its command limits, so it usually declines; agy's own enforcement is exercised without that note.
-(cd "$run/wt-probe-agy" && timeout -k 2 480 agy -p "$(cat "$run/probe.md")" --mode accept-edits > "$run/probe-agy.md" 2> "$run/probe-agy.log") &
+probe_agy &
 "$xagent" pi rw "$run/wt-probe-pi" "$run/probe.md" "$run/probe-pi" 480 &
 "$xagent" codex rw "$run/wt-nested" "$run/nested.md" "$run/nested-codex" 480 &
 "$xagent" codex rw "$run/wt-bind-default" "$run/bind.md" "$run/bind-default" 480 &
@@ -134,7 +149,7 @@ for a in $agents; do
   s=$(status "$run/select-$a"); e=$(field "$run/select-$a" effort); m=$(field "$run/select-$a" model)
   [ "$s" = PASS ] && [ "$e" = low ] && [ "$m" = "${want:-null}" ] && ok "$a runs with xagent's effort flag (model ${m})" || bad "$a selection: status ${s:-none}, effort ${e:-none}, model ${m:-none}"
 done
-for a in claude codex grok gemini pi; do
+for a in $review_agents; do
   check_test_source "$a review" "$run/wt-review-$a"
 done
 if [ "$claude_ready" = 0 ]; then
