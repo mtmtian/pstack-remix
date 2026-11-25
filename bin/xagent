@@ -60,10 +60,9 @@ CODEX_MODEL_LINE = re.compile(r"^model:\s*(\S+)\s*$", re.MULTILINE)
 VERDICT = re.compile(r"(?:STATUS: (PASS|ISSUES|BLOCKED)|\*\*STATUS: (PASS|ISSUES|BLOCKED)\*\*)")
 # agy ends a failed run with one such line on stderr; "retryable": false means rerunning cannot succeed.
 AGY_ERROR = re.compile(r"^AGY_ERROR: (\{.*\})\s*$", re.MULTILINE)
-# The clock for a run's timeout, wait --timeout and the receipt's seconds. time.monotonic() stops while macOS sleeps, so
-# a worker that hung across a lid-closed sleep outlived its 1800-second timeout by hours (2026-11-25). macOS's
-# CLOCK_MONOTONIC and Linux's CLOCK_BOOTTIME keep counting during sleep and, unlike time.time(), never jump when the
-# wall clock is set.
+# The clock for a run's timeout, wait --timeout and the receipt's seconds. Unlike time.monotonic() on macOS, macOS's
+# CLOCK_MONOTONIC and Linux's CLOCK_BOOTTIME keep counting while the computer sleeps, and unlike time.time() they never
+# jump when the wall clock is set.
 ELAPSED_CLOCK = getattr(time, "CLOCK_BOOTTIME", time.CLOCK_MONOTONIC)
 
 
