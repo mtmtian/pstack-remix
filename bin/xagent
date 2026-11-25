@@ -60,6 +60,15 @@ CODEX_MODEL_LINE = re.compile(r"^model:\s*(\S+)\s*$", re.MULTILINE)
 VERDICT = re.compile(r"(?:STATUS: (PASS|ISSUES|BLOCKED)|\*\*STATUS: (PASS|ISSUES|BLOCKED)\*\*)")
 # agy ends a failed run with one such line on stderr; "retryable": false means rerunning cannot succeed.
 AGY_ERROR = re.compile(r"^AGY_ERROR: (\{.*\})\s*$", re.MULTILINE)
+# The clock for a run's timeout, wait --timeout and the receipt's seconds. time.monotonic() stops while macOS sleeps, so
+# a worker that hung across a lid-closed sleep outlived its 1800-second timeout by hours (2026-11-25). macOS's
+# CLOCK_MONOTONIC and Linux's CLOCK_BOOTTIME keep counting during sleep and, unlike time.time(), never jump when the
+# wall clock is set.
+ELAPSED_CLOCK = getattr(time, "CLOCK_BOOTTIME", time.CLOCK_MONOTONIC)
+
+
+def now():
+    return time.clock_gettime(ELAPSED_CLOCK)
 
 
 def agent_spec(value):
@@ -212,9 +221,9 @@ def run_process(args, workdir, out, stdout_path, timeout, env):
     try:
         with (out / "prompt.md").open("rb") as stdin, stdout_path.open("wb") as stdout, (out / "agent.log").open("ab") as log:
             process = subprocess.Popen(args, cwd=workdir, env=env, stdin=stdin, stdout=stdout, stderr=stdout if stdout_path == out / "agent.log" else log, start_new_session=True)
-            deadline = time.monotonic() + timeout
+            deadline = now() + timeout
             while process.poll() is None and not cancelled:
-                remaining = deadline - time.monotonic()
+                remaining = deadline - now()
                 if remaining <= 0:
                     break
                 try:
@@ -322,11 +331,11 @@ def wait(argv):
     options = parser.parse_args(argv)
     if options.timeout is not None and not (math.isfinite(options.timeout) and options.timeout >= WAIT_START_GRACE):
         parser.error(f"timeout must be at least {WAIT_START_GRACE} seconds")
-    started = time.monotonic()
+    started = now()
     pending, failed = list(dict.fromkeys(path.resolve() for path in options.out_dirs)), False
     while True:
         # One clock reading per pass: a pass that reaches --timeout has then given each missing receipt the full grace.
-        waited = time.monotonic() - started
+        waited = now() - started
         for out in list(pending):
             ended = outcome(out, waited)
             if ended:
@@ -397,7 +406,7 @@ def main():
         worker_result=None, completed=False, reason="incomplete",
     )
     write_meta(out, meta)
-    started = time.monotonic()
+    started = now()
     try:
         before = snapshot(workdir, out) if options.mode == "ro" else None
     except (OSError, subprocess.CalledProcessError, ValueError) as error:
@@ -454,7 +463,7 @@ def main():
                 meta.update(status="BLOCKED", reason="snapshot_unavailable")
             with (out / "agent.log").open("a") as log:
                 log.write(f"\nCannot verify the final checkout: {error}\n")
-    meta.update(seconds=round(time.monotonic() - started, 2), completed=True)
+    meta.update(seconds=round(now() - started, 2), completed=True)
     write_meta(out, meta)
     print(f"{agent} {meta['status']} {meta['seconds']}s -> {out}")
     return 3 if meta["status"] == "DROPOUT" else 0

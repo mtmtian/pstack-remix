@@ -9,6 +9,7 @@ from pathlib import Path
 import signal
 import socket
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -78,6 +79,9 @@ SELECTION_FLAGS = {
     "gemini": lambda model, effort: [("--model", model), ("--effort", effort)],
     "pi": lambda model, effort: [("--model", model), ("--thinking", effort)],
 }
+# Runs the command after it as xagent with time.monotonic() stopped, as macOS stops it while the computer sleeps.
+# subprocess is imported first, so its own waits keep the real clock.
+ASLEEP = "import runpy, subprocess, sys, time; time.monotonic = lambda: 0.0; sys.argv = sys.argv[1:]; runpy.run_path(sys.argv[0], run_name='__main__')"
 
 
 class XAgentTests(unittest.TestCase):
@@ -477,6 +481,14 @@ class XAgentTests(unittest.TestCase):
     def test_given_worker_ignores_term_when_parent_is_cancelled_then_it_is_killed_and_recorded(self):
         self.wait_case(cancel=True)
 
+    def test_given_the_computer_sleeps_while_the_worker_hangs_then_the_timeout_still_ends_it_and_seconds_counts_the_sleep(self):
+        out = self.base / "asleep-out"
+        env = {**self.env, "XAGENT_TEST_CASE": "partial_timeout", "XAGENT_TEST_OUT": str(out)}
+        result = subprocess.run([sys.executable, "-c", ASLEEP, *self.args(out, timeout="1")], env=env, capture_output=True, text=True, timeout=15)
+        meta = json.loads((out / "meta.json").read_text())
+        self.assertEqual((meta["status"], meta["reason"], meta["timed_out"]), ("DROPOUT", "timeout", True), result.stdout + result.stderr)
+        self.assertGreaterEqual(meta["seconds"], 1)
+
 
     def xagent_wait(self, *args, timeout=20):
         return subprocess.run([str(XAGENT), "wait", *map(str, args)], env=self.env, capture_output=True, text=True, timeout=timeout)
@@ -530,6 +542,13 @@ class XAgentTests(unittest.TestCase):
             killed = self.xagent_wait(out)
             self.assertEqual(killed.returncode, 3, killed.stdout + killed.stderr)
             self.assertEqual(killed.stdout, f"{out.resolve()} status=DROPOUT completed=false reason=killed\n")
+
+    def test_given_the_computer_sleeps_while_an_attempt_runs_when_waited_with_a_timeout_then_the_timeout_still_ends_the_wait(self):
+        out = self.base / "asleep-wait-out"
+        with self.stuck_attempt(out):
+            running = subprocess.run([sys.executable, "-c", ASLEEP, str(XAGENT), "wait", "--timeout", "5", str(out)], env=self.env, capture_output=True, text=True, timeout=20)
+            self.assertEqual(running.returncode, 124, running.stdout + running.stderr)
+            self.assertEqual(running.stdout, f"{out.resolve()} status=null completed=false reason=running\n")
 
     def test_given_xagent_is_killed_and_its_launcher_has_not_reaped_it_when_waited_then_it_is_a_dropout(self):
         out = self.base / "zombie-out"
