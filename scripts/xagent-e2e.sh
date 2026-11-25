@@ -112,8 +112,8 @@ probe_agy() (
   deadline=$((SECONDS + 480)) tries=0 err="$run/probe-agy.err" rc=0
   : > "$run/probe-agy.log"
   cd "$run/wt-probe-agy" || exit
-  while [ $((deadline - SECONDS)) -gt 0 ]; do
-    timeout -k 2 $((deadline - SECONDS)) agy -p "$(cat "$run/probe.md")" --mode accept-edits > "$run/probe-agy.md" 2> "$err"
+  while left=$((deadline - SECONDS)) && [ "$left" -gt 0 ]; do
+    timeout -k 2 "$left" agy -p "$(cat "$run/probe.md")" --mode accept-edits > "$run/probe-agy.md" 2> "$err"
     rc=$?
     cat "$err" >> "$run/probe-agy.log"
     [ "$rc" = 1 ] && [ "$tries" -lt 2 ] && grep -qx 'error: failed to start conversation: backend returned an empty conversation id' "$err" \
