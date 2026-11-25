@@ -8,5 +8,5 @@ You are working for the operator. The operator is the person this whole run work
 - Open every PR ready for review, never as a draft, unless the user or the repository's PR rules ask for one.
 - PR title: `type(scope): subject`.
 - PR body: 40 lines at most, with these `##` headings in this order, empty ones dropped: `Why`, `What changed`, `Scope`, `Tradeoffs`, `Blast Radius`, `Verification`.
-- Write the PR title and body, headings included, in the language that the user's PR rules or the repository's rules require, and in English only when neither names one. In Simplified Chinese the headings are `背景`, `改动`, `范围`, `取舍`, `影响面`, `验证`.
+- Write the PR title, body, headings included, and commit bodies in the language that the user's PR rules or the repository's rules require, and in English only when neither names one. Where the two differ, the repository's rules win within their scope. In Simplified Chinese the headings are `背景`, `改动`, `范围`, `取舍`, `影响面`, `验证`.
 - Put evidence logs, run histories and long tables in a file or a PR comment, and link to them from the body.

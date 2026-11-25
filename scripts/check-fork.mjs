@@ -307,15 +307,15 @@ export const REQUIRED = [
   {
     id: "pr-language",
     file: "skills/poteto-mode/playbooks/opening-a-pr.md",
-    pattern: /in the language that the user's PR rules or the repository's rules require, and in English only when neither names one/,
-    hint: "PR text follows the language of the user's or repository's PR rules",
+    pattern: /in the language that the user's PR rules or the repository's rules require, and in English only when neither names one\.[\s\S]*apply to English text only\)[\s\S]*`## 背景`, `## 改动`, `## 范围`, `## 取舍`, `## 影响面`, `## 验证`/,
+    hint: "PR text follows the language of the user's or repository's PR rules, STE vocabulary rules apply to English only, and the Chinese headings are named",
     section: "pr-language",
   },
   {
     id: "worker-pr-language",
     file: "skills/poteto-mode/worker.md",
-    pattern: /in the language that the user's PR rules or the repository's rules require, and in English only when neither names one/,
-    hint: "worker PR text follows the language of the user's or repository's PR rules",
+    pattern: /in the language that the user's PR rules or the repository's rules require, and in English only when neither names one\.[^\n]*`背景`, `改动`, `范围`, `取舍`, `影响面`, `验证`/,
+    hint: "worker PR text follows the language of the user's or repository's PR rules, with the Chinese headings named",
     section: "pr-language",
   },
   {
