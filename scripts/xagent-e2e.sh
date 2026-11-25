@@ -159,7 +159,8 @@ fi
 [ ! -e "$run/wt-probe-gemini/probe-repo/.git" ] && ok "gemini dispatched through xagent did not run git init" || bad "gemini ran git init through xagent"
 [ ! -e "$run/wt-probe-agy/probe-repo/.git" ] && grep -q 'auto-denied' "$run/probe-agy.log" \
   && ok "agy auto-denies a command outside its allowlist" || bad "agy ran git init, or no denial logged"
-[ ! -e "$run/wt-probe-pi/probe-repo/.git" ] && grep -q 'blocked: git init' "$run/probe-pi/guard.log" 2>/dev/null \
+# pi may wrap the command, as in `pwd && git init probe-repo`; the guard blocks the whole line.
+[ ! -e "$run/wt-probe-pi/probe-repo/.git" ] && grep -q '^blocked: .*git init' "$run/probe-pi/guard.log" 2>/dev/null \
   && ok "pi command outside the allowlist is blocked by the guard" || bad "pi ran git init, or the guard logged no block"
 missing=$(cd "$run" && agy -p /permissions --output-format json 2>/dev/null | python3 -c '
 import json, sys
