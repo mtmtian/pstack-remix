@@ -442,22 +442,52 @@ function unfencedLines(text) {
 
 const CODE_SPAN = /(`+)(?!`)(.*?[^`])\1(?!`)/g;
 
-// Code spans are literal too, so blank them as well.
-function proseOnly(text) {
-  return unfencedLines(text).map((line) => line.replace(CODE_SPAN, (span) => " ".repeat(span.length))).join("\n");
+const blankOut = (span) => span.replace(/[^\n]/g, " ");
+
+// Closed `<!-- -->` comments are not rendered, so their links and headings do not exist.
+// `masked` has code spans blanked, so a literal `<!--` in code opens no comment; the matches
+// are blanked in `source`, which has the same length.
+function maskComments(masked, source) {
+  let out = "";
+  let last = 0;
+  for (const match of masked.matchAll(/<!--[\s\S]*?-->/g)) {
+    out += source.slice(last, match.index) + blankOut(match[0]);
+    last = match.index + match[0].length;
+  }
+  return out + source.slice(last);
 }
 
-// What GitHub shows for a heading's Markdown: code spans keep their text,
-// links and images keep their label, emphasis, HTML tags and entities go.
+// What is left of a file once literal text is blanked in place, which keeps line numbers:
+// fenced blocks, code spans (unless `keepCodeSpans`, which headings need) and comments.
+function proseOnly(text, keepCodeSpans = false) {
+  const lines = unfencedLines(text);
+  const masked = lines.map((line) => line.replace(CODE_SPAN, blankOut)).join("\n");
+  return maskComments(masked, keepCodeSpans ? lines.join("\n") : masked);
+}
+
+const NAMED_ENTITIES = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: "\u00a0" };
+const codePoint = (n) => (n === 0 || n > 0x10ffff || (n >= 0xd800 && n <= 0xdfff) ? "\ufffd" : String.fromCodePoint(n));
+
+// What GitHub shows for a heading's Markdown: code spans keep their text, links and images keep
+// their label, numeric and basic named entities are decoded, emphasis and HTML tags go.
+// `exact` is false when another named entity was left out, so the text is not known for sure.
 function renderedHeading(markup) {
   const spans = [];
-  return markup
+  let exact = true;
+  const text = markup
     .replace(CODE_SPAN, (_, __, inner) => `\0${spans.push(inner.replace(/^ (.*) $/, "$1")) - 1}\0`)
     .replace(/!?\[([^\]]*)\](?:\([^)]*\)|\[[^\]]*\])/g, "$1")
-    .replace(/<[^>\n]*>|&(?:#\d+|#x[\da-f]+|\w+);/gi, "")
+    .replace(/<[^>\n]*>/g, "")
+    .replace(/&(?:#(\d{1,7})|#x([\da-f]{1,6})|([a-z][a-z\d]*));/gi, (entity, dec, hex, name) => {
+      if (name === undefined) return codePoint(dec === undefined ? parseInt(hex, 16) : Number(dec));
+      if (Object.hasOwn(NAMED_ENTITIES, name)) return NAMED_ENTITIES[name];
+      exact = false;
+      return "";
+    })
     .replace(/(^|[^\p{L}\p{N}\\])_+(?=\S)|(?<=[^\s\\])_+(?![\p{L}\p{N}])/gu, "$1")
     .replace(/\\([!-/:-@[-`{-~])/g, "$1")
     .replace(/\0(\d+)\0/g, (_, index) => spans[index]);
+  return { text, exact };
 }
 
 // github-slugger: lowercase, keep letters of any script, marks, numbers, `_`, `-` and spaces, spaces to `-`.
@@ -465,15 +495,21 @@ function slug(text) {
   return text.toLowerCase().replace(/[^\p{L}\p{M}\p{N}\p{Pc} -]/gu, "").replaceAll(" ", "-");
 }
 
-// The ids GitHub gives a file's ATX headings, repeats numbered `-1`, `-2`, ... in document order.
-// This repository has no setext headings or `<a id>` anchors, so neither counts.
+// The ids GitHub gives a file's ATX headings, repeats numbered `-1`, `-2`, ... in document order,
+// and whether they are exact (see renderedHeading). Not handled: setext headings and `<a id>`
+// anchors, which this repository does not use, and indented code blocks, which read as prose
+// here as they do for links; telling them from list continuations needs a list-aware parser.
 function headingAnchors(text) {
   const ids = new Set();
   const repeats = new Map();
-  for (const line of unfencedLines(text.replace(/^---\r?\n[\s\S]*?\r?\n---[ \t]*(?:\r?\n|$)/, ""))) {
+  let exact = true;
+  const body = text.replace(/^---\r?\n[\s\S]*?\r?\n---[ \t]*(?:\r?\n|$)/, "");
+  for (const line of proseOnly(body, true).split("\n")) {
     const heading = /^ {0,3}#{1,6}(?:[ \t]+(.*?))?\s*$/.exec(line);
     if (!heading) continue;
-    const base = slug(renderedHeading((heading[1] ?? "").replace(/(?:^|[ \t]+)#+$/, "")));
+    const rendered = renderedHeading((heading[1] ?? "").replace(/(?:^|[ \t]+)#+$/, ""));
+    exact &&= rendered.exact;
+    const base = slug(rendered.text);
     let id = base;
     for (let n = repeats.get(base) ?? 0; ids.has(id);) {
       repeats.set(base, ++n);
@@ -481,10 +517,10 @@ function headingAnchors(text) {
     }
     ids.add(id);
   }
-  return ids;
+  return { ids, exact };
 }
 
-// Heading ids per Markdown file, read on first use.
+// Heading ids (see headingAnchors) per Markdown file, read on first use.
 function anchorIndex() {
   const cache = new Map();
   return (file) => {
@@ -504,21 +540,22 @@ function linkTargets(text) {
   ];
 }
 
-// Resolves a link to its absolute path and decoded `#fragment` (null when it has none),
-// or null for URLs and links with neither a path nor a fragment. `#frag` alone is the file itself.
+// Resolves a link to its absolute path, or null for URLs and for links with no path and no
+// leading `#`. `fragment` is the raw text after `#`, or null when it has none or the link has a
+// query string, as GitHub's `file.md?plain=1#L2` source-line links do; the caller checks it
+// only for Markdown targets. A link starting with `#` points at `file` itself.
 function localPath(file, target) {
   if (!target || PLACEHOLDER_TARGETS.has(target) || target.startsWith("//")) return null;
   if (/^[a-z][a-z0-9+.-]*:/i.test(target)) return null;
-  const [beforeHash, ...afterHash] = target.split("#");
-  const encoded = beforeHash.split("?", 1)[0];
-  const rawFragment = afterHash.join("#");
-  if (!encoded && !rawFragment) return null;
+  const hash = target.indexOf("#");
+  const beforeHash = hash < 0 ? target : target.slice(0, hash);
+  const fragment = hash < 0 || beforeHash.includes("?") || hash === target.length - 1 ? null : target.slice(hash + 1);
+  if (target.startsWith("#")) return { resolved: file, fragment };
+  const encoded = target.split(/[?#]/, 1)[0];
+  if (!encoded) return null;
   if (encoded.startsWith("/")) return { error: "absolute path" };
   try {
-    return {
-      resolved: encoded ? path.resolve(path.dirname(file), decodeURIComponent(encoded)) : file,
-      fragment: rawFragment ? decodeURIComponent(rawFragment) : null,
-    };
+    return { resolved: path.resolve(path.dirname(file), decodeURIComponent(encoded)), fragment };
   } catch {
     return { error: "invalid URI encoding" };
   }
@@ -546,8 +583,16 @@ export function validateLinks(root) {
       if (local.error) problems.push(`${where}: ${local.error}`);
       else if (/^\.\.(?:\/|$)/.test(relative(root, local.resolved))) problems.push(`${where}: escapes the repository`);
       else if (!existsSync(local.resolved)) problems.push(`${where}: missing`);
-      else if (local.fragment && local.resolved.endsWith(".md") && statSync(local.resolved).isFile() && !anchors(local.resolved).has(local.fragment)) {
-        problems.push(`${where}: no heading #${local.fragment} in ${relative(root, local.resolved)}`);
+      else if (local.fragment && local.resolved.endsWith(".md") && statSync(local.resolved).isFile()) {
+        const known = anchors(local.resolved);
+        let id;
+        try {
+          id = decodeURIComponent(local.fragment);
+        } catch {
+          problems.push(`${where}: invalid URI encoding`);
+          continue;
+        }
+        if (known.exact && !known.ids.has(id)) problems.push(`${where}: no heading #${id} in ${relative(root, local.resolved)}`);
       }
     }
   }
@@ -704,7 +749,7 @@ export function validatePin(root, pin) {
 
 export function validateRequired(root) {
   const guide = path.join(root, "ADAPTATION.md");
-  const sections = existsSync(guide) ? headingAnchors(readFileSync(guide, "utf8")) : new Set();
+  const sections = existsSync(guide) ? headingAnchors(readFileSync(guide, "utf8")).ids : new Set();
   const problems = [];
   for (const rule of REQUIRED) {
     if (!sections.has(rule.section)) problems.push(`ADAPTATION.md: ${rule.id}: no section #${rule.section} records this decision`);

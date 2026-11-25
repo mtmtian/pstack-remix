@@ -241,6 +241,53 @@ test("Given fragments in code, on URLs, on non-Markdown files or on directories,
   assert.deepEqual(validateLinks(dir), []);
 });
 
+test("Given fragments with a stray percent or after a query, When validated, Then only a Markdown target's fragment is decoded and checked", (t) => {
+  const dir = copyRepo(t);
+  writeFileSync(path.join(dir, "docs/links.md"), [
+    "[asset](../assets/logo.png#rate%) and [directory](./guide/#%).",
+    "[source line](./ci.md?plain=1#L2) and [with a query](./ci.md?plain=1#nope).",
+    "[bad encoding](./ci.md#%E0%A4%A) and [asset](../assets/logo.png#%E0%A4%A).",
+    "",
+  ].join("\n"));
+
+  assert.deepEqual(validateLinks(dir), ["docs/links.md:3: link ./ci.md#%E0%A4%A: invalid URI encoding"]);
+});
+
+test("Given headings with character references, When linked, Then they are decoded and unknown names make the file unverifiable", (t) => {
+  const dir = copyRepo(t);
+  writeFileSync(path.join(dir, "docs/refs.md"), "# Caf&#233;\n## Caf&#xE9; two\n## A &amp; B\n## Lt &lt;b&gt; &#0;\n");
+  writeFileSync(path.join(dir, "docs/named.md"), "# Caf&eacute;\n");
+  writeFileSync(path.join(dir, "docs/links.md"), [
+    "[a](./refs.md#café) [b](./refs.md#café-two) [c](./refs.md#a--b) [d](./refs.md#lt-b-)",
+    "[wrong](./refs.md#caf)",
+    "[named](./named.md#cafe) [named](./named.md#café) [named](./named.md#caf)",
+    "",
+  ].join("\n"));
+
+  assert.deepEqual(validateLinks(dir), ["docs/links.md:2: link ./refs.md#caf: no heading #caf in docs/refs.md"]);
+});
+
+test("Given HTML comments, When validated, Then their headings and links do not exist and later line numbers hold", (t) => {
+  const dir = copyRepo(t);
+  writeFileSync(path.join(dir, "docs/comment.md"), [
+    "# Real",
+    "Use `<!--` to open a comment, which code does not.",
+    "# Still heading",
+    "<!-- one line [y](missing.md#z) -->",
+    "<!--",
+    "# Ghost",
+    "[x](#not-a-link) [m](missing.md)",
+    "-->",
+    "[late](#late), [ghost](#ghost), [real](#real), [still](#still-heading).",
+    "",
+  ].join("\n"));
+
+  assert.deepEqual(validateLinks(dir), [
+    "docs/comment.md:9: link #late: no heading #late in docs/comment.md",
+    "docs/comment.md:9: link #ghost: no heading #ghost in docs/comment.md",
+  ]);
+});
+
 test("Given upstream's Agent Plugins root manifest, When the guards run, Then the manifest is rejected and the CLI fails", (t) => {
   const dir = copyRepo(t);
   edit(dir, "plugin.json", (text) => text.replace("{\n", '{\n  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",\n'));
