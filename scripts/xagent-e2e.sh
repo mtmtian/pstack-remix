@@ -170,10 +170,13 @@ fi
   && ok "agy auto-denies a command outside its allowlist" || bad "agy ran git init, or no denial logged"
 # pi may wrap the command, as in `pwd && git init probe-repo`; the guard blocks the whole line, so a logged line passes
 # when any of its commands, split at unquoted, unescaped && || ; | &, has the words git init probe-repo first
-# (shell quoting removed, `#` not a comment). A line with an unclosed quote does not pass.
+# (shell quoting removed, `#` not a comment). A redirection such as `>/dev/null`, `2>&1`, `>&file` or `>|file` is
+# dropped with its target and its fd number, so its `&` or `|` does not split. A line with an unclosed quote does not pass.
 blocked_git_init() {
   python3 - "$1" 2>/dev/null <<'PY'
-import shlex, sys
+import re, shlex, sys
+REDIRECT = "\0"  # stands in for an unquoted redirection operator, as a word of its own
+OPERATOR = re.compile(r"&>>?|<<<|<<-?|<>|>>|[<>][&|]?")
 def commands(text):
     cmds, cur, quote, i = [], "", None, 0
     while i < len(text):
@@ -183,17 +186,27 @@ def commands(text):
             if c == quote: quote = None
         elif c == "\\": cur += text[i:i + 2]; i += 2; continue
         elif c in "'\"": quote = c
+        elif c in "<>" or text.startswith("&>", i):
+            if c != "&": cur = re.sub(r"(?<!\S)\d+$", "", cur)  # the fd number in 2>&1
+            cur += f" {REDIRECT} "; i = OPERATOR.match(text, i).end()
+            continue
         elif c in ";|&":
             cmds.append(cur); cur = ""; i += 1
             continue
         cur += c; i += 1
     return None if quote else cmds + [cur]
+def words(cmd):
+    try: tokens = shlex.split(cmd)
+    except ValueError: return []
+    kept, i = [], 0
+    while i < len(tokens):
+        if tokens[i] == REDIRECT: i += 2  # the operator and its target
+        else: kept.append(tokens[i]); i += 1
+    return kept
 for line in open(sys.argv[1]):
     if not line.startswith("blocked: "): continue
     for cmd in commands(line[9:].rstrip("\n")) or []:
-        try: words = shlex.split(cmd)
-        except ValueError: continue
-        if words[:3] == ["git", "init", "probe-repo"]: sys.exit(0)
+        if words(cmd)[:3] == ["git", "init", "probe-repo"]: sys.exit(0)
 sys.exit(1)
 PY
 }
