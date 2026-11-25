@@ -305,6 +305,20 @@ export const REQUIRED = [
     section: "local-decisions",
   },
   {
+    id: "pr-language",
+    file: "skills/poteto-mode/playbooks/opening-a-pr.md",
+    pattern: /in the language that the user's PR rules or the repository's rules require, and in English only when neither names one/,
+    hint: "PR text follows the language of the user's or repository's PR rules",
+    section: "pr-language",
+  },
+  {
+    id: "worker-pr-language",
+    file: "skills/poteto-mode/worker.md",
+    pattern: /in the language that the user's PR rules or the repository's rules require, and in English only when neither names one/,
+    hint: "worker PR text follows the language of the user's or repository's PR rules",
+    section: "pr-language",
+  },
+  {
     id: "t3-catalog-preview",
     file: "references/t3-runtime.md",
     pattern: /config\.mjs resolve --host t3/,
