@@ -47,7 +47,7 @@ Replays in `create-verification-skill` and `maintain-verification-skill` are ada
 
 ### Refresh installations
 
-After maintained-source changes, refresh the existing installations with `agy plugin install <source>`, `codex plugin add pstack-codex@personal` for this machine's existing Codex ID, and `claude plugin update pstack@pstack-local`. Do not flatten pstack skills into shared standalone names or restore retired paseo aliases.
+After maintained-source changes, refresh the existing installations with `agy plugin install <source>`, `codex plugin add pstack-codex@<marketplace>`, and `claude plugin update pstack@pstack-local`. Take `<marketplace>` from the `pstack-codex` line that `codex plugin list` shows as installed: it is `pstack-local` after [Install](./docs/guide/01-setup.md#install), and `personal` on a machine that kept an earlier registration. Do not flatten pstack skills into shared standalone names or restore retired paseo aliases.
 
 ## Upstream sync
 
