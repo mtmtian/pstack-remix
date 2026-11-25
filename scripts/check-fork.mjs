@@ -471,11 +471,13 @@ function slug(text) {
 // read from the raw lines (frontmatter and fenced blocks blanked).
 //
 // This does not emulate how GitHub renders HTML comments or entities, so a file it cannot read
-// for sure is skipped: `skip` is then a reason, and no anchor in or into the file is reported.
-// A file is skipped when it contains `<!--` anywhere (plain substring, no parsing), or when a
-// heading holds a backslash or an entity. Also not handled: setext headings and `<a id>`
-// anchors, which this repository does not use, and indented code blocks, which read as prose
-// here as they do for links; telling them from list continuations needs a list-aware parser.
+// for sure is skipped: `skip` is then a reason. A file with an HTML comment opener anywhere
+// (plain substring, no parsing) has neither its own links' anchors nor anchors into it checked,
+// since the opener may hide a heading or a link. A file with a heading that holds a backslash or
+// an entity only has anchors into it skipped; its own outgoing anchors are still checked.
+// Also not handled: setext headings and `<a id>` anchors, which this repository does not use,
+// and indented code blocks, which read as prose here as they do for links; telling them from
+// list continuations needs a list-aware parser.
 function headingAnchors(text) {
   const ids = new Set();
   const repeats = new Map();
@@ -548,9 +550,12 @@ function repositoryMarkdown(root) {
 }
 
 // Paths are always checked. An anchor is checked only when neither side is in doubt: the linking
-// file has no `<!--`, since a link there may sit in a comment GitHub does not render, and the
-// target file is not skipped by headingAnchors. `skipped` is filled with rel -> reason for every
-// Markdown file whose anchors are not checked, linked or not.
+// file has no HTML comment opener, since a link there may sit in a comment GitHub does not
+// render, and the target file is not skipped by headingAnchors (an HTML comment opener anywhere,
+// or a heading with an entity or backslash). A linking file whose only doubt is such a heading
+// still has its own outgoing anchors checked. `skipped` is filled with rel -> reason for every
+// Markdown file the scan reads, linked or not, and for every skipped target a link reaches
+// outside the scan, such as under .github/.
 export function validateLinks(root, skipped = new Map()) {
   const problems = [];
   const anchors = anchorIndex();
@@ -570,9 +575,14 @@ export function validateLinks(root, skipped = new Map()) {
       if (local.error) problems.push(`${where}: ${local.error}`);
       else if (/^\.\.(?:\/|$)/.test(relative(root, local.resolved))) problems.push(`${where}: escapes the repository`);
       else if (!existsSync(local.resolved)) problems.push(`${where}: missing`);
-      else if (local.fragment && !inComment && local.resolved.endsWith(".md") && statSync(local.resolved).isFile()) {
+      else if (local.fragment && local.resolved.endsWith(".md") && statSync(local.resolved).isFile()) {
         const known = anchors(local.resolved);
-        if (known.skip) continue;
+        // A target outside the scan, such as one under .github/, is listed when its anchors are skipped.
+        if (known.skip) {
+          skipped.set(relative(root, local.resolved), known.skip);
+          continue;
+        }
+        if (inComment) continue;
         let id;
         try {
           id = decodeURIComponent(local.fragment);
@@ -737,10 +747,11 @@ export function validatePin(root, pin) {
 
 export function validateRequired(root) {
   const guide = path.join(root, "ADAPTATION.md");
-  const sections = existsSync(guide) ? headingAnchors(readFileSync(guide, "utf8")).ids : new Set();
+  const { ids: sections, skip } = existsSync(guide) ? headingAnchors(readFileSync(guide, "utf8")) : { ids: new Set(), skip: null };
   const problems = [];
   for (const rule of REQUIRED) {
-    if (!sections.has(rule.section)) problems.push(`ADAPTATION.md: ${rule.id}: no section #${rule.section} records this decision`);
+    // A guide whose anchors are skipped is listed by the CLI; its sections are not judged.
+    if (!skip && !sections.has(rule.section)) problems.push(`ADAPTATION.md: ${rule.id}: no section #${rule.section} records this decision`);
     const file = path.join(root, rule.file);
     const why = `${rule.hint} (ADAPTATION.md#${rule.section})`;
     if (!existsSync(file)) problems.push(`${rule.file}: ${rule.id}: missing; ${why}`);

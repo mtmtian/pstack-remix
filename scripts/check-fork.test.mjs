@@ -292,7 +292,7 @@ test("Given even backslashes before a comment or an entity, When validated, Then
   });
 });
 
-test("Given a heading with an entity that spells an underscore, When anchors are linked, Then the file is skipped with the heading's line", (t) => {
+test("Given a heading with an entity next to a literal underscore, When anchors are linked, Then the file is skipped with the heading's line", (t) => {
   const dir = copyRepo(t);
   writeFileSync(path.join(dir, "docs/version.md"), "---\ntitle: x\n---\n# Intro\n# version_&#50;\n");
   writeFileSync(path.join(dir, "docs/links.md"), "[a](./version.md#version_2) [b](./version.md#version_) [c](./version.md#intro)\n");
@@ -320,6 +320,17 @@ test("Given a skipped file on either side of a link, When validated, Then anchor
       "docs/noted.md:3: link ./gone.md: missing",
     ],
     skipped: { "docs/noted.md": "HTML comment" },
+  });
+});
+
+test("Given a source file whose own heading holds an entity, When it links a clean file's missing anchor, Then the anchor is still reported and the source is listed", (t) => {
+  const dir = copyRepo(t);
+  writeFileSync(path.join(dir, "docs/clean.md"), "# Clean\n");
+  writeFileSync(path.join(dir, "docs/src.md"), "# A &amp; B\n[x](clean.md#absent) [y](clean.md#clean) [z](#a--b)\n");
+
+  assert.deepEqual(checkLinks(dir), {
+    problems: ["docs/src.md:2: link clean.md#absent: no heading #absent in docs/clean.md"],
+    skipped: { "docs/src.md": "heading with an entity or backslash at line 1" },
   });
 });
 
@@ -400,6 +411,32 @@ test("Given a file whose anchors are skipped, When the CLI runs, Then it lists t
   assert.equal(failed.stdout, "");
 });
 
+test("Given a link into a dot directory the scan does not enter, When its target is skipped or clean, Then the CLI lists the skipped target and still checks the clean one", (t) => {
+  const dir = copyRepo(t);
+  mkdirSync(path.join(dir, ".github"), { recursive: true });
+  const guide = path.join(dir, ".github/guide.md");
+  const run = () => spawnSync(process.execPath, [cli, dir], { encoding: "utf8" });
+  const listed = (result) => result.stdout.split("\n").filter((line) => line.startsWith("Heading anchors not checked"));
+  writeFileSync(path.join(dir, "docs/links.md"), "[a](../.github/guide.md#nope)\n");
+
+  // Built in code so that this file's own text stays free of the opener.
+  writeFileSync(guide, `# Guide\n${["<", "!--"].join("")} note -->\n`);
+  const comment = run();
+  assert.equal(comment.status, 0, comment.stderr);
+  assert.deepEqual(listed(comment), ["Heading anchors not checked: .github/guide.md (HTML comment)"]);
+
+  writeFileSync(guide, "# Tom &amp; Jerry\n");
+  const entity = run();
+  assert.equal(entity.status, 0, entity.stderr);
+  assert.deepEqual(listed(entity), ["Heading anchors not checked: .github/guide.md (heading with an entity or backslash at line 1)"]);
+
+  writeFileSync(guide, "# Guide\n");
+  const clean = run();
+  assert.equal(clean.status, 1, clean.stdout);
+  assert.match(clean.stderr, /docs\/links\.md:1: link \.\.\/\.github\/guide\.md#nope: no heading #nope in \.github\/guide\.md/);
+  assert.deepEqual(listed(clean), []);
+});
+
 // What a sync loses for each required decision: [rule, file, local text, what replaces it].
 // Replacements quote upstream's wording at the pin where upstream has its own; null text deletes the file.
 const DROPPED = [
@@ -475,4 +512,24 @@ test("Given the guide renames a section that rules cite, When guarded, Then each
     "watch-pr-once",
     "watch-pr-once-test",
   ].map((rule) => `ADAPTATION.md: ${rule}: no section #t3-code-overlay records this decision`));
+});
+
+test("Given a guide whose anchors are skipped, When guarded, Then no section is judged but each rule's file and pattern still are", (t) => {
+  const dir = copyRepo(t);
+  edit(dir, "ADAPTATION.md", (text) => text.replace("## Maintained source", "## Ma&#105;ntained source"));
+  const guideLine = "Heading anchors not checked: ADAPTATION.md (heading with an entity or backslash at line 7)";
+
+  assert.deepEqual(validateRequired(dir), []);
+  const passed = spawnSync(process.execPath, [cli, dir], { encoding: "utf8" });
+  assert.equal(passed.status, 0, passed.stderr);
+  assert.ok(passed.stdout.split("\n").includes(guideLine), passed.stdout);
+
+  const [rule] = DROPPED.find(([, , text]) => text === null);
+  const rel = DROPPED.find(([id]) => id === rule)[1];
+  rmSync(path.join(dir, rel));
+  assert.deepEqual(validateRequired(dir).map((problem) => problem.split(": ").slice(0, 2).join(": ")), [`${rel}: ${rule}`]);
+  const failed = spawnSync(process.execPath, [cli, dir], { encoding: "utf8" });
+  assert.equal(failed.status, 1, failed.stdout);
+  assert.match(failed.stderr, new RegExp(`${rel.replaceAll(".", "\\.")}: ${rule}: missing`));
+  assert.ok(failed.stderr.split("\n").includes(guideLine), failed.stderr);
 });
