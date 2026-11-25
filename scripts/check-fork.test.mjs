@@ -134,7 +134,7 @@ test("Given broken local links outside code, When validated, Then missing and es
       "[example](does-not-exist.md)",
       "```",
       "Literal `[example](does-not-exist.md)` stays code. [Web](https://example.com) and [anchor](#how) are not files.",
-      "See [the contract](../../references/runtime.md#authorization).",
+      "See [the contract](../../references/runtime.md#authorization-and-execution).",
     ].join("\n")}\n`;
   });
 
@@ -143,6 +143,102 @@ test("Given broken local links outside code, When validated, Then missing and es
     `${rel}:${first + 1}: link ../../../outside.md: escapes the repository`,
     `${rel}:${first + 2}: link ../../..: escapes the repository`,
   ]);
+});
+
+// A fixture with the heading shapes GitHub slugs differently from a plain ASCII rule.
+const ANCHOR_FIXTURE = [
+  "# Anchors",
+  "## Repeat",
+  "## Repeat",
+  "## Repeat",
+  "## What's new? (v2.0) & more",
+  "## The `--once` flag and `snake_case`",
+  "## 验证与交付 2",
+  "## Closing hashes ##",
+  "## See [the guide](ci.md) and ![logo](../assets/logo.png)",
+  "## _Under_ **bold** and snake_case_name",
+  "### 100% <kbd>Ctrl</kbd>",
+  "```md",
+  "## Only in a fence",
+  "```",
+  "",
+].join("\n");
+
+test("Given links whose heading anchor does not exist, When validated, Then each names the file, line, link and missing anchor", (t) => {
+  const dir = copyRepo(t);
+  const rel = "skills/how/SKILL.md";
+  let first;
+  edit(dir, rel, (text) => {
+    const base = text.endsWith("\n") ? text : `${text}\n`;
+    first = base.split("\n").length + 3;
+    return `${base}${[
+      "```md",
+      "[a fence before the links shifts offsets, not lines](gone.md#nope)",
+      "```",
+      "See [the guide](../../ADAPTATION.md#verificaton).",
+      "See [it](../../ADAPTATION.md#verification) and [the contract](../../references/runtime.md#Authorization-and-execution).",
+      "See [here](#no-such-heading).",
+      "[ref]: ../../ADAPTATION.md#gone",
+    ].join("\n")}\n`;
+  });
+
+  assert.deepEqual(validateLinks(dir), [
+    `${rel}:${first}: link ../../ADAPTATION.md#verificaton: no heading #verificaton in ADAPTATION.md`,
+    `${rel}:${first + 1}: link ../../references/runtime.md#Authorization-and-execution: no heading #Authorization-and-execution in references/runtime.md`,
+    `${rel}:${first + 2}: link #no-such-heading: no heading #no-such-heading in ${rel}`,
+    `${rel}:${first + 3}: link ../../ADAPTATION.md#gone: no heading #gone in ADAPTATION.md`,
+  ]);
+});
+
+test("Given links to GitHub's heading ids, When validated, Then repeats, punctuation, code, CJK and encoded fragments pass", (t) => {
+  const dir = copyRepo(t);
+  writeFileSync(path.join(dir, "docs/anchors.md"), ANCHOR_FIXTURE);
+  const ids = [
+    "anchors",
+    "repeat", "repeat-1", "repeat-2",
+    "whats-new-v20--more",
+    "the---once-flag-and-snake_case",
+    "验证与交付-2",
+    "%E9%AA%8C%E8%AF%81%E4%B8%8E%E4%BA%A4%E4%BB%98-2",
+    "closing-hashes",
+    "see-the-guide-and-logo",
+    "under-bold-and-snake_case_name",
+    "100-ctrl",
+  ];
+  writeFileSync(path.join(dir, "docs/links.md"), `${ids.map((id) => `[x](./anchors.md#${id})`).join("\n")}\n[same](#links-heading)\n\n# Links heading\n`);
+
+  assert.deepEqual(validateLinks(dir), []);
+});
+
+test("Given anchors GitHub does not generate, When linked, Then they are reported", (t) => {
+  const dir = copyRepo(t);
+  writeFileSync(path.join(dir, "docs/anchors.md"), ANCHOR_FIXTURE);
+  const ids = ["repeat-3", "only-in-a-fence", "whats-new-v2.0-more", "the---once-flag-and-snakecase", "%E0%A4%A"];
+  writeFileSync(path.join(dir, "docs/links.md"), `${ids.map((id) => `[x](./anchors.md#${id})`).join("\n")}\n`);
+
+  assert.deepEqual(validateLinks(dir), [
+    "docs/links.md:1: link ./anchors.md#repeat-3: no heading #repeat-3 in docs/anchors.md",
+    "docs/links.md:2: link ./anchors.md#only-in-a-fence: no heading #only-in-a-fence in docs/anchors.md",
+    "docs/links.md:3: link ./anchors.md#whats-new-v2.0-more: no heading #whats-new-v2.0-more in docs/anchors.md",
+    "docs/links.md:4: link ./anchors.md#the---once-flag-and-snakecase: no heading #the---once-flag-and-snakecase in docs/anchors.md",
+    "docs/links.md:5: link ./anchors.md#%E0%A4%A: invalid URI encoding",
+  ]);
+});
+
+test("Given fragments in code, on URLs, on non-Markdown files or on directories, When validated, Then none is checked", (t) => {
+  const dir = copyRepo(t);
+  writeFileSync(path.join(dir, "docs/links.md"), [
+    "# Links",
+    "```md",
+    "[in a fence](../ADAPTATION.md#nope)",
+    "```",
+    "Literal `[in a span](../ADAPTATION.md#nope)` stays code.",
+    "[Web](https://example.com/page#nope) and [empty](#) and [file only](../ADAPTATION.md).",
+    "[Source line](../bin/xagent#L10) and [directory](./guide/#nope).",
+    "",
+  ].join("\n"));
+
+  assert.deepEqual(validateLinks(dir), []);
 });
 
 test("Given upstream's Agent Plugins root manifest, When the guards run, Then the manifest is rejected and the CLI fails", (t) => {
