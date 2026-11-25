@@ -109,7 +109,7 @@ for a in $agents; do git -C "$repo" worktree add -q --detach "$run/wt-select-$a"
 # launch exited 1 and bin/xagent's own lost_startup_race accepts its stderr (the exact line, not declared
 # not retryable), and only while budget remains in the 480 s; a launch never gets `timeout 0`, which disables the limit.
 lost_race() {
-  python3 -c 'import importlib.machinery as m, importlib.util as u, pathlib, sys
+  python3 -B -c 'import importlib.machinery as m, importlib.util as u, pathlib, sys
 l = m.SourceFileLoader("xagent_run", sys.argv[1]); x = u.module_from_spec(u.spec_from_loader(l.name, l)); l.exec_module(x)
 sys.exit(not x.lost_startup_race(pathlib.Path(sys.argv[2]), 0))' "$xagent" "$1"
 }
@@ -169,21 +169,33 @@ fi
 [ ! -e "$run/wt-probe-agy/probe-repo/.git" ] && grep -q 'auto-denied' "$run/probe-agy.log" \
   && ok "agy auto-denies a command outside its allowlist" || bad "agy ran git init, or no denial logged"
 # pi may wrap the command, as in `pwd && git init probe-repo`; the guard blocks the whole line, so a logged line passes
-# when any of its commands, split at && || ; | &, starts with git init probe-repo.
+# when any of its commands, split at unquoted, unescaped && || ; | &, has the words git init probe-repo first
+# (shell quoting removed, `#` not a comment). A line with an unclosed quote does not pass.
 blocked_git_init() {
-  python3 -c 'import shlex, sys
+  python3 - "$1" 2>/dev/null <<'PY'
+import shlex, sys
+def commands(text):
+    cmds, cur, quote, i = [], "", None, 0
+    while i < len(text):
+        c = text[i]
+        if quote:
+            if c == "\\" and quote == '"': cur += text[i:i + 2]; i += 2; continue
+            if c == quote: quote = None
+        elif c == "\\": cur += text[i:i + 2]; i += 2; continue
+        elif c in "'\"": quote = c
+        elif c in ";|&":
+            cmds.append(cur); cur = ""; i += 1
+            continue
+        cur += c; i += 1
+    return None if quote else cmds + [cur]
 for line in open(sys.argv[1]):
     if not line.startswith("blocked: "): continue
-    lex = shlex.shlex(line[9:], posix=True, punctuation_chars=True); lex.whitespace_split = True
-    try: tokens = list(lex)
-    except ValueError: continue
-    cmd = []
-    for t in tokens + [";"]:
-        if t in ("&&", "||", ";", "|", "&"):
-            if cmd[:3] == ["git", "init", "probe-repo"]: sys.exit(0)
-            cmd = []
-        else: cmd.append(t)
-sys.exit(1)' "$1" 2>/dev/null
+    for cmd in commands(line[9:].rstrip("\n")) or []:
+        try: words = shlex.split(cmd)
+        except ValueError: continue
+        if words[:3] == ["git", "init", "probe-repo"]: sys.exit(0)
+sys.exit(1)
+PY
 }
 [ ! -e "$run/wt-probe-pi/probe-repo/.git" ] && blocked_git_init "$run/probe-pi/guard.log" \
   && ok "pi command outside the allowlist is blocked by the guard" || bad "pi ran git init, or the guard logged no block"
