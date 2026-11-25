@@ -315,11 +315,13 @@ class XAgentTests(unittest.TestCase):
         started = time.monotonic()
         process = subprocess.Popen([sys.executable, "-c", FAST_RELAUNCH, "2", *self.args(out, "gemini", timeout="3")], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
         try:
-            # Freeze xagent inside its 2-second pause, as a sleeping computer does, until the 3-second deadline has passed.
+            # Freeze xagent inside its 2-second pause, as a sleeping computer does. xagent sets its 3-second deadline
+            # before it logs the pause, however slowly it started, so 3.5 seconds after the log line the deadline has passed.
             while "relaunching in" not in ((out / "agent.log").read_text() if (out / "agent.log").exists() else "") and time.monotonic() - started < 10:
                 time.sleep(0.02)
             process.send_signal(signal.SIGSTOP)
-            while time.monotonic() - started < 3.5:
+            frozen = time.monotonic()
+            while time.monotonic() - frozen < 3.5:
                 time.sleep(0.05)
             process.send_signal(signal.SIGCONT)
             stdout, stderr = process.communicate(timeout=10)
