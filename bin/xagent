@@ -278,9 +278,13 @@ def run_process(agent, args, workdir, out, stdout_path, timeout, env):
                 stream.write(f"xagent: agy lost its startup race (launch {relaunches + 1} of {AGY_RELAUNCHES + 1}); relaunching in {delay:.1f}s\n")
             wake = now() + delay
             # time.sleep resumes after a signal handler, so sleep in short slices that notice a cancellation.
-            while not cancelled and now() < wake:
-                time.sleep(min(wake - now(), 0.1))
+            while not cancelled and (remaining := wake - now()) > 0:
+                time.sleep(min(remaining, 0.1))
             if cancelled:
+                break
+            # The computer may have slept through the pause: start no process past the deadline.
+            if now() >= deadline:
+                code, timed_out = 124, True
                 break
             relaunches += 1
         return (128 + cancelled if cancelled else code), timed_out, bool(cancelled), relaunches

@@ -309,6 +309,29 @@ class XAgentTests(unittest.TestCase):
         self.assertEqual((meta["status"], meta["reason"], meta["exit"], meta["cancelled"], meta["timed_out"], meta["completed"]), ("DROPOUT", "cancelled", 143, True, False, True))
         self.assertEqual((meta["launch_retries"], len(counter.read_text().split())), (0, 1))
 
+    def test_given_the_deadline_passes_during_the_pause_then_agy_is_not_launched_again_and_the_attempt_times_out(self):
+        out, counter = self.base / "race-asleep", self.base / "race-asleep-launches"
+        env = {**self.env, "XAGENT_TEST_LAUNCHES": str(counter), "XAGENT_TEST_LOSE": "99"}
+        started = time.monotonic()
+        process = subprocess.Popen([sys.executable, "-c", FAST_RELAUNCH, "2", *self.args(out, "gemini", timeout="3")], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+        try:
+            # Freeze xagent inside its 2-second pause, as a sleeping computer does, until the 3-second deadline has passed.
+            while "relaunching in" not in ((out / "agent.log").read_text() if (out / "agent.log").exists() else "") and time.monotonic() - started < 10:
+                time.sleep(0.02)
+            process.send_signal(signal.SIGSTOP)
+            while time.monotonic() - started < 3.5:
+                time.sleep(0.05)
+            process.send_signal(signal.SIGCONT)
+            stdout, stderr = process.communicate(timeout=10)
+        finally:
+            if process.poll() is None:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.communicate(timeout=5)
+        meta = json.loads((out / "meta.json").read_text())
+        self.assertEqual(process.returncode, 3, stdout + stderr)
+        self.assertEqual((meta["status"], meta["reason"], meta["exit"], meta["timed_out"], meta["cancelled"], meta["completed"]), ("DROPOUT", "timeout", 124, True, False, True))
+        self.assertEqual((meta["launch_retries"], len(counter.read_text().split())), (0, 1))
+
     def test_given_the_deadline_cannot_cover_the_pause_then_agy_is_not_relaunched(self):
         result, meta, out, launches = self.relaunch_run("race-deadline", delay=60, timeout="5", XAGENT_TEST_LOSE="99")
         self.assertEqual((meta["status"], meta["reason"], meta["timed_out"], meta["launch_retries"], launches), ("DROPOUT", "process_failed", False, 0, 1))
