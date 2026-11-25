@@ -11,6 +11,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,6 +24,12 @@ if os.environ.get('XAGENT_TEST_ARGV'):
     pathlib.Path(os.environ['XAGENT_TEST_ARGV']).write_text(json.dumps(sys.argv[1:]))
 if agent == 'grok': os.chdir(sys.argv[sys.argv.index('--cwd')+1])
 if agent == 'codex': os.chdir(sys.argv[sys.argv.index('-C')+1])
+if os.environ.get('XAGENT_TEST_LAUNCHES'):
+    with open(os.environ['XAGENT_TEST_LAUNCHES'], 'a') as launches: launches.write('launch\n')
+    # The first XAGENT_TEST_LOSE launches lose agy's startup race.
+    if len(open(os.environ['XAGENT_TEST_LAUNCHES']).read().split()) <= int(os.environ.get('XAGENT_TEST_LOSE', '0')):
+        print('error: failed to start conversation: backend returned an empty conversation id', file=sys.stderr)
+        sys.exit(1)
 reply = 'Completed.\nSTATUS: PASS\n'
 used = json.loads(os.environ.get('XAGENT_TEST_USAGE') or 'null')
 report = {'modelUsage': {name: {} for name in used}} if used else {}
@@ -82,6 +89,9 @@ SELECTION_FLAGS = {
 # Runs the command after it as xagent with time.monotonic() stopped, as macOS stops it while the computer sleeps.
 # subprocess is imported first, so its own waits keep the real clock.
 ASLEEP = "import runpy, subprocess, sys, time; time.monotonic = lambda: 0.0; sys.argv = sys.argv[1:]; runpy.run_path(sys.argv[0], run_name='__main__')"
+# Runs the command after the delay as xagent with its relaunch delay fixed at that many seconds, so the tests need not wait 1-3 s.
+FAST_RELAUNCH = "import importlib.machinery, importlib.util, sys; loader = importlib.machinery.SourceFileLoader('xagent_run', sys.argv[2]); xagent = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader)); loader.exec_module(xagent); xagent.AGY_RELAUNCH_DELAY = (float(sys.argv[1]),) * 2; sys.argv = sys.argv[2:]; sys.exit(xagent.main())"
+LOST_RACE = "error: failed to start conversation: backend returned an empty conversation id"
 
 
 class XAgentTests(unittest.TestCase):
@@ -124,7 +134,7 @@ class XAgentTests(unittest.TestCase):
             with self.subTest(agent=agent):
                 result, meta = self.run_case("pass", agent)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(meta["status"], "PASS")
+                self.assertEqual((meta["status"], meta["launch_retries"]), ("PASS", 0))
                 self.assertIs(meta["changed_workdir"], False)
                 self.assertRegex(meta["snapshot_before"], r"^[a-f0-9]{64}$")
                 self.assertEqual(meta["snapshot_before"], meta["snapshot_after"])
@@ -233,6 +243,82 @@ class XAgentTests(unittest.TestCase):
         self.env["XAGENT_TEST_STDERR"] = 'AGY_ERROR: {"short_error":"User location is not supported","retryable":false}'
         result, meta = self.run_case("pass", "codex")  # XAGENT_TEST_STDERR makes the stub fail
         self.assertEqual((meta["status"], meta["reason"]), ("DROPOUT", "process_failed"))
+
+    def relaunch_run(self, name, agent="gemini", delay=0.05, timeout="30", **env):
+        """Run xagent with a relaunch delay of `delay` seconds; return (result, receipt, out dir, number of launches)."""
+        out, counter = self.base / name, self.base / f"{name}-launches"
+        env = {**self.env, "XAGENT_TEST_LAUNCHES": str(counter), **env}
+        result = subprocess.run([sys.executable, "-c", FAST_RELAUNCH, str(delay), *self.args(out, agent, timeout=timeout)], env=env, capture_output=True, text=True, timeout=30)
+        launches = len(counter.read_text().split()) if counter.exists() else 0
+        return result, json.loads((out / "meta.json").read_text()), out, launches
+
+    def test_given_agy_loses_its_startup_race_once_then_it_is_relaunched_and_the_receipt_says_so(self):
+        result, meta, out, launches = self.relaunch_run("race-once", XAGENT_TEST_LOSE="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((meta["status"], meta["reason"], meta["exit"], meta["launch_retries"], launches), ("PASS", None, 0, 1, 2))
+        log = (out / "agent.log").read_text().splitlines()
+        self.assertEqual(log[0], LOST_RACE)
+        self.assertRegex(log[1], r"^xagent: agy lost its startup race \(launch 1 of 3\); relaunching in [\d.]+s$")
+        self.assertEqual(len(log), 2)
+        # The lost launch's empty reply was overwritten by the relaunch's.
+        self.assertEqual((out / "result.md").read_text().strip(), "Completed.\nSTATUS: PASS")
+
+    def test_given_agy_loses_its_startup_race_every_time_then_it_is_launched_three_times_and_drops_out(self):
+        result, meta, out, launches = self.relaunch_run("race-always", XAGENT_TEST_LOSE="99")
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertEqual((meta["status"], meta["reason"], meta["exit"], meta["launch_retries"], launches), ("DROPOUT", "process_failed", 1, 2, 3))
+        log = (out / "agent.log").read_text()
+        self.assertEqual(log.splitlines().count(LOST_RACE), 3)
+        self.assertIn("(launch 1 of 3)", log)
+        self.assertIn("(launch 2 of 3)", log)
+        self.assertNotIn("(launch 3 of 3)", log)
+
+    def test_given_agy_fails_with_another_error_then_it_is_not_relaunched(self):
+        for name, line in (("race-other", "error: failed to start conversation: quota exceeded"), ("race-embedded", "wrapper: " + LOST_RACE)):
+            with self.subTest(line=line):
+                result, meta, out, launches = self.relaunch_run(name, XAGENT_TEST_STDERR=line)
+                self.assertEqual((meta["status"], meta["reason"], meta["launch_retries"], launches), ("DROPOUT", "process_failed", 0, 1))
+                self.assertNotIn("relaunching", (out / "agent.log").read_text())
+
+    def test_given_an_earlier_launch_lost_the_race_then_only_the_latest_launchs_error_decides_a_relaunch(self):
+        result, meta, out, launches = self.relaunch_run("race-then-other", XAGENT_TEST_LOSE="1", XAGENT_TEST_STDERR="error: something else")
+        self.assertEqual((meta["status"], meta["reason"], meta["launch_retries"], launches), ("DROPOUT", "process_failed", 1, 2))
+
+    def test_given_agy_declares_the_failure_not_retryable_together_with_the_race_line_then_it_is_not_relaunched(self):
+        line = LOST_RACE + '\nAGY_ERROR: {"short_error":"User location is not supported","retryable":false}'
+        result, meta, out, launches = self.relaunch_run("race-not-retryable", XAGENT_TEST_STDERR=line)
+        self.assertEqual((meta["status"], meta["reason"], meta["launch_retries"], launches), ("DROPOUT", "not_retryable", 0, 1))
+
+    def test_given_a_cancel_while_agy_waits_to_relaunch_then_the_attempt_is_cancelled_and_nothing_launches_again(self):
+        out, counter = self.base / "race-cancel", self.base / "race-cancel-launches"
+        env = {**self.env, "XAGENT_TEST_LAUNCHES": str(counter), "XAGENT_TEST_LOSE": "99"}
+        process = subprocess.Popen([sys.executable, "-c", FAST_RELAUNCH, "30", *self.args(out, "gemini", timeout="60")], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+        try:
+            # xagent logs the pause before it starts, so the signal below lands in the 30-second delay.
+            deadline = time.monotonic() + 10
+            while "relaunching in" not in ((out / "agent.log").read_text() if (out / "agent.log").exists() else "") and time.monotonic() < deadline:
+                time.sleep(0.02)
+            process.send_signal(signal.SIGTERM)
+            stdout, stderr = process.communicate(timeout=10)
+        finally:
+            if process.poll() is None:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.communicate(timeout=5)
+        meta = json.loads((out / "meta.json").read_text())
+        self.assertEqual(process.returncode, 3, stdout + stderr)
+        self.assertEqual((meta["status"], meta["reason"], meta["exit"], meta["cancelled"], meta["timed_out"], meta["completed"]), ("DROPOUT", "cancelled", 143, True, False, True))
+        self.assertEqual((meta["launch_retries"], len(counter.read_text().split())), (0, 1))
+
+    def test_given_the_deadline_cannot_cover_the_pause_then_agy_is_not_relaunched(self):
+        result, meta, out, launches = self.relaunch_run("race-deadline", delay=60, timeout="5", XAGENT_TEST_LOSE="99")
+        self.assertEqual((meta["status"], meta["reason"], meta["timed_out"], meta["launch_retries"], launches), ("DROPOUT", "process_failed", False, 0, 1))
+        self.assertLess(meta["seconds"], 5)
+
+    def test_given_another_cli_prints_agys_race_line_then_it_is_not_relaunched(self):
+        for agent in ("claude", "codex", "grok", "pi"):
+            with self.subTest(agent=agent):
+                result, meta, out, launches = self.relaunch_run(f"race-{agent}", agent, XAGENT_TEST_LOSE="1")
+                self.assertEqual((meta["status"], meta["launch_retries"], launches), ("DROPOUT", 0, 1))
 
     def test_given_a_model_and_effort_when_each_adapter_runs_then_its_cli_gets_them_and_the_receipt_records_them(self):
         captured = self.base / "selection-argv.json"
