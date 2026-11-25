@@ -106,8 +106,13 @@ for w in $agents probe-gemini probe-agy probe-pi nested bind-default bind-full h
 for a in $review_agents; do git -C "$repo" worktree add -q --detach "$run/wt-review-$a"; done
 for a in $agents; do git -C "$repo" worktree add -q --detach "$run/wt-select-$a"; done
 # agy 1.5.17 loses concurrent launches at startup. Relaunch, at most twice after a random 1-3 s pause, only when the
-# launch exited 1 with that exact stderr line and no "retryable": false line (bin/xagent's rule), and only while
-# budget remains in the 480 s; a launch never gets `timeout 0`, which disables the limit.
+# launch exited 1 and bin/xagent's own lost_startup_race accepts its stderr (the exact line, not declared
+# not retryable), and only while budget remains in the 480 s; a launch never gets `timeout 0`, which disables the limit.
+lost_race() {
+  python3 -c 'import importlib.machinery as m, importlib.util as u, pathlib, sys
+l = m.SourceFileLoader("xagent_run", sys.argv[1]); x = u.module_from_spec(u.spec_from_loader(l.name, l)); l.exec_module(x)
+sys.exit(not x.lost_startup_race(pathlib.Path(sys.argv[2]), 0))' "$xagent" "$1"
+}
 probe_agy() (
   deadline=$((SECONDS + 480)) tries=0 err="$run/probe-agy.err" rc=0
   : > "$run/probe-agy.log"
@@ -116,8 +121,7 @@ probe_agy() (
     timeout -k 2 "$left" agy -p "$(cat "$run/probe.md")" --mode accept-edits > "$run/probe-agy.md" 2> "$err"
     rc=$?
     cat "$err" >> "$run/probe-agy.log"
-    [ "$rc" = 1 ] && [ "$tries" -lt 2 ] && grep -qx 'error: failed to start conversation: backend returned an empty conversation id' "$err" \
-      && ! grep -q '"retryable" *: *false' "$err" || break
+    [ "$rc" = 1 ] && [ "$tries" -lt 2 ] && lost_race "$err" || break
     tries=$((tries + 1)); sleep $((RANDOM % 3 + 1))
   done
 )
@@ -164,8 +168,24 @@ fi
 [ ! -e "$run/wt-probe-gemini/probe-repo/.git" ] && ok "gemini dispatched through xagent did not run git init" || bad "gemini ran git init through xagent"
 [ ! -e "$run/wt-probe-agy/probe-repo/.git" ] && grep -q 'auto-denied' "$run/probe-agy.log" \
   && ok "agy auto-denies a command outside its allowlist" || bad "agy ran git init, or no denial logged"
-# pi may wrap the command, as in `pwd && git init probe-repo`; the guard blocks the whole line, so match the command position.
-[ ! -e "$run/wt-probe-pi/probe-repo/.git" ] && grep -Eq '^blocked: *(.*(&&|\|\||;|\|) *)?git init probe-repo' "$run/probe-pi/guard.log" 2>/dev/null \
+# pi may wrap the command, as in `pwd && git init probe-repo`; the guard blocks the whole line, so a logged line passes
+# when any of its commands, split at && || ; | &, starts with git init probe-repo.
+blocked_git_init() {
+  python3 -c 'import shlex, sys
+for line in open(sys.argv[1]):
+    if not line.startswith("blocked: "): continue
+    lex = shlex.shlex(line[9:], posix=True, punctuation_chars=True); lex.whitespace_split = True
+    try: tokens = list(lex)
+    except ValueError: continue
+    cmd = []
+    for t in tokens + [";"]:
+        if t in ("&&", "||", ";", "|", "&"):
+            if cmd[:3] == ["git", "init", "probe-repo"]: sys.exit(0)
+            cmd = []
+        else: cmd.append(t)
+sys.exit(1)' "$1" 2>/dev/null
+}
+[ ! -e "$run/wt-probe-pi/probe-repo/.git" ] && blocked_git_init "$run/probe-pi/guard.log" \
   && ok "pi command outside the allowlist is blocked by the guard" || bad "pi ran git init, or the guard logged no block"
 missing=$(cd "$run" && agy -p /permissions --output-format json 2>/dev/null | python3 -c '
 import json, sys
