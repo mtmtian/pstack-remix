@@ -253,82 +253,74 @@ test("Given fragments with a stray percent or after a query, When validated, The
   assert.deepEqual(validateLinks(dir), ["docs/links.md:3: link ./ci.md#%E0%A4%A: invalid URI encoding"]);
 });
 
-test("Given headings with character references, When linked, Then they are decoded and unknown names make the file unverifiable", (t) => {
-  const dir = copyRepo(t);
-  writeFileSync(path.join(dir, "docs/refs.md"), "# Caf&#233;\n## Caf&#xE9; two\n## A &amp; B\n## Lt &lt;b&gt; &#0;\n");
-  writeFileSync(path.join(dir, "docs/named.md"), "# Caf&eacute;\n");
-  writeFileSync(path.join(dir, "docs/links.md"), [
-    "[a](./refs.md#café) [b](./refs.md#café-two) [c](./refs.md#a--b) [d](./refs.md#lt-b-)",
-    "[wrong](./refs.md#caf)",
-    "[named](./named.md#cafe) [named](./named.md#café) [named](./named.md#caf)",
-    "",
-  ].join("\n"));
+// The guard does not emulate how GitHub renders HTML comments, entities or backslash escapes.
+// A file with `<!--` anywhere, or a heading with an entity or backslash, has its anchors skipped
+// and listed, and link paths are checked as before.
+function checkLinks(dir) {
+  const skipped = new Map();
+  return { problems: validateLinks(dir, skipped), skipped: Object.fromEntries(skipped) };
+}
 
-  assert.deepEqual(validateLinks(dir), ["docs/links.md:2: link ./refs.md#caf: no heading #caf in docs/refs.md"]);
+test("Given a comment that hides a heading's start, When anchors are linked, Then the file is skipped instead of guessed", (t) => {
+  const dir = copyRepo(t);
+  writeFileSync(path.join(dir, "docs/that.md"), "<!-- note --># Setup\n# Setup\n");
+  writeFileSync(path.join(dir, "docs/links.md"), "[a](./that.md#setup-1) [b](./that.md#setup) [c](./that.md#nope)\n");
+
+  assert.deepEqual(checkLinks(dir), { problems: [], skipped: { "docs/that.md": "HTML comment" } });
 });
 
-test("Given HTML comments, When validated, Then their headings and links do not exist and later line numbers hold", (t) => {
+test("Given backticks on both sides of a comment edge, When validated, Then the path is checked as on main and the file is skipped", (t) => {
   const dir = copyRepo(t);
-  writeFileSync(path.join(dir, "docs/comment.md"), [
-    "# Real",
-    "Use `<!--` to open a comment, which code does not.",
-    "# Still heading",
-    "<!-- one line [y](missing.md#z) -->",
-    "<!--",
-    "# Ghost",
-    "[x](#not-a-link) [m](missing.md)",
-    "-->",
-    "[late](#late), [ghost](#ghost), [real](#real), [still](#still-heading).",
-    "",
-  ].join("\n"));
+  // Main blanks the span from the backtick inside the comment to the one after it, so it sees no link.
+  writeFileSync(path.join(dir, "docs/edge.md"), "Before <!-- note ` --> [visible](missing.md) ` end\n");
 
-  assert.deepEqual(validateLinks(dir), [
-    "docs/comment.md:9: link #late: no heading #late in docs/comment.md",
-    "docs/comment.md:9: link #ghost: no heading #ghost in docs/comment.md",
-  ]);
+  assert.deepEqual(checkLinks(dir), { problems: [], skipped: { "docs/edge.md": "HTML comment" } });
 });
 
-test("Given a comment inside a heading, When linked, Then the heading is the text around it with no gap", (t) => {
+test("Given even backslashes before a comment or an entity, When validated, Then paths are checked as on main and anchors are skipped", (t) => {
   const dir = copyRepo(t);
-  writeFileSync(path.join(dir, "docs/inline.md"), "# Build<!-- note -->Setup\n## Before<!-- note --> After\n");
-  writeFileSync(path.join(dir, "docs/links.md"), "[a](./inline.md#buildsetup) [b](./inline.md#before-after) [c](./inline.md#build-setup)\n");
+  writeFileSync(path.join(dir, "docs/slashes.md"), "\\\\<!-- [hidden](hidden.md) -->\n");
+  writeFileSync(path.join(dir, "docs/tom.md"), "# Tom \\\\&amp; Jerry\n");
+  writeFileSync(path.join(dir, "docs/links.md"), "[a](./tom.md#tom--jerry) [b](./tom.md#nope)\n");
 
-  assert.deepEqual(validateLinks(dir), ["docs/links.md:1: link ./inline.md#build-setup: no heading #build-setup in docs/inline.md"]);
+  assert.deepEqual(checkLinks(dir), {
+    problems: ["docs/slashes.md:1: link hidden.md: missing"],
+    skipped: {
+      "docs/slashes.md": "HTML comment",
+      "docs/tom.md": "heading with an entity or backslash at line 1",
+    },
+  });
 });
 
-test("Given text that only looks like a comment, When validated, Then the links in visible prose are still checked", (t) => {
+test("Given a heading with an entity that spells an underscore, When anchors are linked, Then the file is skipped with the heading's line", (t) => {
   const dir = copyRepo(t);
-  writeFileSync(path.join(dir, "docs/looks.md"), [
-    "An escaped \\<!-- opens nothing. [escaped](missing-a.md)",
-    "<!-- but this does [hidden](missing-b.md) -->",
-    "",
-  ].join("\n"));
-  writeFileSync(path.join(dir, "docs/looks2.md"), [
-    "<!-- the closer `-->` ends it, even between backticks",
-    "[visible](missing-c.md)",
-    "<!-- another [hidden](missing-d.md) -->",
-    "",
-  ].join("\n"));
+  writeFileSync(path.join(dir, "docs/version.md"), "---\ntitle: x\n---\n# Intro\n# version_&#50;\n");
+  writeFileSync(path.join(dir, "docs/links.md"), "[a](./version.md#version_2) [b](./version.md#version_) [c](./version.md#intro)\n");
 
-  assert.deepEqual(validateLinks(dir), [
-    "docs/looks.md:1: link missing-a.md: missing",
-    "docs/looks2.md:2: link missing-c.md: missing",
-  ]);
+  assert.deepEqual(checkLinks(dir), { problems: [], skipped: { "docs/version.md": "heading with an entity or backslash at line 5" } });
 });
 
-test("Given character references that spell Markdown, When linked, Then they stay literal and an escaped one is not decoded", (t) => {
+test("Given a `<!--` only inside a fenced block, When validated, Then the plain substring rule skips the file", (t) => {
   const dir = copyRepo(t);
-  writeFileSync(path.join(dir, "docs/literal.md"), "# &#95;name&#95;\n## File&#95;\n## Tom \\&amp; Jerry\n");
-  writeFileSync(path.join(dir, "docs/links.md"), [
-    "[a](./literal.md#_name_) [b](./literal.md#file_) [c](./literal.md#tom-amp-jerry)",
-    "[wrong](./literal.md#name) [wrong](./literal.md#tom--jerry)",
-    "",
-  ].join("\n"));
+  writeFileSync(path.join(dir, "docs/fenced.md"), "# Real\n```html\n<!-- example -->\n```\n");
+  writeFileSync(path.join(dir, "docs/links.md"), "[a](./fenced.md#nope)\n");
 
-  assert.deepEqual(validateLinks(dir), [
-    "docs/links.md:2: link ./literal.md#name: no heading #name in docs/literal.md",
-    "docs/links.md:2: link ./literal.md#tom--jerry: no heading #tom--jerry in docs/literal.md",
-  ]);
+  assert.deepEqual(checkLinks(dir), { problems: [], skipped: { "docs/fenced.md": "HTML comment" } });
+});
+
+test("Given a skipped file on either side of a link, When validated, Then anchors are not reported but missing paths still are", (t) => {
+  const dir = copyRepo(t);
+  writeFileSync(path.join(dir, "docs/clean.md"), "# Clean\n");
+  writeFileSync(path.join(dir, "docs/noted.md"), "# Noted\n<!-- a comment -->\n[a](./clean.md#nope) [b](#nope) [c](./gone.md) [d](./clean.md#clean)\n");
+  writeFileSync(path.join(dir, "docs/links.md"), "[a](./noted.md#nope) [b](./clean.md#nope)\n");
+
+  assert.deepEqual(checkLinks(dir), {
+    problems: [
+      "docs/links.md:1: link ./clean.md#nope: no heading #nope in docs/clean.md",
+      "docs/noted.md:3: link ./gone.md: missing",
+    ],
+    skipped: { "docs/noted.md": "HTML comment" },
+  });
 });
 
 test("Given upstream's Agent Plugins root manifest, When the guards run, Then the manifest is rejected and the CLI fails", (t) => {
@@ -387,6 +379,25 @@ test("Given a clean copy, When the CLI runs on it, Then it exits 0", (t) => {
   const passed = spawnSync(process.execPath, [cli, dir], { encoding: "utf8" });
   assert.equal(passed.status, 0, passed.stderr);
   assert.match(passed.stdout, /^Fork guards passed/);
+  assert.equal(passed.stdout.trim().split("\n").length, 1, "a clean tree lists no skipped file");
+});
+
+test("Given a file whose anchors are skipped, When the CLI runs, Then it lists the file on stdout when passing and on stderr when failing", (t) => {
+  const dir = copyRepo(t);
+  writeFileSync(path.join(dir, "docs/noted.md"), "# Noted\n<!-- a comment -->\n");
+  const line = "Heading anchors not checked: docs/noted.md (HTML comment)";
+
+  const passed = spawnSync(process.execPath, [cli, dir], { encoding: "utf8" });
+  assert.equal(passed.status, 0, passed.stderr);
+  assert.match(passed.stdout, /^Fork guards passed.*\n/);
+  assert.ok(passed.stdout.split("\n").includes(line), passed.stdout);
+
+  writeFileSync(path.join(dir, "docs/broken.md"), "[gone](./gone.md)\n");
+  const failed = spawnSync(process.execPath, [cli, dir], { encoding: "utf8" });
+  assert.equal(failed.status, 1, failed.stdout);
+  const lines = failed.stderr.trim().split("\n");
+  assert.deepEqual(lines.slice(-2), ["docs/broken.md:1: link ./gone.md: missing", line]);
+  assert.equal(failed.stdout, "");
 });
 
 // What a sync loses for each required decision: [rule, file, local text, what replaces it].
