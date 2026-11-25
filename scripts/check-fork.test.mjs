@@ -288,6 +288,49 @@ test("Given HTML comments, When validated, Then their headings and links do not 
   ]);
 });
 
+test("Given a comment inside a heading, When linked, Then the heading is the text around it with no gap", (t) => {
+  const dir = copyRepo(t);
+  writeFileSync(path.join(dir, "docs/inline.md"), "# Build<!-- note -->Setup\n## Before<!-- note --> After\n");
+  writeFileSync(path.join(dir, "docs/links.md"), "[a](./inline.md#buildsetup) [b](./inline.md#before-after) [c](./inline.md#build-setup)\n");
+
+  assert.deepEqual(validateLinks(dir), ["docs/links.md:1: link ./inline.md#build-setup: no heading #build-setup in docs/inline.md"]);
+});
+
+test("Given text that only looks like a comment, When validated, Then the links in visible prose are still checked", (t) => {
+  const dir = copyRepo(t);
+  writeFileSync(path.join(dir, "docs/looks.md"), [
+    "An escaped \\<!-- opens nothing. [escaped](missing-a.md)",
+    "<!-- but this does [hidden](missing-b.md) -->",
+    "",
+  ].join("\n"));
+  writeFileSync(path.join(dir, "docs/looks2.md"), [
+    "<!-- the closer `-->` ends it, even between backticks",
+    "[visible](missing-c.md)",
+    "<!-- another [hidden](missing-d.md) -->",
+    "",
+  ].join("\n"));
+
+  assert.deepEqual(validateLinks(dir), [
+    "docs/looks.md:1: link missing-a.md: missing",
+    "docs/looks2.md:2: link missing-c.md: missing",
+  ]);
+});
+
+test("Given character references that spell Markdown, When linked, Then they stay literal and an escaped one is not decoded", (t) => {
+  const dir = copyRepo(t);
+  writeFileSync(path.join(dir, "docs/literal.md"), "# &#95;name&#95;\n## File&#95;\n## Tom \\&amp; Jerry\n");
+  writeFileSync(path.join(dir, "docs/links.md"), [
+    "[a](./literal.md#_name_) [b](./literal.md#file_) [c](./literal.md#tom-amp-jerry)",
+    "[wrong](./literal.md#name) [wrong](./literal.md#tom--jerry)",
+    "",
+  ].join("\n"));
+
+  assert.deepEqual(validateLinks(dir), [
+    "docs/links.md:2: link ./literal.md#name: no heading #name in docs/literal.md",
+    "docs/links.md:2: link ./literal.md#tom--jerry: no heading #tom--jerry in docs/literal.md",
+  ]);
+});
+
 test("Given upstream's Agent Plugins root manifest, When the guards run, Then the manifest is rejected and the CLI fails", (t) => {
   const dir = copyRepo(t);
   edit(dir, "plugin.json", (text) => text.replace("{\n", '{\n  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",\n'));

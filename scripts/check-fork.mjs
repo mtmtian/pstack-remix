@@ -444,43 +444,59 @@ const CODE_SPAN = /(`+)(?!`)(.*?[^`])\1(?!`)/g;
 
 const blankOut = (span) => span.replace(/[^\n]/g, " ");
 
-// Closed `<!-- -->` comments are not rendered, so their links and headings do not exist.
-// `masked` has code spans blanked, so a literal `<!--` in code opens no comment; the matches
-// are blanked in `source`, which has the same length.
-function maskComments(masked, source) {
-  let out = "";
-  let last = 0;
-  for (const match of masked.matchAll(/<!--[\s\S]*?-->/g)) {
-    out += source.slice(last, match.index) + blankOut(match[0]);
-    last = match.index + match[0].length;
+// Closed `<!-- -->` comments are not rendered, so their links and headings do not exist. An opener
+// counts outside code spans (`masked` has them blanked) and unless backslash-escaped; its closer is
+// the first `-->` after it in `joined`, where code spans are intact. Both have the same length.
+function commentRanges(joined, masked) {
+  const ranges = [];
+  for (let from = 0; ;) {
+    const opener = /(?<!\\)<!--/g;
+    opener.lastIndex = from;
+    const open = opener.exec(masked);
+    const close = open ? joined.indexOf("-->", open.index + 4) : -1;
+    if (close < 0) return ranges;
+    from = close + 3;
+    ranges.push([open.index, from]);
   }
-  return out + source.slice(last);
 }
 
 // What is left of a file once literal text is blanked in place, which keeps line numbers:
-// fenced blocks, code spans (unless `keepCodeSpans`, which headings need) and comments.
-function proseOnly(text, keepCodeSpans = false) {
+// fenced blocks, code spans and comments. Headings need their code spans, and a comment inside
+// one leaves no gap (`Build<!-- x -->Setup` is `BuildSetup`), so for them `forHeadings` keeps
+// the code spans and deletes each comment down to its newlines.
+function proseOnly(text, forHeadings = false) {
   const lines = unfencedLines(text);
+  const joined = lines.join("\n");
   const masked = lines.map((line) => line.replace(CODE_SPAN, blankOut)).join("\n");
-  return maskComments(masked, keepCodeSpans ? lines.join("\n") : masked);
+  const source = forHeadings ? joined : masked;
+  let out = "";
+  let last = 0;
+  for (const [start, end] of commentRanges(joined, masked)) {
+    const comment = source.slice(start, end);
+    out += source.slice(last, start) + (forHeadings ? comment.replace(/[^\n]/g, "") : blankOut(comment));
+    last = end;
+  }
+  return out + source.slice(last);
 }
 
 const NAMED_ENTITIES = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: "\u00a0" };
 const codePoint = (n) => (n === 0 || n > 0x10ffff || (n >= 0xd800 && n <= 0xdfff) ? "\ufffd" : String.fromCodePoint(n));
 
 // What GitHub shows for a heading's Markdown: code spans keep their text, links and images keep
-// their label, numeric and basic named entities are decoded, emphasis and HTML tags go.
+// their label, numeric and basic named entities (unless escaped) are decoded, emphasis and HTML tags
+// go. Code spans and decoded entities are held aside as literal text, so `&#95;` stays an underscore.
 // `exact` is false when another named entity was left out, so the text is not known for sure.
 function renderedHeading(markup) {
   const spans = [];
+  const hold = (literal) => `\0${spans.push(literal) - 1}\0`;
   let exact = true;
   const text = markup
-    .replace(CODE_SPAN, (_, __, inner) => `\0${spans.push(inner.replace(/^ (.*) $/, "$1")) - 1}\0`)
+    .replace(CODE_SPAN, (_, __, inner) => hold(inner.replace(/^ (.*) $/, "$1")))
     .replace(/!?\[([^\]]*)\](?:\([^)]*\)|\[[^\]]*\])/g, "$1")
     .replace(/<[^>\n]*>/g, "")
-    .replace(/&(?:#(\d{1,7})|#x([\da-f]{1,6})|([a-z][a-z\d]*));/gi, (entity, dec, hex, name) => {
-      if (name === undefined) return codePoint(dec === undefined ? parseInt(hex, 16) : Number(dec));
-      if (Object.hasOwn(NAMED_ENTITIES, name)) return NAMED_ENTITIES[name];
+    .replace(/(?<!\\)&(?:#(\d{1,7})|#x([\da-f]{1,6})|([a-z][a-z\d]*));/gi, (entity, dec, hex, name) => {
+      if (name === undefined) return hold(codePoint(dec === undefined ? parseInt(hex, 16) : Number(dec)));
+      if (Object.hasOwn(NAMED_ENTITIES, name)) return hold(NAMED_ENTITIES[name]);
       exact = false;
       return "";
     })
