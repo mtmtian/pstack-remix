@@ -2,9 +2,9 @@
 // Static guards for upstream syncs. Shipped content must not bring back the
 // Cursor-only instructions ADAPTATION.md replaced and must keep the local
 // decisions it records, every skill outside STANDALONE keeps its shared runtime
-// contract, local links resolve, the manifests keep their fork names, and every
+// contract, local links and their heading anchors resolve, the manifests keep their fork names, and every
 // copy of the upstream pin matches UPSTREAM.json.
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -422,9 +422,9 @@ export function scanDenylist(root) {
   return problems;
 }
 
-// Fenced blocks and code spans hold examples and literal syntax, not links.
-// Blanking them in place keeps line numbers for what remains.
-function proseOnly(text) {
+// Fenced blocks hold examples and literal syntax, not links or headings.
+// Blanking their lines in place keeps line numbers for what remains.
+function unfencedLines(text) {
   let fence = null;
   return text.split("\n").map((line) => {
     const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
@@ -436,28 +436,105 @@ function proseOnly(text) {
       fence = marker[1];
       return "";
     }
-    return line.replace(/(`+)(?!`).*?[^`]\1(?!`)/g, (span) => " ".repeat(span.length));
-  }).join("\n");
+    return line;
+  });
 }
 
+const CODE_SPAN = /(`+)(?!`)(.*?[^`])\1(?!`)/g;
+
+// Fenced blocks and code spans are literal text, so blank them too. Comments are not parsed:
+// a link in one is path-checked like any other, and anchors in or into a file that has one are
+// not checked (see headingAnchors).
+function proseOnly(text) {
+  return unfencedLines(text).map((line) => line.replace(CODE_SPAN, (span) => " ".repeat(span.length))).join("\n");
+}
+
+// The text of a heading as GitHub shows it, for the markup this repository uses: code spans keep
+// their text, links and images keep their label, HTML tags go, and `_emphasis_` loses its
+// underscores. Entities and backslash escapes are not decoded; headingAnchors skips a file with one.
+function renderedHeading(markup) {
+  const spans = [];
+  return markup
+    .replace(CODE_SPAN, (_, __, inner) => `\0${spans.push(inner.replace(/^ (.*) $/, "$1")) - 1}\0`)
+    .replace(/!?\[([^\]]*)\](?:\([^)]*\)|\[[^\]]*\])/g, "$1")
+    .replace(/<[^>\n]*>/g, "")
+    .replace(/(^|[^\p{L}\p{N}])_+(?=\S)|(?<=\S)_+(?![\p{L}\p{N}])/gu, "$1")
+    .replace(/\0(\d+)\0/g, (_, index) => spans[index]);
+}
+
+// github-slugger: lowercase, keep letters of any script, marks, numbers, `_`, `-` and spaces, spaces to `-`.
+function slug(text) {
+  return text.toLowerCase().replace(/[^\p{L}\p{M}\p{N}\p{Pc} -]/gu, "").replaceAll(" ", "-");
+}
+
+// The ids GitHub gives a file's ATX headings, repeats numbered `-1`, `-2`, ... in document order,
+// read from the raw lines (frontmatter and fenced blocks blanked).
+//
+// This does not emulate how GitHub renders HTML comments or entities, so a file it cannot read
+// for sure is skipped: `skip` is then a reason. A file with an HTML comment opener anywhere
+// (plain substring, no parsing) has neither its own links' anchors nor anchors into it checked,
+// since the opener may hide a heading or a link. A file with a heading that holds a backslash or
+// an entity only has anchors into it skipped; its own outgoing anchors are still checked.
+// Also not handled: setext headings and `<a id>` anchors, which this repository does not use,
+// and indented code blocks, which read as prose here as they do for links; telling them from
+// list continuations needs a list-aware parser.
+function headingAnchors(text) {
+  const ids = new Set();
+  const repeats = new Map();
+  let skip = text.includes("<!--") ? "HTML comment" : null;
+  const body = text.replace(/^---\r?\n[\s\S]*?\r?\n---[ \t]*(?:\r?\n|$)/, (frontmatter) => frontmatter.replace(/[^\n]/g, ""));
+  for (const [index, line] of unfencedLines(body).entries()) {
+    const heading = /^ {0,3}#{1,6}(?:[ \t]+(.*?))?\s*$/.exec(line);
+    if (!heading) continue;
+    const markup = (heading[1] ?? "").replace(/(?:^|[ \t]+)#+$/, "");
+    skip ??= /\\|&(?:#\d+|#x[\da-f]+|[a-z][a-z\d]*);/i.test(markup) ? `heading with an entity or backslash at line ${index + 1}` : null;
+    const base = slug(renderedHeading(markup));
+    let id = base;
+    for (let n = repeats.get(base) ?? 0; ids.has(id);) {
+      repeats.set(base, ++n);
+      id = `${base}-${n}`;
+    }
+    ids.add(id);
+  }
+  return { ids, skip };
+}
+
+// Heading ids (see headingAnchors) per Markdown file, read on first use.
+function anchorIndex() {
+  const cache = new Map();
+  return (file) => {
+    if (!cache.has(file)) cache.set(file, headingAnchors(readFileSync(file, "utf8")));
+    return cache.get(file);
+  };
+}
+
+// Blanked fences shorten the prose, so a link's line is counted in the prose, not the file.
 function linkTargets(text) {
   const prose = proseOnly(text);
   const unwrap = (raw) => (raw.startsWith("<") ? raw.slice(1, -1) : raw);
+  const found = (m) => ({ target: unwrap(m[1]), line: lineAt(prose, m.index) });
   return [
-    ...[...prose.matchAll(/\]\(\s*(<[^>\n]*>|[^)\s]*)/g)].map((m) => ({ target: unwrap(m[1]), index: m.index })),
-    ...[...prose.matchAll(/^ {0,3}\[(?!\^)[^\]\n]+\]:\s*(<[^>\n]*>|\S+)/gm)].map((m) => ({ target: unwrap(m[1]), index: m.index })),
+    ...[...prose.matchAll(/\]\(\s*(<[^>\n]*>|[^)\s]*)/g)].map(found),
+    ...[...prose.matchAll(/^ {0,3}\[(?!\^)[^\]\n]+\]:\s*(<[^>\n]*>|\S+)/gm)].map(found),
   ];
 }
 
-// Resolves a link to an absolute path, or null for anchors and URLs.
+// Resolves a link to its absolute path, or null for URLs and for links with no path and no
+// leading `#`. `fragment` is the raw text after `#`, or null when it has none or the link has a
+// query string, as GitHub's `file.md?plain=1#L2` source-line links do; the caller checks it
+// only for Markdown targets. A link starting with `#` points at `file` itself.
 function localPath(file, target) {
-  if (!target || PLACEHOLDER_TARGETS.has(target) || target.startsWith("#") || target.startsWith("//")) return null;
+  if (!target || PLACEHOLDER_TARGETS.has(target) || target.startsWith("//")) return null;
   if (/^[a-z][a-z0-9+.-]*:/i.test(target)) return null;
+  const hash = target.indexOf("#");
+  const beforeHash = hash < 0 ? target : target.slice(0, hash);
+  const fragment = hash < 0 || beforeHash.includes("?") || hash === target.length - 1 ? null : target.slice(hash + 1);
+  if (target.startsWith("#")) return { resolved: file, fragment };
   const encoded = target.split(/[?#]/, 1)[0];
   if (!encoded) return null;
   if (encoded.startsWith("/")) return { error: "absolute path" };
   try {
-    return { resolved: path.resolve(path.dirname(file), decodeURIComponent(encoded)) };
+    return { resolved: path.resolve(path.dirname(file), decodeURIComponent(encoded)), fragment };
   } catch {
     return { error: "invalid URI encoding" };
   }
@@ -472,18 +549,49 @@ function repositoryMarkdown(root) {
     .filter((file) => file.endsWith(".md"));
 }
 
-export function validateLinks(root) {
+// Paths are always checked. An anchor is checked only when neither side is in doubt: the linking
+// file has no HTML comment opener, since a link there may sit in a comment GitHub does not
+// render, and the target file is not skipped by headingAnchors (an HTML comment opener anywhere,
+// or a heading with an entity or backslash). A linking file whose only doubt is such a heading
+// still has its own outgoing anchors checked. `skipped` is filled with rel -> reason for every
+// Markdown file the scan reads, linked or not, and for every skipped target a link reaches
+// outside the scan, such as under .github/.
+export function validateLinks(root, skipped = new Map()) {
   const problems = [];
-  for (const file of repositoryMarkdown(root)) {
+  const anchors = anchorIndex();
+  const files = repositoryMarkdown(root);
+  for (const file of files) {
+    const { skip } = anchors(file);
+    if (skip) skipped.set(relative(root, file), skip);
+  }
+  for (const file of files) {
     const text = readFileSync(file, "utf8");
     const rel = relative(root, file);
-    for (const { target, index } of linkTargets(text)) {
+    const inComment = text.includes("<!--");
+    for (const { target, line } of linkTargets(text)) {
       const local = localPath(file, target);
       if (!local) continue;
-      const where = `${rel}:${lineAt(text, index)}: link ${target}`;
+      const where = `${rel}:${line}: link ${target}`;
       if (local.error) problems.push(`${where}: ${local.error}`);
       else if (/^\.\.(?:\/|$)/.test(relative(root, local.resolved))) problems.push(`${where}: escapes the repository`);
       else if (!existsSync(local.resolved)) problems.push(`${where}: missing`);
+      else if (local.fragment && local.resolved.endsWith(".md") && statSync(local.resolved).isFile()) {
+        const known = anchors(local.resolved);
+        // A target outside the scan, such as one under .github/, is listed when its anchors are skipped.
+        if (known.skip) {
+          skipped.set(relative(root, local.resolved), known.skip);
+          continue;
+        }
+        if (inComment) continue;
+        let id;
+        try {
+          id = decodeURIComponent(local.fragment);
+        } catch {
+          problems.push(`${where}: invalid URI encoding`);
+          continue;
+        }
+        if (!known.ids.has(id)) problems.push(`${where}: no heading #${id} in ${relative(root, local.resolved)}`);
+      }
     }
   }
   return problems;
@@ -637,17 +745,13 @@ export function validatePin(root, pin) {
   return problems;
 }
 
-// GitHub's heading anchors: lowercase, punctuation other than `-` and `_` dropped, spaces to `-`.
-function headingSlugs(text) {
-  return new Set([...text.matchAll(/^#{1,6}[ \t]+(.+?)[ \t]*$/gm)].map((m) => m[1].toLowerCase().replace(/[^\w\- ]/g, "").replaceAll(" ", "-")));
-}
-
 export function validateRequired(root) {
   const guide = path.join(root, "ADAPTATION.md");
-  const sections = existsSync(guide) ? headingSlugs(readFileSync(guide, "utf8")) : new Set();
+  const { ids: sections, skip } = existsSync(guide) ? headingAnchors(readFileSync(guide, "utf8")) : { ids: new Set(), skip: null };
   const problems = [];
   for (const rule of REQUIRED) {
-    if (!sections.has(rule.section)) problems.push(`ADAPTATION.md: ${rule.id}: no section #${rule.section} records this decision`);
+    // A guide whose anchors are skipped is listed by the CLI; its sections are not judged.
+    if (!skip && !sections.has(rule.section)) problems.push(`ADAPTATION.md: ${rule.id}: no section #${rule.section} records this decision`);
     const file = path.join(root, rule.file);
     const why = `${rule.hint} (ADAPTATION.md#${rule.section})`;
     if (!existsSync(file)) problems.push(`${rule.file}: ${rule.id}: missing; ${why}`);
@@ -656,7 +760,8 @@ export function validateRequired(root) {
   return problems;
 }
 
-export function checkFork(root) {
+// `skipped` collects the files whose heading anchors validateLinks did not check.
+export function checkFork(root, skipped = new Map()) {
   let pin = null;
   const problems = [];
   try {
@@ -664,15 +769,17 @@ export function checkFork(root) {
   } catch (error) {
     problems.push(`UPSTREAM.json: ${error.message}`);
   }
-  return [...problems, ...validateManifests(root, pin), ...(pin ? validatePin(root, pin) : []), ...validateSkills(root), ...validateLinks(root), ...scanDenylist(root), ...validateRequired(root)];
+  return [...problems, ...validateManifests(root, pin), ...(pin ? validatePin(root, pin) : []), ...validateSkills(root), ...validateLinks(root, skipped), ...scanDenylist(root), ...validateRequired(root)];
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   const root = path.resolve(process.argv[2] ?? path.join(import.meta.dirname, ".."));
-  const problems = checkFork(root);
+  const skipped = new Map();
+  const problems = checkFork(root, skipped);
+  const notChecked = [...skipped].map(([rel, reason]) => `Heading anchors not checked: ${rel} (${reason})`);
   if (problems.length) {
-    console.error(`Fork guards failed:\n${problems.join("\n")}`);
+    console.error(["Fork guards failed:", ...problems, ...notChecked].join("\n"));
     process.exit(1);
   }
-  console.log(`Fork guards passed: ${DENYLIST.length} denylist rules, ${REQUIRED.length} required local decisions, skill frontmatter and contract links, local Markdown links, manifests, upstream pin.`);
+  console.log([`Fork guards passed: ${DENYLIST.length} denylist rules, ${REQUIRED.length} required local decisions, skill frontmatter and contract links, local Markdown links and heading anchors, manifests, upstream pin.`, ...notChecked].join("\n"));
 }

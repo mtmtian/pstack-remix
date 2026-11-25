@@ -8,6 +8,7 @@ import json
 import math
 import os
 from pathlib import Path
+import random
 import re
 import signal
 import stat
@@ -60,6 +61,13 @@ CODEX_MODEL_LINE = re.compile(r"^model:\s*(\S+)\s*$", re.MULTILINE)
 VERDICT = re.compile(r"(?:STATUS: (PASS|ISSUES|BLOCKED)|\*\*STATUS: (PASS|ISSUES|BLOCKED)\*\*)")
 # agy ends a failed run with one such line on stderr; "retryable": false means rerunning cannot succeed.
 AGY_ERROR = re.compile(r"^AGY_ERROR: (\{.*\})\s*$", re.MULTILINE)
+# agy 1.5.17 (2026-11-26) loses a launch that starts while another agy is creating its conversation database ("initialized
+# by another opener") with this stderr line and exit 1. No conversation exists then, so nothing ran in the workdir and a
+# relaunch of the same command is safe. Only agy has this race.
+AGY_LOST_RACE = "error: failed to start conversation: backend returned an empty conversation id"
+AGY_RELAUNCHES = 2
+# Seconds, uniformly random, before each relaunch, so launches that collided do not collide again.
+AGY_RELAUNCH_DELAY = (1, 3)
 # The clock for a run's timeout, wait --timeout and the receipt's seconds. Unlike time.monotonic() on macOS, macOS's
 # CLOCK_MONOTONIC and Linux's CLOCK_BOOTTIME keep counting while the computer sleeps, and unlike time.time() they never
 # jump when the wall clock is set.
@@ -210,18 +218,13 @@ def kill_group(pid, sig):
         pass
 
 
-def run_process(args, workdir, out, stdout_path, timeout, env):
-    cancelled = 0
-    def cancel(signum, _frame):
-        nonlocal cancelled
-        cancelled = signum
-    previous = {sig: signal.signal(sig, cancel) for sig in (signal.SIGTERM, signal.SIGINT)}
+def launch(args, workdir, out, stdout_path, deadline, env, cancelled):
+    """Run the agent once, until it exits, the deadline passes or cancelled() is set; return (exit code, timed_out)."""
     process = None
     try:
         with (out / "prompt.md").open("rb") as stdin, stdout_path.open("wb") as stdout, (out / "agent.log").open("ab") as log:
             process = subprocess.Popen(args, cwd=workdir, env=env, stdin=stdin, stdout=stdout, stderr=stdout if stdout_path == out / "agent.log" else log, start_new_session=True)
-            deadline = now() + timeout
-            while process.poll() is None and not cancelled:
+            while process.poll() is None and not cancelled():
                 remaining = deadline - now()
                 if remaining <= 0:
                     break
@@ -229,19 +232,63 @@ def run_process(args, workdir, out, stdout_path, timeout, env):
                     process.wait(timeout=min(remaining, 0.1))
                 except subprocess.TimeoutExpired:
                     pass
-            timed_out = not cancelled and process.poll() is None
-            if cancelled or timed_out:
+            timed_out = not cancelled() and process.poll() is None
+            if cancelled() or timed_out:
                 kill_group(process.pid, signal.SIGTERM)
                 try:
                     process.wait(timeout=TERMINATION_GRACE)
                 except subprocess.TimeoutExpired:
                     pass
-            return (128 + cancelled if cancelled else 124 if timed_out else process.returncode), timed_out, bool(cancelled)
+            return (124 if timed_out else process.returncode), timed_out
     finally:
         if process is not None:
             # Reap the leader and stop any background tools still in its process group.
             kill_group(process.pid, signal.SIGKILL)
             process.wait()
+
+
+def lost_startup_race(log, offset):
+    """Whether what agy appended to log from offset on reports the startup race and does not call itself not retryable."""
+    with log.open("rb") as stream:
+        stream.seek(offset)
+        text = stream.read().decode(errors="replace")
+    return AGY_LOST_RACE in text.splitlines() and failure_reason("gemini", text) != "not_retryable"
+
+
+def run_process(agent, args, workdir, out, stdout_path, timeout, env):
+    """Run the agent, and again after a pause when agy lost its startup race, all within one timeout and one cancel handler.
+
+    Return (exit code, timed_out, cancelled, relaunches)."""
+    cancelled = 0
+    def cancel(signum, _frame):
+        nonlocal cancelled
+        cancelled = signum
+    previous = {sig: signal.signal(sig, cancel) for sig in (signal.SIGTERM, signal.SIGINT)}
+    try:
+        deadline, relaunches, log = now() + timeout, 0, out / "agent.log"
+        while True:
+            offset = log.stat().st_size
+            code, timed_out = launch(args, workdir, out, stdout_path, deadline, env, lambda: cancelled)
+            if cancelled or timed_out or relaunches == AGY_RELAUNCHES or agent != "gemini" or not code or not lost_startup_race(log, offset):
+                break
+            delay = random.uniform(*AGY_RELAUNCH_DELAY)
+            if deadline - now() <= delay:
+                break
+            with log.open("a") as stream:
+                stream.write(f"xagent: agy lost its startup race (launch {relaunches + 1} of {AGY_RELAUNCHES + 1}); relaunching in {delay:.1f}s\n")
+            wake = now() + delay
+            # time.sleep resumes after a signal handler, so sleep in short slices that notice a cancellation.
+            while not cancelled and (remaining := wake - now()) > 0:
+                time.sleep(min(remaining, 0.1))
+            if cancelled:
+                break
+            # The computer may have slept through the pause: start no process past the deadline.
+            if now() >= deadline:
+                code, timed_out = 124, True
+                break
+            relaunches += 1
+        return (128 + cancelled if cancelled else code), timed_out, bool(cancelled), relaunches
+    finally:
         for sig, handler in previous.items():
             signal.signal(sig, handler)
 
@@ -402,7 +449,7 @@ def main():
         workdir=str(workdir), pid=os.getpid(), exit=None,
         timed_out=False, cancelled=False, seconds=0, status=None,
         changed_workdir=None, snapshot_before=None, snapshot_after=None, resolved_models=None,
-        worker_result=None, completed=False, reason="incomplete",
+        worker_result=None, launch_retries=0, completed=False, reason="incomplete",
     )
     write_meta(out, meta)
     started = now()
@@ -423,8 +470,8 @@ def main():
     env["PATH"] = os.pathsep.join([env.get("PATH", ""), str(Path.home() / ".local/bin"), str(Path.home() / ".npm-global/bin"), str(Path.home() / ".grok/bin")])
     args, stdout_path, reply_path, json_field = command(agent, options.mode, workdir, out, prompt, allowed, selection(agent, model, options.effort), meta["sandbox"])
     try:
-        code, timed_out, cancelled = run_process(args, workdir, out, stdout_path, options.timeout, env)
-        meta.update(exit=code, timed_out=timed_out, cancelled=cancelled)
+        code, timed_out, cancelled, relaunches = run_process(agent, args, workdir, out, stdout_path, options.timeout, env)
+        meta.update(exit=code, timed_out=timed_out, cancelled=cancelled, launch_retries=relaunches)
         meta["worker_result"] = keep_worker_result(out)
         # A CLI killed or failed before it wrote its reply file leaves none.
         # errors="replace": output cut off mid-character by a timeout is still the partial reply.
